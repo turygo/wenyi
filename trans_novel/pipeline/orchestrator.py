@@ -250,7 +250,9 @@ class Orchestrator:
 
         batches = batch_segments(text_segs, self.config.segment.max_chars_per_batch)
         label = f"第{ci}章 {chapter.title}"
-        # 章内术语表不变：取一次快照，逐批在内存里过滤，免去逐批查库
+        # 章内术语表不变：取一次全量快照，整章各批次共用同一份。
+        # 全量（而非按批裁剪）是为了让 system+style+glossary 成为整章批次共享的稳定前缀，
+        # 命中 DeepSeek 自动前缀缓存（命中部分输入价≈0.1×），长章批次越多越省。
         term_snapshot = glossary.all_terms()
 
         # 逐批串行：每批渲染最新上下文 → 处理 → 立即把译文并入上下文供下一批参照。
@@ -274,8 +276,8 @@ class Orchestrator:
                 continue
 
             ctx_text = context.render(self.config.pipeline.rolling_context_segments)
-            terms = glossary.terms_in(term_snapshot, "\n".join(s.source for s in b))
-            res = self._process_batch(b, terms, ctx_text, style)
+            # 传整章全量术语表（不按批裁剪）：批次间 glossary 块恒定，命中前缀缓存
+            res = self._process_batch(b, term_snapshot, ctx_text, style)
             for s, t in zip(b, res.targets):
                 s.target = t
             context.add_targets(res.targets)
