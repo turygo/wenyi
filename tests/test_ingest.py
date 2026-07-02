@@ -168,6 +168,20 @@ class TestSplitLongSegments(unittest.TestCase):
         self.assertTrue(all(len(c) <= 20 for c in chunks))
         self.assertEqual("".join(chunks), "あ" * 50)
 
+    def test_english_splits_on_sentence_punctuation(self):
+        text = "Alpha beta gamma. Delta epsilon zeta! Eta theta iota?"
+        chunks = _split_text(text, 25)
+        self.assertEqual(chunks, ["Alpha beta gamma.", " Delta epsilon zeta!", " Eta theta iota?"])
+        self.assertEqual("".join(chunks), text)
+
+    def test_oversized_english_sentence_does_not_split_words(self):
+        text = "alphabet bravo charlie delta"
+        chunks = _split_text(text, 18)
+        self.assertEqual(chunks, ["alphabet bravo", " charlie delta"])
+        self.assertEqual("".join(chunks), text)
+        self.assertNotIn("char", chunks[0])
+        self.assertEqual(chunks[1].split()[0], "charlie")
+
 
 class TestEpubIngest(unittest.TestCase):
     def test_epub_chapters_and_anchors(self):

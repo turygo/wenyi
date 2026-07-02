@@ -19,22 +19,40 @@ from .models import KIND_TEXT, Chapter, Document, Segment
 from .text_reader import read_text
 
 # 句末标点（中/日/英），用于超长段的按句拆分
-_SENT_SPLIT = re.compile(r"(?<=[。．！？!?…\n])")
+_SENT_SPLIT = re.compile(r"(?<=[。．.!！？!?…\n])")
+
+
+def _split_oversized_sentence(text: str, max_chars: int) -> list[str]:
+    """兜底拆分单个超长句：优先不拆英文单词，找不到空白才硬切。"""
+    chunks: list[str] = []
+    rest = text
+    while len(rest) > max_chars:
+        cut = rest.rfind(" ", 0, max_chars + 1)
+        if cut <= 0:
+            cut = rest.rfind("\t", 0, max_chars + 1)
+        if cut <= 0:
+            cut = rest.rfind("\n", 0, max_chars + 1)
+        if cut <= 0:
+            cut = max_chars
+        chunks.append(rest[:cut])
+        rest = rest[cut:]
+    if rest:
+        chunks.append(rest)
+    return chunks
 
 
 def _split_text(text: str, max_chars: int) -> list[str]:
-    """把超长文本按句末标点贪心打包成 ≤max_chars 的块；单句过长则硬切。"""
+    """把超长文本按句末标点贪心打包；单句过长才按空白兜底拆。"""
     chunks: list[str] = []
     cur = ""
     for p in _SENT_SPLIT.split(text):
         if not p:
             continue
-        if len(p) > max_chars:                      # 单句本身超长 → 硬切
+        if len(p) > max_chars:                      # 单句本身超长 → 兜底拆
             if cur:
                 chunks.append(cur)
                 cur = ""
-            for i in range(0, len(p), max_chars):
-                chunks.append(p[i:i + max_chars])
+            chunks.extend(_split_oversized_sentence(p, max_chars))
             continue
         if cur and len(cur) + len(p) > max_chars:
             chunks.append(cur)
