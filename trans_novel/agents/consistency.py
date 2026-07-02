@@ -8,18 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..config import Config
 from ..glossary.store import GlossaryStore
-from ..llm.base import LLMClient
 from ..pipeline.runstore import RunStore, STATUS_DONE
 from . import prompts
+from .base import Agent
 
 
-class ConsistencyChecker:
-    def __init__(self, client: LLMClient, config: Config):
-        self.client = client
-        self.config = config
-
+class ConsistencyChecker(Agent):
     def _chapter_digests(self, store: RunStore, max_chars_each: int = 600) -> str:
         m = store.load_manifest()
         parts: list[str] = []
@@ -38,8 +33,7 @@ class ConsistencyChecker:
         digests = self._chapter_digests(store)
         if not digests.strip():
             return []
-        system = prompts.render("consistency_system",
-                                src=self.config.source_lang, tgt=self.config.target_lang)
+        system = prompts.render("consistency_system", src=self.src, tgt=self.tgt)
         user = (
             "【专有名词对照表】\n"
             + prompts.render_glossary(glossary.all_terms())
@@ -47,16 +41,8 @@ class ConsistencyChecker:
             + digests
             + '\n\n请输出 JSON：{"issues":[...]}。'
         )
-        try:
-            data = self.client.complete_json(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                tier="cheap",
-            )
-        except Exception:
-            return []
-        issues = data.get("issues", []) if isinstance(data, dict) else (data or [])
-        return [i for i in issues if isinstance(i, dict)]
+        return self.dict_items(
+            self._ask_json(system, user, tier="cheap", key="issues", default=[]))
 
     def autofix(self, store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
         """对可安全机械修复的术语/译名不一致，生成确定替换并改写正文。
@@ -69,23 +55,14 @@ class ConsistencyChecker:
         digests = self._chapter_digests(store)
         if not digests.strip():
             return {"replacements": [], "rewritten": 0}
-        system = prompts.render("consistency_fix_system",
-                                src=self.config.source_lang, tgt=self.config.target_lang)
+        system = prompts.render("consistency_fix_system", src=self.src, tgt=self.tgt)
         user = (
             "【专有名词对照表】\n"
             + prompts.render_glossary(glossary.all_terms())
             + "\n\n【各章译文摘要】\n" + digests
             + '\n\n请输出 JSON：{"replacements":[...]}。'
         )
-        try:
-            data = self.client.complete_json(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                tier="strong",
-            )
-        except Exception:
-            return {"replacements": [], "rewritten": 0}
-        raw = data.get("replacements", []) if isinstance(data, dict) else (data or [])
+        raw = self._ask_json(system, user, tier="strong", key="replacements", default=[])
         replace_map: dict[str, str] = {}
         applied: list[dict] = []
         for r in raw:

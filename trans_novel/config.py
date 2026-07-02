@@ -35,7 +35,7 @@ class SegmentConfig(BaseModel):
 
 class PipelineConfig(BaseModel):
     review: bool = True
-    review_retry_limit: int = 2      # 已弃用：严重项不再自动重译（改人工介入）
+    align_retry_limit: int = 2       # 批次翻译段数不符时的整批重试次数，超限后逐段兜底
     polish: bool = False             # 默认关：润色=用强档把全书再翻一遍，最烧钱；需要时显式开
     backtranslate_sample: float = 0.05
     consistency_qa: bool = True
@@ -52,11 +52,9 @@ class Config(BaseModel):
     segment: SegmentConfig = Field(default_factory=SegmentConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     honorific_strategy: str = "keep_style"
-    concurrency: int = 1             # 已弃用：章内现为串行（逐批刷新上下文保证连贯），仅兼容保留
     punctuation_normalize: bool = True  # 译文标点规范化为简体中文通用
     glossary_audit: bool = True      # 收尾做术语 AI 审计统一（改写正文）
     state_dir: str = "state"
-    raw: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "Config":
@@ -90,9 +88,7 @@ class Config(BaseModel):
             segment=segment,
             pipeline=pipeline,
             honorific_strategy=raw.get("honorific", {}).get("strategy", "keep_style"),
-            concurrency=int(raw.get("concurrency", 1)),  # 已弃用，章内串行
             punctuation_normalize=bool(punct.get("normalize", True)),
             glossary_audit=bool(raw.get("glossary_audit", True)),
             state_dir=raw.get("paths", {}).get("state_dir", "state"),
-            raw=raw,
         )

@@ -6,19 +6,12 @@
 
 from __future__ import annotations
 
-from ..config import Config
-from ..llm.base import LLMClient
 from ..agents import prompts
+from ..agents.base import Agent
 from .store import GlossaryStore, GlossaryTerm
 
 
-class GlossaryExtractor:
-    def __init__(self, client: LLMClient, config: Config):
-        self.client = client
-        self.config = config
-        self.src = config.source_lang
-        self.tgt = config.target_lang
-
+class GlossaryExtractor(Agent):
     def extract(self, source_text: str, target_text: str,
                 existing: list[GlossaryTerm]) -> list[GlossaryTerm]:
         system = prompts.render("glossary_extractor_system", src=self.src, tgt=self.tgt)
@@ -27,18 +20,10 @@ class GlossaryExtractor:
             glossary=prompts.render_glossary(existing),
             source=source_text, target=target_text,
         )
-        try:
-            data = self.client.complete_json(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                tier="cheap",
-            )
-        except Exception:
-            return []
-        raw = data.get("terms", []) if isinstance(data, dict) else (data or [])
+        raw = self._ask_json(system, user, tier="cheap", key="terms", default=[])
         terms: list[GlossaryTerm] = []
-        for d in raw:
-            if not isinstance(d, dict) or not d.get("source") or not d.get("target"):
+        for d in self.dict_items(raw):
+            if not d.get("source") or not d.get("target"):
                 continue
             terms.append(GlossaryTerm(
                 source=str(d["source"]).strip(),

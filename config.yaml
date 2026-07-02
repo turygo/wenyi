@@ -34,7 +34,7 @@ segment:
 # ── 流水线开关（质量/成本平衡）───────────────────────────────────────────
 pipeline:
   review: true              # 审校（廉价档）：漏译/误译/术语/人称检查——只上报问题供人工介入
-  review_retry_limit: 2     # 已弃用：严重项不再自动重译（改为人工介入），此项不生效
+  align_retry_limit: 2      # 批次翻译段数不符时的整批重试次数，超限后逐段兜底
   polish: false             # 润色（强档）：已默认关闭——它等于用 pro 把全书再翻一遍，最烧钱；需要时手动开
   backtranslate_sample: 0.05  # 回译抽检比例（0 关闭）
   consistency_qa: true      # 全书跨章一致性收尾扫描
@@ -46,9 +46,6 @@ pipeline:
 honorific:
   # keep_style: 体现语气（前辈/小X/X君…）; normalize: 按统一规则；drop: 省略
   strategy: keep_style
-
-# ── 已弃用：章内批次现为串行（逐批刷新上下文以保证连贯），此项不再生效，仅为兼容保留 ──
-concurrency: 1
 
 # ── 标点规范化（统一为简体中文大陆通用全角标点）────────────────────────────
 punctuation:

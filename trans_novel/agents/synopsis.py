@@ -11,21 +11,14 @@
 
 from __future__ import annotations
 
-from ..config import Config
-from ..llm.base import LLMClient
 from . import prompts
+from .base import Agent
 
 # 归并时单次喂入的各章梗概字符预算；超过则分组先归并再合并。
 _REDUCE_BUDGET = 12000
 
 
-class Synopsizer:
-    def __init__(self, client: LLMClient, config: Config):
-        self.client = client
-        self.config = config
-        self.src = config.source_lang
-        self.tgt = config.target_lang
-
+class Synopsizer(Agent):
     def digest_chapter(self, source_text: str) -> str:
         """把单章源文压成一段中文梗概；空文本或失败返回空串。"""
         if not source_text.strip():
@@ -33,15 +26,7 @@ class Synopsizer:
         system = prompts.render("chapter_digest_system", src=self.src, tgt=self.tgt)
         user = prompts.render("chapter_digest_user", src=self.src, tgt=self.tgt,
                               source=source_text[:8000])
-        try:
-            text = self.client.complete(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                tier="cheap",
-            )
-            return (text or "").strip()
-        except Exception:
-            return ""
+        return self._ask_text(system, user, tier="cheap")
 
     def book_synopsis(self, digests: list[str], analysis_brief: str) -> str:
         """把各章梗概 + 前期分析归并成全书概览。超长则分组 map-reduce。"""
@@ -80,12 +65,4 @@ class Synopsizer:
         system = prompts.render("book_synopsis_system", src=self.src, tgt=self.tgt)
         user = prompts.render("book_synopsis_user", src=self.src, tgt=self.tgt,
                               analysis=analysis_brief or "（无）", digests=numbered)
-        try:
-            text = self.client.complete(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                tier="cheap",
-            )
-            return (text or "").strip()
-        except Exception:
-            return ""
+        return self._ask_text(system, user, tier="cheap")

@@ -24,7 +24,7 @@ class TestTranslatorAlignment(unittest.TestCase):
                 "strong": {"model": "deepseek-v4-pro"},
                 "cheap": {"model": "deepseek-v4-flash"},
             }},
-            "pipeline": {"review_retry_limit": 1},
+            "pipeline": {"align_retry_limit": 1},
         })
 
     def test_happy_path_aligned(self):

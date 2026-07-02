@@ -105,7 +105,6 @@ class TestRunAll(unittest.TestCase):
                     "strong": {"model": "p"}, "cheap": {"model": "f"}}},
                 "pipeline": {"review": True, "polish": True,
                              "backtranslate_sample": 0.0, "consistency_qa": True},
-                "concurrency": 3,
                 "paths": {"state_dir": state},
             })
             seen = []

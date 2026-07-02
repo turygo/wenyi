@@ -1,9 +1,8 @@
 """命令行入口（typer + rich）。
 
-日常只需两个命令：
-- `web`：启动可视化控制台（**推荐**，浏览器内选/上传书籍、运行、暂停/续跑、看双语流与术语表）；
-- `translate`：连续全流程（分析→翻译→术语审计→一致性 QA→报告→回填 EPUB），中断后再次运行自动续跑。
-其余 `resume` / `status` 为常用辅助；细粒度/调试工具收敛到 `tools`：glossary / assemble / qa / report。
+日常只需 `translate` 一个命令：连续全流程（分析→翻译→术语审计→一致性 QA→报告→回填 EPUB），
+中断后再次运行自动续跑。其余 `resume` / `status` 为常用辅助；
+细粒度/调试工具收敛到 `tools`：glossary / assemble / qa / report。
 """
 
 from __future__ import annotations
@@ -237,26 +236,6 @@ def report(input: str = typer.Argument(..., help="输入文件")):
     console.print(f"  章节 {s['chapters_done']}/{s['chapters_total']}  术语 {s['terms']}  "
                   f"待裁决冲突 {s['open_conflicts']}  审校问题 {s['review_issues']}  "
                   f"回译疑点 {s['backtranslation_issues']}")
-
-
-@app.command()
-def web(
-    input: Optional[str] = typer.Argument(None, help="可选：预填的输入文件路径（一般无需，浏览器内选/上传即可）"),
-    host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8000, "--port"),
-):
-    """启动可视化控制台：浏览器内选/上传书籍、运行、暂停/续跑、实时双语流与术语表编辑。
-
-    直接 `uv run trans-novel web` 即可，无需在命令行指定文件。
-    """
-    import uvicorn
-
-    from .web.server import create_app
-
-    application = create_app(config_path=_CONFIG["path"], default_input=input)
-    console.print(f"[bold green]Web 控制台已启动[/]：http://{host}:{port}")
-    console.print("在页面里选择/上传书籍即可开始（命令行无需指定文件）。")
-    uvicorn.run(application, host=host, port=port, log_level="info")
 
 
 app.add_typer(tools_app, name="tools")

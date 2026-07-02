@@ -34,20 +34,6 @@ from .context import RollingContext
 from .runstore import RunStore, slugify, STATUS_DONE
 
 ProgressFn = Callable[[int, int, str], None]
-EventFn = Callable[[dict], None]
-StopFn = Callable[[], bool]
-
-
-class RunCancelled(Exception):
-    """协作式停止：在批/章边界收到停止信号时抛出（已译部分均已落盘，可续跑）。"""
-
-
-def _emit(events: Optional[EventFn], ev: dict) -> None:
-    if events:
-        try:
-            events(ev)
-        except Exception:
-            pass
 
 
 # 语言名/代码 → ISO 639-1 两字母代码（AI 检测结果归一化）
@@ -156,9 +142,7 @@ class Orchestrator:
         return joined[:6000]
 
     def run(self, input_path: str, *, only_chapter: int | None = None,
-            progress: Optional[ProgressFn] = None,
-            events: Optional[EventFn] = None,
-            should_stop: Optional[StopFn] = None) -> RunStore:
+            progress: Optional[ProgressFn] = None) -> RunStore:
         store = self.prepare(input_path)
         manifest = store.load_manifest()
         self._apply_language(manifest.get("source_lang") or self.config.source_lang)
@@ -166,7 +150,7 @@ class Orchestrator:
         context = RollingContext.from_dict(store.load_context() or {})
         style = self.analyzer.style_brief(store.load_analysis() or {})
         # 翻译前预扫源文，建立全书理解（幂等、可续跑）；全书概览注入每章翻译
-        book_synopsis = self._build_understanding(store, events=events)
+        book_synopsis = self._build_understanding(store)
 
         if only_chapter is not None:
             targets = [only_chapter]
@@ -175,26 +159,19 @@ class Orchestrator:
 
         total = self._count_segments(store, targets)
         done = 0
-        _emit(events, {"type": "step", "step": "translate", "status": "start",
-                       "total_segments": total, "chapters": len(targets)})
         try:
             for ci in targets:
-                if should_stop and should_stop():
-                    raise RunCancelled()
                 done = self._translate_chapter(
                     ci, store, glossary, context, style, book_synopsis,
-                    progress=progress, events=events, done=done, total=total,
-                    should_stop=should_stop)
+                    progress=progress, done=done, total=total)
                 store.save_context(context.to_dict())
-                _emit(events, {"type": "chapter_done", "chapter": ci})
             # 全书译完后翻译书名与各章标题（供目录/文件名使用，借术语表保持专名一致）
             if not store.pending_chapters():
-                self._translate_titles(store, glossary, events=events)
+                self._translate_titles(store, glossary)
         finally:
             glossary.close()
         if progress and total:
             progress(total, total, "翻译完成")
-        _emit(events, {"type": "step", "step": "translate", "status": "done"})
         return store
 
     @staticmethod
@@ -205,8 +182,7 @@ class Orchestrator:
         return total
 
     # ── 全书理解预扫（源文逐章梗概 + 全书概览）────────────────────────────────
-    def _build_understanding(self, store: RunStore, *,
-                             events: Optional[EventFn] = None) -> str:
+    def _build_understanding(self, store: RunStore) -> str:
         """翻译前预扫源文：逐章梗概存入 chapter.meta，归并出全书概览存入 analysis。
 
         幂等、可续跑：已有梗概/概览则跳过。返回全书概览（注入各章翻译 prompt）。
@@ -216,8 +192,6 @@ class Orchestrator:
             return ""
         manifest = store.load_manifest()
         chapters = manifest.get("chapters", [])
-        _emit(events, {"type": "step", "step": "understand", "status": "start",
-                       "chapters": len(chapters)})
 
         digests: list[str] = []
         for i, c in enumerate(chapters):
@@ -238,12 +212,10 @@ class Orchestrator:
                 digests, self.analyzer.style_brief(analysis))
             analysis["book_synopsis"] = synopsis
             store.save_analysis(analysis)
-        _emit(events, {"type": "step", "step": "understand", "status": "done"})
         return synopsis
 
     # ── 书名 / 章节标题翻译（目录与输出文件名用）──────────────────────────────
-    def _translate_titles(self, store: RunStore, glossary: GlossaryStore, *,
-                          events: Optional[EventFn] = None) -> None:
+    def _translate_titles(self, store: RunStore, glossary: GlossaryStore) -> None:
         """把书名 + 各章标题整体翻成中文，写回 manifest（幂等：已全部译过则跳过）。
 
         借术语表保证专名一致；一次调用翻译全部标题，互为上下文更连贯。
@@ -262,7 +234,6 @@ class Orchestrator:
         titles = [_flat(m.get("title", ""))] + [_flat(c.get("title", "")) for c in chapters]
         if not any(t.strip() for t in titles):
             return
-        _emit(events, {"type": "step", "step": "titles", "status": "start"})
         system = prompts.render("title_translator_system",
                                 src=self.config.source_lang, tgt=self.config.target_lang,
                                 n=len(titles))
@@ -284,17 +255,13 @@ class Orchestrator:
         for c, t in zip(chapters, out[1:]):
             c["title_translated"] = t or c.get("title")
         store.save_manifest(m)
-        _emit(events, {"type": "step", "step": "titles", "status": "done",
-                       "title": m["title_translated"]})
 
     # ── 单章 ──────────────────────────────────────────────────────────────
     def _translate_chapter(self, ci: int, store: RunStore,
                            glossary: GlossaryStore, context: RollingContext,
                            style: str, book_synopsis: str = "", *,
                            progress: Optional[ProgressFn] = None,
-                           events: Optional[EventFn] = None,
-                           done: int = 0, total: int = 0,
-                           should_stop: Optional[StopFn] = None) -> int:
+                           done: int = 0, total: int = 0) -> int:
         chapter = store.load_chapter(ci)
         text_segs = chapter.text_segments
         if not text_segs:
@@ -314,26 +281,14 @@ class Orchestrator:
         # 断点续跑（段/批级）：上次中断前已译完并落盘的批次，整批跳过、不重翻，只重建上下文。
         review_issues: list[dict] = list(chapter.meta.get("review_issues", []))
         bt_samples: list[tuple[str, str]] = []
-        for i, b in enumerate(batches):
+        for b in batches:
             if all(s.target and s.target.strip() for s in b):
                 # 该批上次已在原位、原上下文中译完 → 复用，重建滚动上下文后跳过
                 context.add_targets([s.target for s in b])
                 done += len(b)
                 if progress:
                     progress(done, total, label)
-                _emit(events, {
-                    "type": "batch", "chapter": ci, "batch": i,
-                    "title": chapter.title, "done": done, "total": total,
-                    "pairs": [{"source": s.source, "target": s.target} for s in b],
-                    "issues": [], "resumed": True,
-                })
                 continue
-
-            # 协作式停止：在批边界检查（已译批均已落盘）→ 抛出由上层捕获，可续跑
-            if should_stop and should_stop():
-                chapter.meta["review_issues"] = review_issues
-                store.save_chapter(chapter)
-                raise RunCancelled()
 
             ctx_text = context.render(self.config.pipeline.rolling_context_segments)
             # 传整章全量术语表（不按批裁剪）：批次间 glossary 块恒定，命中前缀缓存
@@ -352,14 +307,6 @@ class Orchestrator:
             # 增量持久化：本批译文 + 累计问题落盘，下次中断从此批之后续跑
             chapter.meta["review_issues"] = review_issues
             store.save_chapter(chapter)
-            # 批次级实时：原句↔译句对照 + 该批审校建议（含 fixed 标记）
-            _emit(events, {
-                "type": "batch", "chapter": ci, "batch": i,
-                "title": chapter.title, "done": done, "total": total,
-                "pairs": [{"source": s.source, "target": t}
-                          for s, t in zip(b, res.targets)],
-                "issues": res.issues,
-            })
 
         # 回译抽检
         bt_issues: list[dict] = []
@@ -439,13 +386,8 @@ class Orchestrator:
 
     def run_steps(self, input_path: str, steps, *,
                   progress: Optional[ProgressFn] = None,
-                  events: Optional[EventFn] = None,
-                  out_format: str = "epub", out_path: str | None = None,
-                  should_stop: Optional[StopFn] = None) -> dict[str, Any]:
-        """按需执行步骤子集（可单选可全选）。steps ⊆ ALL_STEPS。
-
-        翻译阶段支持协作式停止（should_stop）：停在批边界抛 RunCancelled，由调用方捕获。
-        """
+                  out_format: str = "epub", out_path: str | None = None) -> dict[str, Any]:
+        """按需执行步骤子集（可单选可全选）。steps ⊆ ALL_STEPS。"""
         from ..agents.glossary_auditor import GlossaryAuditor
         from ..agents.consistency import ConsistencyChecker
         from ..assemble.writer import assemble
@@ -454,8 +396,7 @@ class Orchestrator:
         steps = set(steps)
 
         if "translate" in steps:
-            store = self.run(input_path, progress=progress, events=events,
-                             should_stop=should_stop)
+            store = self.run(input_path, progress=progress)
         else:
             store = self.prepare(input_path)
             m = store.load_manifest()
@@ -467,43 +408,27 @@ class Orchestrator:
         report: dict[str, Any] | None = None
         try:
             if "audit" in steps:
-                _emit(events, {"type": "step", "step": "audit", "status": "start"})
                 audit_applied = GlossaryAuditor(self.client, self.config).audit(store, glossary)
-                _emit(events, {"type": "audit", "unifications": audit_applied})
-                _emit(events, {"type": "step", "step": "audit", "status": "done"})
 
             if "qa" in steps:
-                _emit(events, {"type": "step", "step": "qa", "status": "start"})
                 qa_issues = ConsistencyChecker(self.client, self.config).check(store, glossary)
-                _emit(events, {"type": "qa", "issues": qa_issues})
-                _emit(events, {"type": "step", "step": "qa", "status": "done"})
 
             if "report" in steps:
-                _emit(events, {"type": "step", "step": "report", "status": "start"})
                 report = build_report(store, glossary)
                 report["consistency_issues"] = qa_issues
                 report["glossary_unifications"] = audit_applied
                 store.save_report(report)
-                _emit(events, {"type": "step", "step": "report", "status": "done"})
         finally:
             glossary.close()
 
         out = None
         if "assemble" in steps:
-            _emit(events, {"type": "step", "step": "assemble", "status": "start"})
             out = assemble(store, input_path, out_path=out_path, out_format=out_format)
-            _emit(events, {"type": "step", "step": "assemble", "status": "done", "output": out})
 
-        result = {"store": store, "output": out, "report": report,
-                  "qa_issues": qa_issues, "audit": audit_applied}
-        _emit(events, {"type": "done",
-                       "output": out,
-                       "summary": (report or {}).get("summary", {}),
-                       "audit": len(audit_applied), "qa": len(qa_issues)})
-        return result
+        return {"store": store, "output": out, "report": report,
+                "qa_issues": qa_issues, "audit": audit_applied}
 
     def run_all(self, input_path: str, *, progress: Optional[ProgressFn] = None,
-                events: Optional[EventFn] = None,
                 out_format: str = "epub", out_path: str | None = None,
                 do_audit: bool | None = None, do_qa: bool | None = None) -> dict[str, Any]:
         """翻译 → 术语审计统一 → 一致性 QA → 报告 → 回填 EPUB，返回结果汇总。"""
@@ -512,5 +437,5 @@ class Orchestrator:
             steps.add("audit")
         if do_qa if do_qa is not None else self.config.pipeline.consistency_qa:
             steps.add("qa")
-        return self.run_steps(input_path, steps, progress=progress, events=events,
+        return self.run_steps(input_path, steps, progress=progress,
                               out_format=out_format, out_path=out_path)

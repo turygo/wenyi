@@ -10,8 +10,8 @@ import unittest
 
 from trans_novel.config import Config
 from trans_novel.llm.base import FakeClient
-from trans_novel.pipeline.orchestrator import Orchestrator, RunCancelled, _normalize_lang
-from trans_novel.pipeline.runstore import RunStore, slugify, STATUS_DONE, STATUS_PENDING
+from trans_novel.pipeline.orchestrator import Orchestrator, _normalize_lang
+from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING
 from tests.sample_data import write_sample_txt
 from tests.fake_llm import routing_handler
 
@@ -203,39 +203,45 @@ class TestBookUnderstanding(unittest.TestCase):
             self.assertEqual(len(prepass), 0)
 
 
-class TestCooperativeStop(unittest.TestCase):
-    def test_stop_pauses_at_batch_boundary_then_resumes(self):
-        """should_stop 在批边界优雅停下：已译批落盘、章仍 pending；再次运行续跑完成。"""
+class TestRunSteps(unittest.TestCase):
+    def test_subset_only_assemble(self):
+        """run_steps 步骤子集：仅回填时不应再产生翻译调用（幂等）。"""
         with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            write_sample_txt(txt)
+            txt = os.path.join(d, "novel.txt"); write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
-            cfg.segment.max_chars_per_batch = 8   # 每段≈独立批
-            cfg.pipeline.book_understanding = False
+            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+            orch.run_steps(txt, {"translate"})
+            # 仅回填，不应再翻译
+            client2 = FakeClient(handler=routing_handler)
+            res = Orchestrator(cfg, client=client2).run_steps(txt, {"assemble"})
+            self.assertTrue(res["output"].endswith(".epub"))
+            self.assertTrue(os.path.isfile(res["output"]))
+            translate_calls = [c for c in client2.calls
+                               if "文学翻译" in c["messages"][0]["content"]]
+            self.assertEqual(len(translate_calls), 0)
 
-            calls = {"n": 0}
-            def stop() -> bool:
-                calls["n"] += 1
-                return calls["n"] > 2   # 放过章首+1 批，之后停
 
-            with self.assertRaises(RunCancelled):
-                Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(
-                    txt, only_chapter=0, should_stop=stop)
+class TestReviewReporting(unittest.TestCase):
+    def test_review_issues_reported_not_fixed(self):
+        """审校问题只上报不自动修订：落盘 review_issues 全部 fixed=False，留人工介入。"""
+        def handler(messages, tier, json_mode):
+            sys = messages[0]["content"]
+            if "译文审校" in sys:
+                # 报一个漏译 → 不自动重译，仅作为待人工项上报（fixed=False）
+                return json.dumps({"issues": [
+                    {"index": 0, "type": "missing", "detail": "漏了一句", "suggestion": "补上"}
+                ]}, ensure_ascii=False)
+            return routing_handler(messages, tier, json_mode)
 
-            from trans_novel.ingest.segmenter import load_document
-            doc = load_document(txt, "ja", "zh")
-            store = RunStore(os.path.join(d, "state", slugify(doc.title)))
-            ch = store.load_chapter(0)
-            targets = [s.target for s in ch.text_segments]
-            self.assertTrue(any(t for t in targets))        # 有已译批
-            self.assertTrue(any(not t for t in targets))    # 也有未译批
-            self.assertNotEqual(store.load_manifest()["chapters"][0]["status"],
-                                STATUS_DONE)
-
-            # 续跑（不再停）→ 全部完成
-            Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(txt)
-            self.assertTrue(all(c["status"] == STATUS_DONE
-                                for c in store.load_manifest()["chapters"]))
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt"); write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+            issues = store.load_chapter(0).meta.get("review_issues", [])
+            flagged = [i for i in issues if i.get("type") == "missing"]
+            self.assertTrue(flagged)
+            self.assertTrue(all(i.get("fixed") is False for i in flagged))
+            self.assertTrue(all("chapter" in i for i in flagged))
 
 
 class TestLangNormalize(unittest.TestCase):

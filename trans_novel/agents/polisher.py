@@ -6,41 +6,25 @@
 
 from __future__ import annotations
 
-from ..config import Config
 from ..glossary.store import GlossaryTerm
-from ..llm.base import LLMClient
 from . import prompts
+from .base import Agent
 
 
-class Polisher:
-    def __init__(self, client: LLMClient, config: Config):
-        self.client = client
-        self.config = config
-        self.src = config.source_lang
-        self.tgt = config.target_lang
-
+class Polisher(Agent):
     def polish(self, targets: list[str], *, glossary_terms: list[GlossaryTerm] | None = None,
                style: str = "") -> list[str]:
         if not targets:
             return []
-        glossary_terms = glossary_terms or []
         n = len(targets)
         system = prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=n)
         user = prompts.render(
             "polisher_user", src=self.src, tgt=self.tgt,
-            glossary=prompts.render_glossary(glossary_terms),
+            glossary=prompts.render_glossary(glossary_terms or []),
             style=style or "（无）", n=n,
             numbered_target=prompts.numbered(targets),
         )
-        try:
-            data = self.client.complete_json(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                tier="strong",
-            )
-        except Exception:
-            return list(targets)
-        items = data.get("polished") if isinstance(data, dict) else data
+        items = self._ask_json(system, user, tier="strong", key="polished", default=None)
         if isinstance(items, list) and len(items) == n:
             return [str(x) for x in items]
-        return list(targets)  # 段数不符 → 保守保留原译
+        return list(targets)  # 失败/段数不符 → 保守保留原译

@@ -13,11 +13,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..config import Config
 from ..glossary.store import GlossaryStore, GlossaryTerm, TYPE_PERSON
-from ..llm.base import LLMClient
 from ..pipeline.runstore import RunStore
 from . import prompts
+from .base import Agent
 
 
 def _is_cjk(s: str) -> bool:
@@ -43,13 +42,7 @@ def _hamming1_variants(target: str, corpus: str) -> set[str]:
     return found
 
 
-class GlossaryAuditor:
-    def __init__(self, client: LLMClient, config: Config):
-        self.client = client
-        self.config = config
-        self.src = config.source_lang
-        self.tgt = config.target_lang
-
+class GlossaryAuditor(Agent):
     # ── 候选侦测 ────────────────────────────────────────────────────────────
     def _candidates(self, store: RunStore, glossary: GlossaryStore) -> dict[str, dict[str, Any]]:
         terms = glossary.all_terms()
@@ -98,16 +91,10 @@ class GlossaryAuditor:
             + '\n\n输出 JSON：{"unifications":[{"source":"...","canonical":"...","variants":["..."],"reason":"..."}]}'
         )
         system = prompts.render("glossary_audit_system", src=self.src, tgt=self.tgt)
-        try:
-            data = self.client.complete_json(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                tier="strong",
-            )
-        except Exception:
-            return []
-        uni = data.get("unifications", []) if isinstance(data, dict) else (data or [])
-        return [u for u in uni if isinstance(u, dict) and u.get("source") and u.get("canonical")]
+        uni = self._ask_json(system, user, tier="strong",
+                             key="unifications", default=[])
+        return [u for u in self.dict_items(uni)
+                if u.get("source") and u.get("canonical")]
 
     # ── 落地 ────────────────────────────────────────────────────────────────
     def audit(self, store: RunStore, glossary: GlossaryStore) -> list[dict[str, Any]]:

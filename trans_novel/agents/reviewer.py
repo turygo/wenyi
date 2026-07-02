@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..config import Config
-from ..llm.base import LLMClient
 from . import langprofile, prompts
+from .base import Agent
 
 
 def _backtrans_compare_system(src: str) -> str:
@@ -22,46 +21,25 @@ def _backtrans_compare_system(src: str) -> str:
     )
 
 
-class Reviewer:
-    def __init__(self, client: LLMClient, config: Config):
-        self.client = client
-        self.config = config
-        self.src = config.source_lang
-        self.tgt = config.target_lang
-
+class Reviewer(Agent):
     def review(self, sources: list[str], targets: list[str],
                glossary_terms=None) -> list[dict[str, Any]]:
         """返回问题列表：[{index,type,detail,suggestion}]。"""
         if not sources:
             return []
-        glossary_terms = glossary_terms or []
         system = prompts.render("reviewer_system", src=self.src, tgt=self.tgt)
         user = prompts.render(
             "reviewer_user", src=self.src, tgt=self.tgt,
-            glossary=prompts.render_glossary(glossary_terms),
+            glossary=prompts.render_glossary(glossary_terms or []),
             n=len(sources),
             pairs=prompts.numbered_pairs(sources, targets),
         )
-        try:
-            data = self.client.complete_json(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                tier="cheap",
-            )
-        except Exception:
-            return []
-        issues = data.get("issues", []) if isinstance(data, dict) else (data or [])
-        return [i for i in issues if isinstance(i, dict)]
+        return self.dict_items(
+            self._ask_json(system, user, tier="cheap", key="issues", default=[]))
 
 
-class BackTranslator:
+class BackTranslator(Agent):
     """回译抽检（廉价档）。两步：译文→日文，再与原文比对。"""
-
-    def __init__(self, client: LLMClient, config: Config):
-        self.client = client
-        self.config = config
-        self.src = config.source_lang
-        self.tgt = config.target_lang
 
     def backtranslate(self, targets: list[str]) -> list[str]:
         if not targets:
@@ -69,15 +47,8 @@ class BackTranslator:
         system = prompts.render("backtranslate_system", src=self.src, tgt=self.tgt)
         user = prompts.render("backtranslate_user", src=self.src, tgt=self.tgt,
                               n=len(targets), numbered_target=prompts.numbered(targets))
-        try:
-            data = self.client.complete_json(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                tier="cheap",
-            )
-        except Exception:
-            return []
-        items = data.get("backtranslations", []) if isinstance(data, dict) else (data or [])
+        items = self._ask_json(system, user, tier="cheap",
+                               key="backtranslations", default=[])
         return [str(x) for x in items] if isinstance(items, list) else []
 
     def check(self, sources: list[str], targets: list[str]) -> list[dict[str, Any]]:
@@ -88,13 +59,6 @@ class BackTranslator:
         pairs = "\n".join(
             f"[{i}] 原文：{s}\n    回译：{b}" for i, (s, b) in enumerate(zip(sources, back))
         )
-        try:
-            data = self.client.complete_json(
-                [{"role": "system", "content": _backtrans_compare_system(self.src)},
-                 {"role": "user", "content": pairs}],
-                tier="cheap",
-            )
-        except Exception:
-            return []
-        issues = data.get("issues", []) if isinstance(data, dict) else (data or [])
-        return [i for i in issues if isinstance(i, dict)]
+        return self.dict_items(
+            self._ask_json(_backtrans_compare_system(self.src), pairs,
+                           tier="cheap", key="issues", default=[]))

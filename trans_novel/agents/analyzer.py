@@ -8,28 +8,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..config import Config
 from ..glossary.store import GlossaryStore, GlossaryTerm, TYPE_PERSON
-from ..llm.base import LLMClient
 from . import prompts
+from .base import Agent
 
 
-class Analyzer:
-    def __init__(self, client: LLMClient, config: Config):
-        self.client = client
-        self.config = config
-        self.src = config.source_lang
-        self.tgt = config.target_lang
-
+class Analyzer(Agent):
     def analyze(self, sample_text: str) -> dict[str, Any]:
         system = prompts.render("analyzer_system", src=self.src, tgt=self.tgt)
         user = prompts.render("analyzer_user", src=self.src, tgt=self.tgt,
                               sample=sample_text)
-        data = self.client.complete_json(
-            [{"role": "system", "content": system},
-             {"role": "user", "content": user}],
-            tier="strong",
-        )
+        # 不传 default：分析失败照常抛出，由调用方决定（prepare 阶段失败应显式暴露）
+        data = self._ask_json(system, user, tier="strong")
         if not isinstance(data, dict):
             data = {}
         data.setdefault("genre", "")
