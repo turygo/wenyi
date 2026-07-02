@@ -149,15 +149,25 @@ class GlossaryAuditor(Agent):
         for c in m["chapters"]:
             ch = store.load_chapter(c["index"])
             dirty = False
-            for seg in ch.segments:
+            for idx, seg in enumerate(ch.segments):
                 if not seg.target:
                     continue
                 new = _apply(seg.target)
                 if new != seg.target:
+                    old = seg.target
                     seg.target = new
                     dirty = True
                     changed += 1
                     glossary.add_tm(seg.source, new, c["index"])
+                    store.log_event(
+                        "glossary_rewrite_applied",
+                        chapter=c["index"],
+                        index=idx,
+                        source=seg.source,
+                        before=old,
+                        after=new,
+                        replace_map=replace_map,
+                    )
             if dirty:
                 store.save_chapter(ch)
 
@@ -165,13 +175,29 @@ class GlossaryAuditor(Agent):
         man_dirty = False
         nt = _apply(m.get("title_translated"))
         if nt != m.get("title_translated"):
+            old_title = m.get("title_translated")
             m["title_translated"] = nt
             man_dirty = True
+            store.log_event(
+                "glossary_title_rewrite_applied",
+                title=True,
+                before=old_title,
+                after=nt,
+                replace_map=replace_map,
+            )
         for c in m["chapters"]:
             ct = _apply(c.get("title_translated"))
             if ct != c.get("title_translated"):
+                old_title = c.get("title_translated")
                 c["title_translated"] = ct
                 man_dirty = True
+                store.log_event(
+                    "glossary_title_rewrite_applied",
+                    chapter=c["index"],
+                    before=old_title,
+                    after=ct,
+                    replace_map=replace_map,
+                )
         if man_dirty:
             store.save_manifest(m)
         return changed

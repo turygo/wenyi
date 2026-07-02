@@ -95,20 +95,42 @@ class Orchestrator:
         run_dir = os.path.join(self.config.state_dir, slugify(doc.title))
         store = RunStore(run_dir)
         if store.exists():
+            store.log_event("run_resumed", input_path=input_path, run_dir=store.run_dir)
             return store  # 已有进度 → 直接续跑，不重置（语言在 run() 里按 manifest 应用）
 
         # 新建：auto 时用 AI 检测主要语言（失败回退启发式结果）
         if self.config.source_lang in ("auto", "", None):
             doc.source_lang = self._detect_language_ai(doc) or doc.source_lang
+            store.log_event("language_detected", source_lang=doc.source_lang)
         self._apply_language(doc.source_lang)
 
         store.init_from_document(doc)
+        store.log_event(
+            "run_initialized",
+            input_path=input_path,
+            run_dir=store.run_dir,
+            title=doc.title,
+            fmt=doc.fmt,
+            source_lang=doc.source_lang,
+            target_lang=doc.target_lang,
+            chapters=len(doc.chapters),
+            config={
+                "review": self.config.pipeline.review,
+                "autofix_severe": self.config.pipeline.autofix_severe,
+                "polish": self.config.pipeline.polish,
+                "backtranslate_sample": self.config.pipeline.backtranslate_sample,
+                "consistency_qa": self.config.pipeline.consistency_qa,
+                "book_understanding": self.config.pipeline.book_understanding,
+                "glossary_audit": self.config.glossary_audit,
+            },
+        )
         glossary = GlossaryStore(store.glossary_path)
         sample = self._sample_text(doc)
         analysis = self.analyzer.analyze(sample) if sample else {}
         if analysis:
             self.analyzer.seed_glossary(glossary, analysis)
         store.save_analysis(analysis)
+        store.log_event("analysis_saved", has_analysis=bool(analysis))
         glossary.close()
         store.save_context(RollingContext().to_dict())
         return store
@@ -174,6 +196,12 @@ class Orchestrator:
 
         total = self._count_segments(store, targets)
         done = 0
+        store.log_event(
+            "translate_run_started",
+            only_chapter=only_chapter,
+            chapters=targets,
+            total_segments=total,
+        )
         try:
             for ci in targets:
                 done = self._translate_chapter(
@@ -187,6 +215,7 @@ class Orchestrator:
             glossary.close()
         if progress and total:
             progress(total, total, "翻译完成")
+        store.log_event("translate_run_finished", total_segments=total)
         return store
 
     @staticmethod
@@ -204,6 +233,7 @@ class Orchestrator:
         关闭 book_understanding 时直接返回空串。
         """
         if not self.config.pipeline.book_understanding:
+            store.log_event("book_understanding_skipped", reason="disabled")
             return ""
         manifest = store.load_manifest()
         chapters = manifest.get("chapters", [])
@@ -215,6 +245,11 @@ class Orchestrator:
         todo = [(ci, "\n".join(s.source for s in ch.text_segments))
                 for ci, ch in loaded.items() if not ch.meta.get("source_digest")]
         if todo:
+            store.log_event(
+                "book_understanding_chapter_digest_started",
+                chapters=[ci for ci, _ in todo],
+                workers=max(1, self.config.pipeline.prescan_concurrency),
+            )
             workers = max(1, self.config.pipeline.prescan_concurrency)
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 futs = {ex.submit(self.synopsizer.digest_chapter, src): ci
@@ -223,6 +258,11 @@ class Orchestrator:
                     ci = futs[fut]
                     loaded[ci].meta["source_digest"] = fut.result()  # 失败时 _ask_text 已回退 ""
                     store.save_chapter(loaded[ci])
+                    store.log_event(
+                        "book_understanding_chapter_digest_saved",
+                        chapter=ci,
+                        digest=loaded[ci].meta["source_digest"],
+                    )
 
         # 按 manifest 章序组装（与并发完成顺序无关）
         digests = [loaded[c.get("index", i)].meta.get("source_digest", "") or ""
@@ -235,6 +275,7 @@ class Orchestrator:
                 digests, self.analyzer.style_brief(analysis))
             analysis["book_synopsis"] = synopsis
             store.save_analysis(analysis)
+            store.log_event("book_synopsis_saved", synopsis=synopsis)
         return synopsis
 
     # ── 书名 / 章节标题翻译（目录与输出文件名用）──────────────────────────────
@@ -249,6 +290,7 @@ class Orchestrator:
         chapters = m.get("chapters", [])
         if (m.get("title_translated")
                 and all(c.get("title_translated") for c in chapters)):
+            store.log_event("titles_skipped", reason="already_translated")
             return  # 已译，断点续跑不重复调用
 
         # 标题压成单行，避免内嵌换行破坏 numbered 对齐
@@ -272,12 +314,25 @@ class Orchestrator:
             return
         out = data.get("titles") if isinstance(data, dict) else data
         if not isinstance(out, list) or len(out) != len(titles):
+            store.log_event(
+                "titles_translation_rejected",
+                reason="count_mismatch",
+                expected=len(titles),
+                actual=len(out) if isinstance(out, list) else None,
+            )
             return
         out = [str(t).strip() for t in out]
         m["title_translated"] = out[0] or m.get("title")
         for c, t in zip(chapters, out[1:]):
             c["title_translated"] = t or c.get("title")
         store.save_manifest(m)
+        store.log_event(
+            "titles_translated",
+            titles=[
+                {"index": i - 1, "source": src, "target": tgt}
+                for i, (src, tgt) in enumerate(zip(titles, out))
+            ],
+        )
 
     # ── 单章 ──────────────────────────────────────────────────────────────
     def _translate_chapter(self, ci: int, store: RunStore,
@@ -289,6 +344,7 @@ class Orchestrator:
         text_segs = chapter.text_segments
         if not text_segs:
             store.set_chapter_status(ci, STATUS_DONE)
+            store.log_event("chapter_skipped", chapter=ci, reason="empty")
             return done
         chapter_digest = chapter.meta.get("source_digest", "")
 
@@ -315,6 +371,17 @@ class Orchestrator:
             if all(s.target and s.target.strip() for s in b):
                 # 该批上次已在原位、原上下文中译完 → 复用，重建滚动上下文后跳过
                 context.add_targets([s.target for s in b])
+                store.log_event(
+                    "batch_skipped",
+                    chapter=ci,
+                    start_index=seg_base,
+                    count=len(b),
+                    reason="already_translated",
+                    segments=[
+                        {"index": seg_base + i, "source": s.source, "target": s.target}
+                        for i, s in enumerate(b)
+                    ],
+                )
                 done += len(b)
                 seg_base += len(b)
                 if progress:
@@ -327,6 +394,20 @@ class Orchestrator:
                                       book_synopsis, chapter_digest)
             for s, t in zip(b, res.targets):
                 s.target = t
+            store.log_event(
+                "batch_translated",
+                chapter=ci,
+                start_index=seg_base,
+                count=len(b),
+                polished=self.config.pipeline.polish,
+                punctuation_normalized=self.config.punctuation_normalize,
+                issues=res.issues,
+                backtranslate_sample_count=len(res.bt_samples),
+                segments=[
+                    {"index": seg_base + i, "source": s.source, "target": t}
+                    for i, (s, t) in enumerate(zip(b, res.targets))
+                ],
+            )
             context.add_targets(res.targets)
             for it in res.issues:
                 it["chapter"] = ci
@@ -346,9 +427,16 @@ class Orchestrator:
         if self.config.pipeline.review:
             review_issues = [i for i in review_issues if i.get("stage") == "length"]
             new_issues = self._review_chapter(text_segs, term_snapshot)
+            store.log_event(
+                "chapter_reviewed",
+                chapter=ci,
+                issue_count=len(new_issues),
+                issues=new_issues,
+            )
             if self.config.pipeline.autofix_severe:
                 self._autofix_severe(text_segs, new_issues, term_snapshot, style,
-                                     book_synopsis, chapter_digest)
+                                     book_synopsis, chapter_digest,
+                                     store=store, chapter_index=ci)
             for it in new_issues:
                 it["chapter"] = ci
                 it.setdefault("fixed", False)
@@ -363,11 +451,19 @@ class Orchestrator:
             for it in self.backtrans.check(srcs, tgts):
                 it["chapter"] = ci
                 bt_issues.append(it)
+            store.log_event(
+                "chapter_backtranslation_checked",
+                chapter=ci,
+                sample_count=len(bt_samples),
+                issue_count=len(bt_issues),
+                issues=bt_issues,
+            )
 
         # 术语抽取入库
         src_text = "\n".join(s.source for s in text_segs)
         tgt_text = "\n".join(s.target or "" for s in text_segs)
         self.extractor.extract_and_store(glossary, src_text, tgt_text, ci)
+        store.log_event("chapter_glossary_extracted", chapter=ci)
 
         # 翻译记忆库（仅作记录/参考，不用于跨位置复用译文）
         for s in text_segs:
@@ -378,6 +474,14 @@ class Orchestrator:
         chapter.meta["backtranslation_issues"] = bt_issues
         store.save_chapter(chapter)
         store.set_chapter_status(ci, STATUS_DONE)
+        store.log_event(
+            "chapter_done",
+            chapter=ci,
+            title=chapter.title,
+            segment_count=len(text_segs),
+            review_issue_count=len(review_issues),
+            backtranslation_issue_count=len(bt_issues),
+        )
         return done
 
     _LEN_DETAIL = {
@@ -427,7 +531,9 @@ class Orchestrator:
         return chunks
 
     def _autofix_severe(self, text_segs, issues, terms, style,
-                        book_synopsis: str = "", chapter_digest: str = "") -> None:
+                        book_synopsis: str = "", chapter_digest: str = "", *,
+                        store: RunStore | None = None,
+                        chapter_index: int | None = None) -> None:
         """对审校严重项（漏译/误译）带审校意见定向重译，每段最多一次。
 
         采纳条件 = 重译非空且过长度校验：采纳则标点规范化后更新 seg.target 并标 fixed=True；
@@ -453,9 +559,30 @@ class Orchestrator:
             if new_t and not checks.length_flags([seg.source], [new_t]):
                 if self.config.punctuation_normalize:
                     new_t = normalize_zh(new_t)
+                old_t = seg.target
                 seg.target = new_t
                 for it in seg_issues:
                     it["fixed"] = True
+                if store is not None:
+                    store.log_event(
+                        "autofix_applied",
+                        chapter=chapter_index,
+                        index=idx,
+                        source=seg.source,
+                        before=old_t,
+                        after=new_t,
+                        issues=seg_issues,
+                    )
+            elif store is not None:
+                store.log_event(
+                    "autofix_rejected",
+                    chapter=chapter_index,
+                    index=idx,
+                    source=seg.source,
+                    before=seg.target,
+                    proposed=new_t,
+                    issues=seg_issues,
+                )
 
     def _process_batch(self, batch, terms, ctx_text: str, style: str,
                        book_synopsis: str = "", chapter_digest: str = "") -> _BatchResult:
@@ -509,6 +636,7 @@ class Orchestrator:
         from ..assemble.report import build_report
 
         steps = set(steps)
+        run_steps_input = sorted(steps)
 
         if "translate" in steps:
             store = self.run(input_path, progress=progress)
@@ -516,6 +644,7 @@ class Orchestrator:
             store = self.prepare(input_path)
             m = store.load_manifest()
             self._apply_language(m.get("source_lang") or self.config.source_lang)
+        store.log_event("run_steps_started", steps=run_steps_input, input_path=input_path)
 
         glossary = GlossaryStore(store.glossary_path)
         audit_applied: list[dict] = []
@@ -524,22 +653,41 @@ class Orchestrator:
         try:
             if "audit" in steps:
                 audit_applied = GlossaryAuditor(self.client, self.config).audit(store, glossary)
+                store.log_event(
+                    "glossary_audit_finished",
+                    applied_count=len(audit_applied),
+                    applied=audit_applied,
+                )
 
             if "qa" in steps:
                 qa_issues = ConsistencyChecker(self.client, self.config).check(store, glossary)
+                store.log_event(
+                    "consistency_qa_finished",
+                    issue_count=len(qa_issues),
+                    issues=qa_issues,
+                )
 
             if "report" in steps:
                 report = build_report(store, glossary)
                 report["consistency_issues"] = qa_issues
                 report["glossary_unifications"] = audit_applied
                 store.save_report(report)
+                store.log_event("report_saved", path=store.report_path)
         finally:
             glossary.close()
 
         out = None
         if "assemble" in steps:
             out = assemble(store, input_path, out_path=out_path, out_format=out_format)
+            store.log_event("assembled", output=out, out_format=out_format)
 
+        store.log_event(
+            "run_steps_finished",
+            steps=run_steps_input,
+            output=out,
+            audit_count=len(audit_applied),
+            qa_issue_count=len(qa_issues),
+        )
         return {"store": store, "output": out, "report": report,
                 "qa_issues": qa_issues, "audit": audit_applied}
 

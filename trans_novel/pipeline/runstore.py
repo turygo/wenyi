@@ -7,6 +7,7 @@
   analysis.json     全局分析结果
   glossary.db       术语库 + 翻译记忆库
   report.json       QA 报告
+  events.jsonl      追加式行为 / 改写 / 翻译结果日志
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime
+from typing import Any
 
 from ..ingest.models import Chapter, Document
 
@@ -52,6 +55,10 @@ class RunStore:
     @property
     def report_path(self) -> str:
         return os.path.join(self.run_dir, "report.json")
+
+    @property
+    def event_log_path(self) -> str:
+        return os.path.join(self.run_dir, "events.jsonl")
 
     def chapter_path(self, ci: int) -> str:
         return os.path.join(self.chapters_dir, f"ch{ci}.json")
@@ -132,3 +139,14 @@ class RunStore:
 
     def save_report(self, data: dict) -> None:
         self._write_json(self.report_path, data)
+
+    # ── 追加式事件日志 ────────────────────────────────────────────────────
+    def log_event(self, event: str, **data: Any) -> None:
+        """追加一条 JSONL 事件，用于翻译行为、改写前后和产物对账。"""
+        row = {
+            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "event": event,
+            **data,
+        }
+        with open(self.event_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")

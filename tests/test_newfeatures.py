@@ -123,6 +123,17 @@ class TestRunAll(unittest.TestCase):
             # 报告含一致性与统一字段
             self.assertIn("consistency_issues", result["report"])
             self.assertIn("glossary_unifications", result["report"])
+            with open(result["store"].event_log_path, "r", encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            event_names = [e["event"] for e in events]
+            self.assertIn("run_initialized", event_names)
+            self.assertIn("batch_translated", event_names)
+            self.assertIn("report_saved", event_names)
+            self.assertIn("assembled", event_names)
+            translated = next(e for e in events if e["event"] == "batch_translated")
+            self.assertTrue(translated["segments"])
+            self.assertIn("source", translated["segments"][0])
+            self.assertIn("target", translated["segments"][0])
 
 
 if __name__ == "__main__":
