@@ -168,7 +168,8 @@ def _assemble_epub(store: RunStore, source_path: str, out_path: str) -> str:
         t = _ch_title(c)
         if base and t:
             title_by_base[base] = t
-    meta = m.get("meta") if isinstance(m.get("meta"), dict) else {}
+    raw_meta = m.get("meta")
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
     raw_toc_entries = meta.get("toc_entries", [])
     toc_entries = raw_toc_entries if isinstance(raw_toc_entries, list) else []
     for entry in toc_entries:

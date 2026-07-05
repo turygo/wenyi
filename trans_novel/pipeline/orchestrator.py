@@ -292,7 +292,8 @@ class Orchestrator:
         def _flat(s: object) -> str:
             return " ".join(str(s or "").split())
 
-        meta = m.get("meta") if isinstance(m.get("meta"), dict) else {}
+        raw_meta = m.get("meta")
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
         chapter_hrefs = {c.get("href") for c in chapters if c.get("href")}
         raw_toc_entries = meta.get("toc_entries", [])
         toc_entry_items = raw_toc_entries if isinstance(raw_toc_entries, list) else []
