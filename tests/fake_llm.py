@@ -33,7 +33,9 @@ def routing_handler(messages, tier, json_mode):
         return json.dumps({"translations": [f"译{i}" for i in range(n)]}, ensure_ascii=False)
 
     if "中文润色编辑" in system:
-        n = _count_numbered(user)
+        # prompt 含【源文对照】+【待润色中文译文】两个编号块；只按待润色块计数。
+        target_block = user.split("【待润色中文译文】", 1)[-1]
+        n = _count_numbered(target_block)
         return json.dumps({"polished": [f"润{i}" for i in range(n)]}, ensure_ascii=False)
 
     if "译文审校" in system:

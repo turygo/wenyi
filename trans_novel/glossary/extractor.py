@@ -2,13 +2,16 @@
 
 每翻完一章，从"原文 + 译文"里抽取应进表的专有名词，
 依据实际译法入库；冲突裁决由 GlossaryStore.upsert_term 完成。
+
+注入模型的 existing 术语表按本次原文命中裁剪（未命中的历史词条不随全表增长白烧
+token），遗漏的重复提案交由 upsert_term 的幂等裁决兜底。
 """
 
 from __future__ import annotations
 
 from ..agents import prompts
 from ..agents.base import Agent
-from .store import GlossaryStore, GlossaryTerm
+from .store import TYPE_PERSON, GlossaryStore, GlossaryTerm
 
 
 class GlossaryExtractor(Agent):
@@ -37,13 +40,20 @@ class GlossaryExtractor(Agent):
             ))
         return terms
 
-    def extract_and_store(self, store: GlossaryStore, source_text: str,
-                          target_text: str, chapter: int) -> dict[str, int]:
-        existing = store.all_terms()
-        terms = self.extract(source_text, target_text, existing)
+    def store_terms(self, store: GlossaryStore, terms: list[GlossaryTerm],
+                     chapter: int) -> dict[str, int]:
         summary = {"inserted": 0, "updated": 0, "conflict": 0, "unchanged": 0}
         for t in terms:
             t.first_chapter = chapter
             result = store.upsert_term(t, chapter=chapter)
             summary[result] = summary.get(result, 0) + 1
         return summary
+
+    def extract_and_store(self, store: GlossaryStore, source_text: str,
+                          target_text: str, chapter: int) -> dict[str, int]:
+        existing = store.all_terms()
+        hit = {t.source for t in GlossaryStore.terms_in(existing, source_text)}
+        existing = [t for t in existing
+                    if t.source in hit or (t.type == TYPE_PERSON and t.locked)]
+        terms = self.extract(source_text, target_text, existing)
+        return self.store_terms(store, terms, chapter)

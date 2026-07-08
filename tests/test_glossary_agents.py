@@ -9,7 +9,7 @@ import unittest
 
 from trans_novel.config import Config
 from trans_novel.llm.base import FakeClient
-from trans_novel.glossary.store import GlossaryStore
+from trans_novel.glossary.store import GlossaryStore, GlossaryTerm, TYPE_PERSON
 from trans_novel.glossary.extractor import GlossaryExtractor
 from trans_novel.agents.analyzer import Analyzer
 from trans_novel.pipeline.context import RollingContext
@@ -66,8 +66,43 @@ class TestExtractor(unittest.TestCase):
             self.assertEqual(horikita.gender, "女")
             self.assertEqual(horikita.aliases, ["堀北さん"])
             self.assertEqual(horikita.first_chapter, 1)
-            # "未知" 应被规整为空
             self.assertEqual(store.get_term("屋上").gender, "")
+            store.close()
+
+    def test_store_terms_independent_db_write(self):
+        """store_terms 应只做入库，不触发任何 LLM 调用。"""
+        client = FakeClient()
+        ext = GlossaryExtractor(client, _cfg())
+        with tempfile.TemporaryDirectory() as d:
+            store = GlossaryStore(os.path.join(d, "g.db"))
+            terms = [GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON, gender="女")]
+            summary = ext.store_terms(store, terms, chapter=3)
+            self.assertEqual(summary, {"inserted": 1, "updated": 0, "conflict": 0, "unchanged": 0})
+            self.assertEqual(store.get_term("堀北").first_chapter, 3)
+            self.assertEqual(client.calls, [])
+            store.close()
+
+    def test_extract_and_store_trims_existing_for_prompt(self):
+        """existing 只保留本次原文命中的词条 + 锁定人物，其余不进 prompt。"""
+        captured = {}
+
+        def handler(messages, tier, json_mode):
+            captured["user"] = messages[1]["content"]
+            return json.dumps({"terms": []}, ensure_ascii=False)
+
+        client = FakeClient(handler=handler)
+        ext = GlossaryExtractor(client, _cfg())
+        with tempfile.TemporaryDirectory() as d:
+            store = GlossaryStore(os.path.join(d, "g.db"))
+            store.upsert_term(GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON), chapter=1)
+            store.upsert_term(
+                GlossaryTerm(source="龙园", target="龙园", type=TYPE_PERSON, locked=True), chapter=1)
+            store.upsert_term(GlossaryTerm(source="屋上", target="天台", type="地名"), chapter=1)
+            ext.extract_and_store(store, "堀北在教室", "堀北在教室的翻译", chapter=2)
+            prompt = captured["user"]
+            self.assertIn("堀北", prompt)  # 本章原文命中
+            self.assertIn("龙园", prompt)  # 未命中但锁定人物，兜底保留
+            self.assertNotIn("屋上", prompt)  # 未命中且非锁定人物，裁掉
             store.close()
 
 

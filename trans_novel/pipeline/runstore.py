@@ -122,6 +122,26 @@ class RunStore:
         manifest = self.load_manifest()
         return [c["index"] for c in manifest["chapters"] if c["status"] != STATUS_DONE]
 
+    def set_review_pending(self, ci: int, pending: bool) -> None:
+        """标记/清除某章的异步审校待办（写在 manifest，随 set_chapter_status 保留）。
+
+        异步审校（review 且非 autofix_severe）在章标 done 前打标；结果写回后清标。
+        崩溃在两者之间时标记残留在磁盘，续跑据此补跑，异步审校结果不静默丢失。
+        """
+        manifest = self.load_manifest()
+        for c in manifest["chapters"]:
+            if c["index"] == ci:
+                if pending:
+                    c["review_pending"] = True
+                else:
+                    c.pop("review_pending", None)
+                break
+        self.save_manifest(manifest)
+
+    def review_pending_chapters(self) -> list[int]:
+        manifest = self.load_manifest()
+        return [c["index"] for c in manifest["chapters"] if c.get("review_pending")]
+
     # ── 章 ────────────────────────────────────────────────────────────────
     def save_chapter(self, chapter: Chapter) -> None:
         self._write_json(self.chapter_path(chapter.index), chapter.to_dict())

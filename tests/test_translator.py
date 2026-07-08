@@ -8,6 +8,7 @@ import unittest
 
 from trans_novel.config import Config
 from trans_novel.llm.base import FakeClient
+from trans_novel.agents import prompts
 from trans_novel.agents.translator import Translator
 from trans_novel.pipeline.checks import count_aligned, length_flags
 
@@ -55,6 +56,102 @@ class TestTranslatorAlignment(unittest.TestCase):
         single_calls = [c for c in client.calls
                         if _count_segments(c["messages"][-1]["content"]) == 1]
         self.assertGreaterEqual(len(single_calls), 3)
+
+
+class TestPromptBlockOrder(unittest.TestCase):
+    """翻译提示词块序契约：恒定块（风格→全书概览→本章梗概）在前，
+    易变块（术语表→前文译文→待译段）在后。顺序被无意打破会破坏
+    provider 侧前缀缓存命中（恒定前缀必须逐字节一致且位于开头）。"""
+
+    # 按契约顺序排列的块标题（前缀匹配：fix 模板的前文块标题无「（最近）」后缀）
+    BLOCKS = ["【角色信息 / 风格指南】", "【全书概览】", "【本章梗概】",
+              "【专有名词对照表】", "【前文译文"]
+
+    def _assert_block_order(self, rendered: str):
+        for b in self.BLOCKS:
+            self.assertIn(b, rendered, f"缺少块标题：{b}")
+        for a, b in zip(self.BLOCKS, self.BLOCKS[1:]):
+            self.assertLess(rendered.index(a), rendered.index(b),
+                            f"块序逆转：{a} 必须出现在 {b} 之前")
+
+    def test_translator_user_block_order(self):
+        out = prompts.render(
+            "translator_user", src="ja", tgt="zh",
+            style="克制冷峻", book_synopsis="主线与人物关系。",
+            chapter_digest="人物登场，情节推进。",
+            glossary="- 綾小路 → 绫小路", context="上一批译文。",
+            n=1, n_minus_1=0, numbered_source="[0] 原文",
+        )
+        self._assert_block_order(out)
+
+    def test_translator_fix_user_block_order(self):
+        out = prompts.render(
+            "translator_fix_user", src="ja", tgt="zh",
+            style="克制冷峻", book_synopsis="主线与人物关系。",
+            chapter_digest="人物登场，情节推进。",
+            glossary="- 綾小路 → 绫小路",
+            context_before="前文译文。", context_after="后文译文。",
+            feedback="漏了一句", source="原文",
+        )
+        self._assert_block_order(out)
+
+    # 第一个易变块标题：恒定前缀 = 它之前的全部内容
+    VOLATILE_HDR = "【专有名词对照表】"
+    FIRST_HDR = "【角色信息 / 风格指南】"
+
+    def test_translator_user_constant_prefix_byte_identical(self):
+        # 前缀缓存契约：仅易变输入（术语表/前文/待译段）变化时，恒定前缀
+        # （风格→全书概览→本章梗概）必须逐字节一致且位于最开头——这才是
+        # provider 前缀缓存命中的前提。相对块序正确并不保证前缀逐字节稳定：
+        # 若把任一易变块挪到恒定块之前，两次渲染的前缀就会因易变输入不同而不等。
+        common = dict(src="ja", tgt="zh", style="克制冷峻",
+                      book_synopsis="主线与人物关系。",
+                      chapter_digest="人物登场，情节推进。")
+        a = prompts.render("translator_user", **common,
+                           glossary="- 綾小路 → 绫小路", context="上一批译文。",
+                           n=1, n_minus_1=0, numbered_source="[0] 原文A")
+        b = prompts.render("translator_user", **common,
+                           glossary="- 堀北 → 堀北\n- 一之瀬 → 一之濑",
+                           context="完全不同的前文批次。",
+                           n=2, n_minus_1=1, numbered_source="[0] 原文B\n[1] 原文C")
+
+        pa = a[: a.index(self.VOLATILE_HDR)]
+        pb = b[: b.index(self.VOLATILE_HDR)]
+        # 载荷断言：易变输入全变、恒定输入不变时，前缀仍逐字节一致
+        self.assertEqual(pa, pb, "易变输入变化时恒定前缀必须逐字节一致（前缀缓存命中）")
+
+        # 前缀确实携带三段恒定内容
+        for content in ("克制冷峻", "主线与人物关系。", "人物登场，情节推进。"):
+            self.assertIn(content, pa, f"恒定前缀应含：{content}")
+        # 第一块标题就在最开头，且领先所有易变内容
+        self.assertEqual(a.index(self.FIRST_HDR), 0, "第一块标题必须位于提示词最开头")
+        self.assertLess(a.index(self.FIRST_HDR), a.index(self.VOLATILE_HDR),
+                        "恒定首块必须领先所有易变块")
+
+    def test_translator_fix_user_constant_prefix_byte_identical(self):
+        # fix 模板同理：恒定块（风格/概览/梗概）在前，易变块（术语表/前后文/
+        # 审校意见/待重译段）在后；仅易变输入变化时恒定前缀必须逐字节一致。
+        common = dict(src="ja", tgt="zh", style="克制冷峻",
+                      book_synopsis="主线与人物关系。",
+                      chapter_digest="人物登场，情节推进。")
+        a = prompts.render("translator_fix_user", **common,
+                           glossary="- 綾小路 → 绫小路",
+                           context_before="前文A。", context_after="后文A。",
+                           feedback="漏了一句", source="原文A")
+        b = prompts.render("translator_fix_user", **common,
+                           glossary="- 堀北 → 堀北",
+                           context_before="前文B完全不同。", context_after="后文B完全不同。",
+                           feedback="人称错了", source="原文B")
+
+        pa = a[: a.index(self.VOLATILE_HDR)]
+        pb = b[: b.index(self.VOLATILE_HDR)]
+        self.assertEqual(pa, pb, "fix 模板同样要求恒定前缀逐字节一致")
+
+        for content in ("克制冷峻", "主线与人物关系。", "人物登场，情节推进。"):
+            self.assertIn(content, pa, f"恒定前缀应含：{content}")
+        self.assertEqual(a.index(self.FIRST_HDR), 0, "第一块标题必须位于提示词最开头")
+        self.assertLess(a.index(self.FIRST_HDR), a.index(self.VOLATILE_HDR),
+                        "恒定首块必须领先所有易变块")
 
 
 class TestChecks(unittest.TestCase):

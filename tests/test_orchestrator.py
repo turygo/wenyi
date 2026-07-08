@@ -12,6 +12,7 @@ from trans_novel.config import Config
 from trans_novel.llm.base import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator, _normalize_lang
 from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING
+from trans_novel.postprocess.punct import normalize_zh
 from tests.sample_data import write_sample_txt
 from tests.fake_llm import routing_handler
 
@@ -538,6 +539,272 @@ class TestLangNormalize(unittest.TestCase):
         self.assertEqual(_normalize_lang("fr"), "fr")
         self.assertEqual(_normalize_lang("unknown"), "")
         self.assertEqual(_normalize_lang(""), "")
+
+
+class TestPolishAsync(unittest.TestCase):
+    def test_batch_translated_then_batch_polished_events(self):
+        """polish 开启：batch_translated 先发（polished=False，segments 为 raw 译文），
+        章末排干润色后再发 batch_polished（segments 为最终润色文本），pending_polish 清空。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(
+                txt, only_chapter=0)
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            translated = [e for e in events
+                         if e["event"] == "batch_translated" and e["chapter"] == 0]
+            polished = [e for e in events
+                       if e["event"] == "batch_polished" and e["chapter"] == 0]
+            self.assertTrue(translated)
+            self.assertTrue(polished)
+            # batch_translated 触发时尚未润色：polished=False，segments 记 raw 译文
+            for e in translated:
+                self.assertFalse(e["polished"])
+                for seg in e["segments"]:
+                    self.assertTrue(seg["target"].startswith("译"))
+            # 章末排干后 batch_polished 携带最终润色文本
+            for e in polished:
+                for seg in e["segments"]:
+                    self.assertTrue(seg["target"].startswith("润"))
+            # run() 返回时排干已完成：正文与 meta 均为最终态，无残留 pending 标记
+            ch = store.load_chapter(0)
+            self.assertFalse(ch.meta.get("pending_polish"))
+            self.assertTrue(all(s.target.startswith("润") for s in ch.text_segments))
+
+
+class TestPendingPolishResume(unittest.TestCase):
+    def test_resume_repolishes_leftover_pending_batches(self):
+        """续跑：章末未排干完的 pending_polish 批次，续跑时重新提交润色并写回，
+        不静默丢失（不变量 b）；该批本身因已有译文，不会被重翻。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(
+                txt, only_chapter=0)
+            ch = store.load_chapter(0)
+            self.assertTrue(all(s.target and s.target.startswith("润") for s in ch.text_segments))
+            self.assertFalse(ch.meta.get("pending_polish"))
+
+            # 模拟"批已落盘但章末排干润色前中断"：把最后一段的译文改回未润色的 raw
+            # （"译{i}"），补回 pending_polish 标记，章状态改回 pending。
+            last_idx = len(ch.text_segments) - 1
+            ch.segments[last_idx].target = f"译{last_idx}"
+            ch.meta["pending_polish"] = [{"start": last_idx, "count": 1}]
+            store.save_chapter(ch)
+            store.set_chapter_status(0, STATUS_PENDING)
+
+            client2 = FakeClient(handler=routing_handler)
+            Orchestrator(cfg, client=client2).run(txt, only_chapter=0)
+            translate_calls = [c for c in client2.calls
+                               if "文学翻译" in c["messages"][0]["content"]]
+            self.assertEqual(len(translate_calls), 0)   # 已有译文，批跳过，未重翻
+
+            ch2 = store.load_chapter(0)
+            # routing_handler 的润色输出按"本次调用内"的局部下标编号：该批只含 1 段
+            # （原始的第 last_idx 段），单独重新提交润色后局部下标为 0 → "润0"。
+            self.assertEqual(ch2.text_segments[last_idx].target, "润0")
+            self.assertFalse(ch2.meta.get("pending_polish"))
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            self.assertTrue(any(
+                e["event"] == "batch_polished" and e["chapter"] == 0
+                and e["start_index"] == last_idx for e in events))
+
+
+class TestReviewAsync(unittest.TestCase):
+    """review=true 且 autofix_severe=false：章末审校提交共享线程池异步跑，
+    run() 返回前必须排干——issues 合并写入 chapter.meta["review_issues"]
+    并发 chapter_reviewed 事件；review worker 出错不得中断 run。"""
+
+    @staticmethod
+    def _issue_handler(messages, tier, json_mode):
+        # 无共享可变状态：每次调用构造新 dict，可被线程池并发调用
+        if "译文审校" in messages[0]["content"]:
+            return json.dumps({"issues": [
+                {"index": 0, "type": "terminology", "detail": "术语不一致",
+                 "suggestion": "改用对照表"}
+            ]}, ensure_ascii=False)
+        return routing_handler(messages, tier, json_mode)
+
+    def test_async_review_issues_persisted_before_run_returns(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.autofix_severe = False
+
+            store = Orchestrator(
+                cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
+
+            m = store.load_manifest()
+            self.assertTrue(all(c["status"] == STATUS_DONE for c in m["chapters"]))
+            for ci in range(len(m["chapters"])):
+                ch = store.load_chapter(ci)
+                found = [i for i in ch.meta.get("review_issues", [])
+                         if i.get("type") == "terminology"]
+                self.assertTrue(found, f"第 {ci} 章异步审校结果未写回 meta")
+                for it in found:
+                    self.assertEqual(it.get("chapter"), ci)
+                    self.assertEqual(it.get("stage"), "review")
+                    self.assertIs(it.get("fixed"), False)
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            reviewed = {e["chapter"] for e in events
+                        if e["event"] == "chapter_reviewed"}
+            self.assertEqual(reviewed, set(range(len(m["chapters"]))),
+                             "每章都应发 chapter_reviewed 事件")
+
+    def test_review_worker_failure_does_not_break_run(self):
+        # review 未来（_review_chapter）本身抛异常 → 触发 _drain_ready_reviews 的
+        # except 分支（记 chapter_review_failed 后 continue，不中断 run）。
+        # 注意：不能靠 handler 对 '译文审校' 抛异常来验证——Reviewer.review 内部
+        # _ask_json(..., default=[]) 会吞掉 LLM 异常返回 []，future 正常完成、照常
+        # 发 chapter_reviewed，except 分支永不执行（旧版删掉错误处理测试仍会通过）。
+        # 故直接以实例属性遮蔽绑定方法 _review_chapter，让提交到线程池的 future 真抛。
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.autofix_severe = False  # 异步审校路径
+
+            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+
+            def _boom(*_a, **_k):
+                raise RuntimeError("审校崩")
+            orch._review_chapter = _boom  # 遮蔽类方法：future 执行即抛
+
+            store = orch.run(txt)
+
+            m = store.load_manifest()
+            chapters = set(range(len(m["chapters"])))
+
+            # (a) 审校 future 全崩，run 仍走完，每章保持 DONE（未被异常中断）
+            self.assertTrue(all(c["status"] == STATUS_DONE for c in m["chapters"]),
+                            "审校 worker 抛异常不得阻断整章完成")
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            failed = {e["chapter"] for e in events
+                      if e["event"] == "chapter_review_failed"}
+            reviewed = {e["chapter"] for e in events
+                        if e["event"] == "chapter_reviewed"}
+
+            # (b) 载荷断言：每个审校崩溃的章都记了 chapter_review_failed——这是唯一能
+            # 证明 except→chapter_review_failed 分支真的执行过的证据。若删掉该错误处理
+            # （让异常穿透），异常会在机会性/收尾 drain 里抛出，run() 直接崩、拿不到
+            # store，本断言必失败。
+            self.assertEqual(failed, chapters,
+                             "每个审校崩溃的章都必须记 chapter_review_failed")
+            # (c) 崩溃章不得发 chapter_reviewed，且 review_issues 未被写回（保持空）
+            self.assertEqual(reviewed, set(),
+                             "审校失败的章不得发 chapter_reviewed")
+            for ci in chapters:
+                self.assertEqual(
+                    store.load_chapter(ci).meta.get("review_issues", []), [],
+                    f"第 {ci} 章审校失败，review_issues 不得被写入")
+
+    def test_crash_resume_reruns_pending_review(self):
+        # review 断点续跑不变量（异步审校版）：章已标 DONE 但异步审校结果还没写回
+        # 就宕机时，靠 manifest 里的 review_pending 持久标记 + run() 开头的
+        # _resume_pending_reviews 补跑，审校结果不静默丢失。没有标记或补跑逻辑，
+        # 崩溃后该章审校结果永久缺失，本测试必失败。
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.autofix_severe = False
+
+            # (1) 正常跑一遍：审校结果写回、标记清空（前置条件）
+            store = Orchestrator(
+                cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
+            self.assertEqual(store.review_pending_chapters(), [],
+                             "正常收尾后不应残留任何 review_pending 标记")
+
+            # (2) 模拟崩溃窗口：章 0 已 DONE，但标记残留且审校结果被抹掉
+            store.set_review_pending(0, True)
+            ch = store.load_chapter(0)
+            ch.meta["review_issues"] = []
+            store.save_chapter(ch)
+            self.assertIn(0, store.review_pending_chapters(),
+                          "崩溃模拟：章 0 应带 review_pending 标记")
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events_before = sum(1 for line in f if line.strip())
+
+            # (3) 续跑：所有章已 DONE → targets 为空，补跑只能来自 _resume_pending_reviews
+            client2 = FakeClient(handler=self._issue_handler)
+            Orchestrator(cfg, client=client2).run(txt)
+
+            # (4a) 载荷断言：章 0 审校结果被重新写回（术语项，字段完整）
+            issues = store.load_chapter(0).meta.get("review_issues", [])
+            found = [i for i in issues if i.get("type") == "terminology"]
+            self.assertTrue(found, "续跑必须重跑章 0 审校并写回 review_issues")
+            for it in found:
+                self.assertEqual(it.get("chapter"), 0)
+                self.assertEqual(it.get("stage"), "review")
+                self.assertIs(it.get("fixed"), False)
+
+            # (4b) 补跑成功后标记被清空
+            self.assertEqual(store.review_pending_chapters(), [],
+                             "续跑写回后 review_pending 标记必须清空")
+
+            # (4c) 第二次 run 的事件里有章 0 的 chapter_reviewed
+            with open(store.event_log_path, encoding="utf-8") as f:
+                all_events = [json.loads(line) for line in f if line.strip()]
+            second_run = all_events[events_before:]
+            reviewed = {e["chapter"] for e in second_run
+                        if e["event"] == "chapter_reviewed"}
+            self.assertIn(0, reviewed, "续跑应为章 0 补发 chapter_reviewed 事件")
+
+            # (4d) 续跑只补审校，绝不重译（无 '文学翻译' 调用）
+            translate_calls = [c for c in client2.calls
+                               if "文学翻译" in c["messages"][0]["content"]]
+            self.assertEqual(len(translate_calls), 0, "续跑只补审校，绝不重译")
+
+
+class TestPolishFailureFallback(unittest.TestCase):
+    def test_polish_failure_falls_back_to_raw_translation(self):
+        """润色调用失败（handler 抛异常）：该批最终 target 回退为未润色译文
+        （经标点规范化），run() 正常完成，无 pending_polish 残留。"""
+        def handler(messages, tier, json_mode):
+            if "中文润色编辑" in messages[0]["content"]:
+                raise RuntimeError("润色模型宕机")
+            return routing_handler(messages, tier, json_mode)
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(
+                txt, only_chapter=0)
+
+            m = store.load_manifest()
+            self.assertEqual(m["chapters"][0]["status"], STATUS_DONE,
+                             "润色失败不得阻断整章完成")
+            ch = store.load_chapter(0)
+            # 单批：routing_handler 译文按批内下标编号 → 段 i 的 raw 译文为 "译{i}"
+            expected = [normalize_zh(f"译{i}") for i in range(len(ch.text_segments))]
+            self.assertEqual([s.target for s in ch.text_segments], expected)
+            self.assertFalse(ch.meta.get("pending_polish"),
+                             "润色失败的批次也必须清掉 pending_polish 标记")
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ class TestPolisher(unittest.TestCase):
         client = FakeClient(handler=lambda m, t, j: json.dumps(
             {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False))
         p = Polisher(client, _cfg())
-        out = p.polish(["甲", "乙"])
+        out = p.polish(["甲", "乙"], ["a", "b"])
         self.assertEqual(out, ["润色甲", "润色乙"])
         self.assertEqual(client.calls[-1]["tier"], "strong")
 
@@ -45,8 +45,30 @@ class TestPolisher(unittest.TestCase):
         client = FakeClient(handler=lambda m, t, j: json.dumps(
             {"polished": ["只有一段"]}, ensure_ascii=False))
         p = Polisher(client, _cfg())
-        out = p.polish(["甲", "乙"])
+        out = p.polish(["甲", "乙"], ["a", "b"])
         self.assertEqual(out, ["甲", "乙"])  # 段数不符 → 保守保留原译
+
+    def test_polish_prompt_includes_source_for_fidelity(self):
+        # 契约：润色必须把源文作为忠实度参照注入 prompt，且落在【源文对照】块内。
+        client = FakeClient(handler=lambda m, t, j: json.dumps(
+            {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False))
+        p = Polisher(client, _cfg())
+        # sources 用独特英文串，便于在 prompt 中定位
+        p.polish(["甲", "乙"], sources=["ALPHA_SRC", "BETA_SRC"], style="S")
+
+        messages = client.calls[-1]["messages"]
+        user = messages[-1]["content"]
+        i_src = user.index("【源文对照】")
+        i_tgt = user.index("【待润色中文译文】")
+        # 源文进了源文对照块：出现在【源文对照】之后、【待润色中文译文】之前
+        for token in ("ALPHA_SRC", "BETA_SRC"):
+            self.assertIn(token, user)
+            self.assertLess(i_src, user.index(token))
+            self.assertLess(user.index(token), i_tgt)
+        # system 含逐段对照源文的忠实度铁律
+        system = messages[0]["content"]
+        self.assertIn("源文", system)
+        self.assertTrue("不得遗漏" in system or "增改" in system)
 
 
 class TestBackTranslator(unittest.TestCase):
