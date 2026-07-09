@@ -46,6 +46,9 @@ class PipelineConfig(BaseModel):
     book_understanding: bool = True
     prescan_concurrency: int = 4     # 预扫逐章梗概的并发线程数（各章独立，1=串行）
     glossary_scope: str = "chapter"  # chapter=只注入本章出现的词条+锁定人物（省 token）；full=全量表
+    # skip=附属章原文直通（零成本）；light=fast 档粗翻、跳过审校/润色/术语（省成本）；
+    # full=与正文同流水线（最高质量）。非法值 fail-open 走完整流水线。
+    back_matter: str = "light"
 
 
 class OutputConfig(BaseModel):

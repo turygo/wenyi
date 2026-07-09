@@ -39,6 +39,7 @@ from ..agents.translator import Translator
 from ..agents.reviewer import Reviewer, BackTranslator
 from ..agents.polisher import Polisher
 from . import checks
+from .backmatter import is_back_matter
 from .context import RollingContext
 from .runstore import RunStore, slugify, STATUS_DONE
 
@@ -322,7 +323,8 @@ class Orchestrator:
         loaded = {c.get("index", i): store.load_chapter(c.get("index", i))
                   for i, c in enumerate(chapters)}
         todo = [(ci, "\n".join(s.source for s in ch.text_segments))
-                for ci, ch in loaded.items() if not ch.meta.get("source_digest")]
+                for ci, ch in loaded.items()
+                if not ch.meta.get("source_digest") and not self._back_matter_mode(ch.title)]
         if todo:
             store.log_event(
                 "book_understanding_chapter_digest_started",
@@ -435,6 +437,86 @@ class Orchestrator:
         )
 
     # ── 单章 ──────────────────────────────────────────────────────────────
+
+    def _back_matter_mode(self, title: str) -> str | None:
+        """附属章旁路档位：skip/light 命中标题关键词时返回该档；否则 None（走完整流水线）。
+
+        full 档与非法配置值均 fail-open 走完整流水线。
+        """
+        mode = self.config.pipeline.back_matter
+        if mode in ("skip", "light") and is_back_matter(title):
+            return mode
+        return None
+
+    def _translate_back_matter(self, mode, ci, chapter, text_segs, store, *,
+                               progress=None, done=0, total=0) -> int:
+        """附属章旁路：skip=原文直通；light=fast 档粗翻。不碰 glossary/context/style/executor。"""
+        label = f"第{ci}章 {chapter.title}"
+        store.log_event("chapter_back_matter", chapter=ci, title=chapter.title, mode=mode)
+
+        if mode == "skip":
+            for s in text_segs:
+                s.target = s.source
+            store.save_chapter(chapter)
+            done += len(text_segs)
+            if progress:
+                progress(done, total, label)
+        elif mode == "light":
+            batches = batch_segments(text_segs, self.config.segment.max_chars_per_batch)
+            seg_base = 0
+            for b in batches:
+                existing = [s.target for s in b if s.target and s.target.strip()]
+                if len(existing) == len(b):
+                    done += len(b)
+                    seg_base += len(b)
+                    if progress:
+                        progress(done, total, label)
+                    continue
+                raw = self.translator.translate_batch(
+                    [s.source for s in b],
+                    glossary_terms=[], style="", context="",
+                    book_synopsis="", chapter_digest="", tier="fast",
+                )
+                if self.config.punctuation_normalize:
+                    raw = [normalize_zh(t) if t else t for t in raw]
+                for s, t in zip(b, raw):
+                    s.target = t
+                store.save_chapter(chapter)
+                store.log_event(
+                    "batch_translated",
+                    chapter=ci,
+                    start_index=seg_base,
+                    count=len(b),
+                    polished=False,
+                    punctuation_normalized=self.config.punctuation_normalize,
+                    back_matter=True,
+                    tier="fast",
+                    segments=[
+                        {"index": seg_base + i, "source": s.source, "target": t}
+                        for i, (s, t) in enumerate(zip(b, raw))
+                    ],
+                )
+                done += len(b)
+                seg_base += len(b)
+                if progress:
+                    progress(done, total, label)
+
+        chapter.meta["review_issues"] = []
+        chapter.meta["backtranslation_issues"] = []
+        store.save_chapter(chapter)
+        store.set_chapter_status(ci, STATUS_DONE)
+        store.log_event(
+            "chapter_done",
+            chapter=ci,
+            title=chapter.title,
+            segment_count=len(text_segs),
+            review_issue_count=0,
+            backtranslation_issue_count=0,
+            back_matter=True,
+            mode=mode,
+        )
+        return done
+
     def _translate_chapter(self, ci: int, store: RunStore,
                            glossary: GlossaryStore, context: RollingContext,
                            style: str, book_synopsis: str = "", *,
@@ -448,6 +530,10 @@ class Orchestrator:
             store.set_chapter_status(ci, STATUS_DONE)
             store.log_event("chapter_skipped", chapter=ci, reason="empty")
             return done
+        bm_mode = self._back_matter_mode(chapter.title)
+        if bm_mode:
+            return self._translate_back_matter(bm_mode, ci, chapter, text_segs, store,
+                                               progress=progress, done=done, total=total)
         chapter_digest = chapter.meta.get("source_digest", "")
 
         batches = batch_segments(text_segs, self.config.segment.max_chars_per_batch)

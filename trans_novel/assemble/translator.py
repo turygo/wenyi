@@ -27,6 +27,7 @@ class Translator(Agent):
         context: str,
         book_synopsis: str = "",
         chapter_digest: str = "",
+        tier: str = "strong",
     ) -> list[str]:
         n = len(sources)
         system = prompts.render(
@@ -45,15 +46,15 @@ class Translator(Agent):
             numbered_source=prompts.numbered(sources),
         )
         # 不传 default：调用失败照常抛出，由 translate_batch 的重试/兜底逻辑处理
-        items = self._ask_json(system, user, tier="strong", key="translations")
+        items = self._ask_json(system, user, tier=tier, key="translations")
         if not isinstance(items, list):
             raise AlignmentError("模型未返回译文数组")
         return [str(x) for x in items]
 
     def _translate_one(self, source, glossary_terms, style, context,
-                       book_synopsis, chapter_digest) -> str:
+                       book_synopsis, chapter_digest, tier: str = "strong") -> str:
         out = self._call_batch([source], glossary_terms, style, context,
-                               book_synopsis, chapter_digest)
+                               book_synopsis, chapter_digest, tier=tier)
         return out[0] if out else ""
 
     def retranslate_with_feedback(
@@ -104,6 +105,7 @@ class Translator(Agent):
         context: str = "",
         book_synopsis: str = "",
         chapter_digest: str = "",
+        tier: str = "strong",
     ) -> list[str]:
         """翻译一批源段，返回与之等长的译文列表。"""
         glossary_terms = glossary_terms or []
@@ -115,11 +117,12 @@ class Translator(Agent):
         for _ in range(attempts):
             try:
                 out = self._call_batch(sources, glossary_terms, style, context,
-                                       book_synopsis, chapter_digest)
+                                       book_synopsis, chapter_digest, tier=tier)
             except Exception:
                 out = []
             if len(out) == n:
                 return out
         # 兜底：逐段翻译，保证 1:1
         return [self._translate_one(s, glossary_terms, style, context,
-                                    book_synopsis, chapter_digest) for s in sources]
+                                    book_synopsis, chapter_digest, tier=tier)
+                for s in sources]
