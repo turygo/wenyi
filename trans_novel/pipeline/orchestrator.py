@@ -41,7 +41,7 @@ from ..agents.polisher import Polisher
 from . import checks
 from .backmatter import is_back_matter
 from .context import RollingContext
-from .runstore import RunStore, slugify, STATUS_DONE
+from .runstore import RunStore, slugify, STATUS_DONE, STATUS_PENDING
 
 ProgressFn = Callable[[int, int, str], None]
 
@@ -199,6 +199,9 @@ class Orchestrator:
         style = self.analyzer.style_brief(store.load_analysis() or {})
         # 翻译前预扫源文，建立全书理解（幂等、可续跑）；全书概览注入每章翻译
         book_synopsis = self._build_understanding(store)
+        # 附属章档位升档（skip→light/full、light→full）时重开已完成的附属章重译；
+        # 旁路产物（原文副本/fast 粗翻）否则会被批级续跑当成已译整批复用。降档不回退。
+        self._reopen_upgraded_back_matter(store)
 
         if only_chapter is not None:
             targets = [only_chapter]
@@ -324,7 +327,8 @@ class Orchestrator:
                   for i, c in enumerate(chapters)}
         todo = [(ci, "\n".join(s.source for s in ch.text_segments))
                 for ci, ch in loaded.items()
-                if not ch.meta.get("source_digest") and not self._back_matter_mode(ch.title)]
+                if not ch.meta.get("source_digest")
+                and not self._back_matter_mode(ch.title, ci, len(chapters))]
         if todo:
             store.log_event(
                 "book_understanding_chapter_digest_started",
@@ -438,15 +442,49 @@ class Orchestrator:
 
     # ── 单章 ──────────────────────────────────────────────────────────────
 
-    def _back_matter_mode(self, title: str) -> str | None:
-        """附属章旁路档位：skip/light 命中标题关键词时返回该档；否则 None（走完整流水线）。
+    def _back_matter_mode(self, title: str, index: int, total: int) -> str | None:
+        """附属章旁路档位：skip/light 且标题+位置命中时返回该档；否则 None（完整流水线）。
 
-        full 档与非法配置值均 fail-open 走完整流水线。
+        full 档不旁路（但仍不抽术语，见 _translate_chapter）。识别含位置门控：
+        正文区标题撞词（如 "The Index Case"）不旁路，防整章静默降质。
         """
         mode = self.config.pipeline.back_matter
-        if mode in ("skip", "light") and is_back_matter(title):
+        if mode in ("skip", "light") and is_back_matter(title, index=index, total=total):
             return mode
         return None
+
+    _BM_RANK = {"skip": 0, "light": 1, "full": 2}
+
+    def _reopen_upgraded_back_matter(self, store: RunStore) -> None:
+        """附属章档位升档时重开已完成的附属章（skip→light/full、light→full）。
+
+        旁路档的 target（skip=原文副本、light=fast 粗翻）非空，会被批级续跑当成
+        已译整批复用——不清掉就升档形同虚设。降档不回退：更高质量译文保留。
+        位置门控收紧后不再命中的章同样按升档到 full 处理（此前属误伤）。
+        """
+        m = store.load_manifest()
+        chapters = m.get("chapters", [])
+        n = len(chapters)
+        for c in chapters:
+            if c.get("status") != STATUS_DONE:
+                continue
+            ch = store.load_chapter(c["index"])
+            prev = ch.meta.get("back_matter_mode")
+            if prev not in self._BM_RANK:
+                continue
+            cur = self._back_matter_mode(c.get("title", ""), c["index"], n) or "full"
+            if self._BM_RANK[cur] <= self._BM_RANK[prev]:
+                continue
+            for s in ch.segments:
+                s.target = None
+            ch.meta.pop("back_matter_mode", None)
+            ch.meta.pop("pending_polish", None)
+            ch.meta.pop("review_issues", None)
+            ch.meta.pop("backtranslation_issues", None)
+            store.save_chapter(ch)
+            store.set_chapter_status(c["index"], STATUS_PENDING)
+            store.log_event("back_matter_reopened", chapter=c["index"],
+                            title=c.get("title", ""), prev_mode=prev, mode=cur)
 
     def _translate_back_matter(self, mode, ci, chapter, text_segs, store, *,
                                progress=None, done=0, total=0) -> int:
@@ -481,6 +519,8 @@ class Orchestrator:
                     raw = [normalize_zh(t) if t else t for t in raw]
                 for s, t in zip(b, raw):
                     s.target = t
+                # 先落盘再记事件（与正文路径相反）：崩溃窗口只漏一条事件，
+                # 续跑按已落盘 target 整批复用，不重发 fast 调用。
                 store.save_chapter(chapter)
                 store.log_event(
                     "batch_translated",
@@ -501,6 +541,10 @@ class Orchestrator:
                 if progress:
                     progress(done, total, label)
 
+        # 记录旁路档位：report 上报给人工复核；升档续跑据此重开本章。
+        # 顺带清掉旧版完整流水线半跑遗留的润色标记（旁路档永不消费它）。
+        chapter.meta["back_matter_mode"] = mode
+        chapter.meta.pop("pending_polish", None)
         chapter.meta["review_issues"] = []
         chapter.meta["backtranslation_issues"] = []
         store.save_chapter(chapter)
@@ -530,10 +574,15 @@ class Orchestrator:
             store.set_chapter_status(ci, STATUS_DONE)
             store.log_event("chapter_skipped", chapter=ci, reason="empty")
             return done
-        bm_mode = self._back_matter_mode(chapter.title)
+        n_ch = len(store.load_manifest()["chapters"])
+        bm_mode = self._back_matter_mode(chapter.title, ci, n_ch)
         if bm_mode:
             return self._translate_back_matter(bm_mode, ci, chapter, text_segs, store,
                                                progress=progress, done=done, total=total)
+        # full/正文路径：附属章照常翻译，但不抽术语（skip/light 已在上方旁路返回）。
+        bm = is_back_matter(chapter.title, index=ci, total=n_ch)
+        # 走到完整流水线就清掉旁路痕迹（换档/门控收紧后 report 不再误报）。
+        chapter.meta.pop("back_matter_mode", None)
         chapter_digest = chapter.meta.get("source_digest", "")
 
         batches = batch_segments(text_segs, self.config.segment.max_chars_per_batch)
@@ -562,8 +611,15 @@ class Orchestrator:
                 # 该批上次已在原位、原上下文中译完 → 复用，重建滚动上下文后跳过；
                 # 抽取保持同步现状，遗留的 pending_polish 标记留到章末统一排干。
                 context.add_targets(existing_targets)
-                summary = self._extract_batch_glossary(glossary, store, ci, seg_base, b)
-                term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
+                summary = None
+                if not bm:
+                    summary, changed = self._extract_batch_glossary(
+                        glossary, store, ci, seg_base, b)
+                    # 与新译批一致的条件刷新：新词命中本章剩余源文才重建快照，保前缀缓存。
+                    remaining_src = "\n".join(
+                        s.source for s in text_segs[seg_base + len(b):])
+                    if changed and GlossaryStore.terms_in(changed, remaining_src):
+                        term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
                 store.log_event(
                     "batch_skipped",
                     chapter=ci,
@@ -632,22 +688,27 @@ class Orchestrator:
                     self.polisher.polish, list(raw_targets), [s.source for s in b],
                     glossary_terms=list(term_snapshot), style=style)
 
-            # 术语抽取：existing 用已按章裁剪的 term_snapshot；落盘后在主线程同步抽取
+            # 术语抽取：existing 按本批源文裁剪；落盘后在主线程同步抽取
             # （fast 档，耗时远小于下一批强档翻译），不进共享池——否则会被在飞的润色/审校
             # future 占满 4 worker 时反向阻塞主线程，把后台工作拖回翻译关键路径。保住
             # 不变量 (a)（落库不领先落盘）与 (d)（下一批可见上一批新词）。
-            terms = self.extractor.extract(
-                "\n".join(s.source for s in b), "\n".join(raw_targets),
-                list(term_snapshot))
-            summary = self.extractor.store_terms(glossary, terms, ci)
-            term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
-            store.log_event(
-                "batch_glossary_extracted",
-                chapter=ci,
-                start_index=batch_start,
-                count=len(b),
-                summary=summary,
-            )
+            # 附属章 full 档跳过抽取；新词仅当命中剩余源文时才刷新快照以保前缀缓存。
+            if not bm:
+                batch_src = "\n".join(s.source for s in b)
+                terms = self.extractor.extract(
+                    batch_src, "\n".join(raw_targets),
+                    GlossaryStore.terms_in(term_snapshot, batch_src))
+                summary, changed = self.extractor.store_terms(glossary, terms, ci)
+                remaining_src = "\n".join(s.source for s in text_segs[seg_base:])
+                if changed and GlossaryStore.terms_in(changed, remaining_src):
+                    term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
+                store.log_event(
+                    "batch_glossary_extracted",
+                    chapter=ci,
+                    start_index=batch_start,
+                    count=len(b),
+                    summary=summary,
+                )
             if progress:
                 progress(done, total, label)
 
@@ -658,11 +719,13 @@ class Orchestrator:
 
         # 全章术语抽取入库：保留为兜底，捕捉跨段才能确认的称呼/口癖/固定表达；
         # 在润色后的最终文本上跑，放在 review 前让本章审校也能用上兜底抽出的术语。
-        src_text = "\n".join(s.source for s in text_segs)
-        tgt_text = "\n".join(s.target or "" for s in text_segs)
-        self.extractor.extract_and_store(glossary, src_text, tgt_text, ci)
-        term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
-        store.log_event("chapter_glossary_extracted", chapter=ci)
+        # 附属章 full 档不抽词。
+        if not bm:
+            src_text = "\n".join(s.source for s in text_segs)
+            tgt_text = "\n".join(s.target or "" for s in text_segs)
+            self.extractor.extract_and_store(glossary, src_text, tgt_text, ci)
+            term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
+            store.log_event("chapter_glossary_extracted", chapter=ci)
 
         # ── 章末整章审校（块内 index 映射回章内段号）──
         # 幂等：续跑重入章末时清掉旧审校项，防重复累积。
@@ -795,11 +858,14 @@ class Orchestrator:
                 if t.source in hit or (t.type == TYPE_PERSON and t.locked)]
 
     def _extract_batch_glossary(self, glossary: GlossaryStore, store: RunStore,
-                                chapter: int, start_index: int, batch) -> dict[str, int]:
-        """续跑批跳过时同步抽取术语入库（新译批次的抽取已挪到批循环内联的异步流程），供同章后续批次使用。"""
+                                chapter: int, start_index: int, batch,
+                                ) -> tuple[dict[str, int], list]:
+        """续跑批跳过时同步抽取术语入库（新译批次的抽取已挪到批循环内联的异步流程），
+        供同章后续批次使用。返回 (入库汇总, inserted/updated 词条) 供条件刷新。"""
         src_text = "\n".join(s.source for s in batch)
         tgt_text = "\n".join(s.target or "" for s in batch)
-        summary = self.extractor.extract_and_store(glossary, src_text, tgt_text, chapter)
+        summary, changed = self.extractor.extract_and_store(
+            glossary, src_text, tgt_text, chapter)
         store.log_event(
             "batch_glossary_extracted",
             chapter=chapter,
@@ -807,7 +873,7 @@ class Orchestrator:
             count=len(batch),
             summary=summary,
         )
-        return summary
+        return summary, changed
 
     # ── 章末审校 + 严重项定向重译 ────────────────────────────────────────────
     _SEVERE_TYPES = ("missing", "mistranslation")

@@ -60,7 +60,7 @@ class TestExtractor(unittest.TestCase):
         ext = GlossaryExtractor(client, _cfg())
         with tempfile.TemporaryDirectory() as d:
             store = GlossaryStore(os.path.join(d, "g.db"))
-            summary = ext.extract_and_store(store, "原文", "译文", chapter=1)
+            summary, _ = ext.extract_and_store(store, "原文", "译文", chapter=1)
             self.assertEqual(summary["inserted"], 2)
             horikita = store.get_term("堀北")
             self.assertEqual(horikita.gender, "女")
@@ -76,10 +76,39 @@ class TestExtractor(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             store = GlossaryStore(os.path.join(d, "g.db"))
             terms = [GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON, gender="女")]
-            summary = ext.store_terms(store, terms, chapter=3)
+            summary, changed = ext.store_terms(store, terms, chapter=3)
             self.assertEqual(summary, {"inserted": 1, "updated": 0, "conflict": 0, "unchanged": 0})
+            self.assertEqual([t.source for t in changed], ["堀北"])
             self.assertEqual(store.get_term("堀北").first_chapter, 3)
             self.assertEqual(client.calls, [])
+            store.close()
+
+    def test_store_terms_changed_tracks_inserted_and_updated_only(self):
+        """changed 只含 inserted/updated；unchanged/conflict 不进——批内条件刷新据此决定
+        是否重建章级快照，故语义必须精确。"""
+        client = FakeClient()
+        ext = GlossaryExtractor(client, _cfg())
+        with tempfile.TemporaryDirectory() as d:
+            store = GlossaryStore(os.path.join(d, "g.db"))
+            # 预置：高置信词条（制造 conflict）+ 低置信词条（制造 updated）。
+            store.upsert_term(
+                GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON,
+                             confidence="high"), chapter=1)
+            store.upsert_term(
+                GlossaryTerm(source="屋上", target="天台", type="地名",
+                             confidence="low"), chapter=1)
+            terms = [
+                GlossaryTerm(source="龙园", target="龙园", type=TYPE_PERSON),          # inserted
+                GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON),          # unchanged
+                GlossaryTerm(source="屋上", target="屋顶", type="地名",
+                             confidence="high"),                                       # updated（新胜出）
+                GlossaryTerm(source="堀北", target="北堀", type=TYPE_PERSON,
+                             confidence="low"),                                        # conflict（现有胜出）
+            ]
+            summary, changed = ext.store_terms(store, terms, chapter=2)
+            self.assertEqual(
+                summary, {"inserted": 1, "updated": 1, "conflict": 1, "unchanged": 1})
+            self.assertEqual({t.source for t in changed}, {"龙园", "屋上"})
             store.close()
 
     def test_extract_and_store_trims_existing_for_prompt(self):

@@ -19,6 +19,7 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
     review_issues: list[dict] = []
     bt_issues: list[dict] = []
     empty_targets: list[dict] = []
+    back_matter: list[dict] = []
 
     for c in m["chapters"]:
         if c["status"] != STATUS_DONE:
@@ -26,6 +27,12 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
         ch = store.load_chapter(c["index"])
         review_issues.extend(ch.meta.get("review_issues", []))
         bt_issues.extend(ch.meta.get("backtranslation_issues", []))
+        bm_mode = ch.meta.get("back_matter_mode")
+        if bm_mode:
+            # 旁路章（skip=原文直通 / light=fast 粗翻）列给人工复核：
+            # 若有正文章被误伤，调高 pipeline.back_matter 重跑即可自动重译。
+            back_matter.append({"chapter": c["index"],
+                                "title": c.get("title", ""), "mode": bm_mode})
         for s in ch.text_segments:
             if not (s.target and s.target.strip()):
                 empty_targets.append({"chapter": c["index"], "index": s.index,
@@ -48,10 +55,12 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
             "review_issues": len(review_issues),
             "backtranslation_issues": len(bt_issues),
             "empty_targets": len(empty_targets),
+            "back_matter_chapters": len(back_matter),
         },
         "open_conflicts": conflicts,
         "low_confidence_terms": low_conf,
         "review_issues": review_issues,
         "backtranslation_issues": bt_issues,
         "empty_targets": empty_targets,
+        "back_matter_chapters": back_matter,
     }

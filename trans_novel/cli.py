@@ -116,8 +116,21 @@ def _translate_impl(
         f"[bold green]完成[/]：{s['chapters_done']}/{s['chapters_total']} 章，"
         f"术语 {s['terms']}，一致性问题 {len(result['qa_issues'])} 项。"
     )
+    _print_back_matter(result["report"])
     for path in result.get("outputs") or [result["output"]]:
         console.print(f"译文：[bold]{path}[/]")
+
+
+def _print_back_matter(report: dict) -> None:
+    """列出被旁路的附属章供人工复核——误伤正文章会静默降质，必须可见。"""
+    bm = report.get("back_matter_chapters") or []
+    if not bm:
+        return
+    items = "；".join(f"第{b['chapter']}章 {b['title']}（{b['mode']}档）" for b in bm)
+    console.print(
+        f"[yellow]附属章旁路[/]：{items}。"
+        f"若有正文章被误伤，把 pipeline.back_matter 调为 full 后重跑即自动重译。"
+    )
 
 
 # ── translate / resume：连续全流程 ──────────────────────────────────────────
@@ -360,8 +373,9 @@ def report(input: str = typer.Argument(..., help="输入文件")):
     console.print(
         f"  章节 {s['chapters_done']}/{s['chapters_total']}  术语 {s['terms']}  "
         f"待裁决冲突 {s['open_conflicts']}  审校问题 {s['review_issues']}  "
-        f"回译疑点 {s['backtranslation_issues']}"
+        f"回译疑点 {s['backtranslation_issues']}  附属章旁路 {s.get('back_matter_chapters', 0)}"
     )
+    _print_back_matter(rep)
 
 
 app.add_typer(tools_app, name="tools")

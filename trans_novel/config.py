@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -46,9 +46,11 @@ class PipelineConfig(BaseModel):
     book_understanding: bool = True
     prescan_concurrency: int = 4     # 预扫逐章梗概的并发线程数（各章独立，1=串行）
     glossary_scope: str = "chapter"  # chapter=只注入本章出现的词条+锁定人物（省 token）；full=全量表
-    # skip=附属章原文直通（零成本）；light=fast 档粗翻、跳过审校/润色/术语（省成本）；
-    # full=与正文同流水线（最高质量）。非法值 fail-open 走完整流水线。
-    back_matter: str = "light"
+    # 附属章（Notes/Index/参考文献/致谢等，按标题关键词+全书首尾位置识别）处理档位：
+    # skip=原文直通（零成本）；light=fast 档粗翻，跳过审校/润色/回译（省成本）；
+    # full=完整翻译流水线。任何档位都不从附属章抽术语（引文人名/书名会污染全书术语表）。
+    # 非法值启动即报错（成本开关必须 fail-fast）；升档重跑自动重开已完成的附属章，降档不回退。
+    back_matter: Literal["skip", "light", "full"] = "light"
 
 
 class OutputConfig(BaseModel):

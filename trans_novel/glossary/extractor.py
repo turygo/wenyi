@@ -41,16 +41,24 @@ class GlossaryExtractor(Agent):
         return terms
 
     def store_terms(self, store: GlossaryStore, terms: list[GlossaryTerm],
-                     chapter: int) -> dict[str, int]:
+                     chapter: int) -> tuple[dict[str, int], list[GlossaryTerm]]:
         summary = {"inserted": 0, "updated": 0, "conflict": 0, "unchanged": 0}
+        changed: list[GlossaryTerm] = []
         for t in terms:
             t.first_chapter = chapter
             result = store.upsert_term(t, chapter=chapter)
             summary[result] = summary.get(result, 0) + 1
-        return summary
+            if result in ("inserted", "updated"):
+                changed.append(t)
+        return summary, changed
 
     def extract_and_store(self, store: GlossaryStore, source_text: str,
-                          target_text: str, chapter: int) -> dict[str, int]:
+                          target_text: str, chapter: int,
+                          ) -> tuple[dict[str, int], list[GlossaryTerm]]:
+        """抽取并入库，返回 (入库汇总, 实际 inserted/updated 的词条)。
+
+        changed 供调用方做章级快照的条件刷新（命中剩余源文才重建，保前缀缓存）。
+        """
         existing = store.all_terms()
         hit = {t.source for t in GlossaryStore.terms_in(existing, source_text)}
         existing = [t for t in existing
