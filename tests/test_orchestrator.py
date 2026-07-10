@@ -100,12 +100,18 @@ class TestOrchestrator(unittest.TestCase):
 
 class TestSegmentLevelResume(unittest.TestCase):
     def _tr_handler(self, tag):
-        """返回带标记的翻译 handler（译文形如 {tag}译{i}），其余走默认路由。"""
+        """返回带标记的翻译 handler（译文形如 {tag}译{i}），其余走默认路由。
+        用原文长度补齐译文（填充字符），避免触发新增确定性 lint 的 too_short
+        判定——本类只测续跑/段级幂等，不是 lint 的测试范围。"""
         def handler(messages, tier, json_mode):
             if "文学翻译" in messages[0]["content"]:
-                n = len(re.findall(r"^\[(\d+)\]", messages[-1]["content"], re.M))
-                return json.dumps({"translations": [f"{tag}译{i}" for i in range(n)]},
-                                  ensure_ascii=False)
+                user = messages[-1]["content"]
+                pairs = re.findall(r"^\[(\d+)\] (.*)$", user, re.M)
+                out = []
+                for i, src in pairs:
+                    base = f"{tag}译{i}"
+                    out.append(base + "文" * max(0, len(src) - len(base)))
+                return json.dumps({"translations": out}, ensure_ascii=False)
             return routing_handler(messages, tier, json_mode)
         return handler
 
@@ -280,14 +286,21 @@ class TestReviewReporting(unittest.TestCase):
             self.assertEqual(ch.text_segments[0].target, self.FIX_TEXT)
 
     def test_autofix_off_reports_only(self):
-        """autofix 关：仅上报 fixed=False，正文不动。"""
+        """autofix 关：审校严重项仅上报 fixed=False，审校通道本身不动正文
+        （lint 层独立于 autofix_severe 常开，可能另行修正与本用例无关的段落，
+        不在此断言范围——只验证 review 通道未触发 autofix_applied）。"""
         with tempfile.TemporaryDirectory() as d:
             store = self._run(d, autofix=False)
             ch = store.load_chapter(0)
             flagged = [i for i in ch.meta["review_issues"] if i.get("type") == "missing"]
             self.assertTrue(flagged)
             self.assertTrue(all(i.get("fixed") is False for i in flagged))
-            self.assertNotEqual(ch.text_segments[0].target, self.FIX_TEXT)
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            self.assertFalse(
+                any(e["event"] == "autofix_applied" for e in events),
+                "autofix 关闭时，审校严重项通道不得写回正文",
+            )
 
     def test_autofix_rejects_short_retranslation(self):
         """重译结果过短（疑漏译）→ 不采纳，fixed=False，保留原译。"""
@@ -709,13 +722,19 @@ class TestReviewAsync(unittest.TestCase):
             # store，本断言必失败。
             self.assertEqual(failed, chapters,
                              "每个审校崩溃的章都必须记 chapter_review_failed")
-            # (c) 崩溃章不得发 chapter_reviewed，且 review_issues 未被写回（保持空）
+            # (c) 崩溃章不得发 chapter_reviewed，且 review 通道的 review_issues 未被
+            # 写回（保持空）；lint 层独立于异步审校常开，可能另行写入 stage="lint" 的
+            # 条目，不属于本用例断言范围。
             self.assertEqual(reviewed, set(),
                              "审校失败的章不得发 chapter_reviewed")
             for ci in chapters:
+                review_stage_issues = [
+                    i for i in store.load_chapter(ci).meta.get("review_issues", [])
+                    if i.get("stage") == "review"
+                ]
                 self.assertEqual(
-                    store.load_chapter(ci).meta.get("review_issues", []), [],
-                    f"第 {ci} 章审校失败，review_issues 不得被写入")
+                    review_stage_issues, [],
+                    f"第 {ci} 章审校失败，review 阶段的 review_issues 不得被写入")
 
     def test_crash_resume_reruns_pending_review(self):
         # review 断点续跑不变量（异步审校版）：章已标 DONE 但异步审校结果还没写回
@@ -805,6 +824,229 @@ class TestPolishFailureFallback(unittest.TestCase):
             self.assertEqual([s.target for s in ch.text_segments], expected)
             self.assertFalse(ch.meta.get("pending_polish"),
                              "润色失败的批次也必须清掉 pending_polish 标记")
+
+
+class TestLintQuoteRefix(unittest.TestCase):
+    """批循环内 lint：首译丢引号 → 定向重译修复（事件 batch_linted + lint_refixed）。"""
+
+    SRC = "「おはようございます」と彼は静かな声で言った。窓の外には青い空が広がっていた。"
+
+    def _write(self, path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# 第一章\n\n{self.SRC}\n")
+
+    @staticmethod
+    def _handler(messages, tier, json_mode):
+        sys = messages[0]["content"]
+        user = messages[-1]["content"]
+        if "文学翻译" in sys:
+            n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
+            if "【审校意见】" in user:
+                # 定向重译：修复丢引号问题，补回成对引号
+                out = ["“早上好”他轻声说道窗外是一片蔚蓝的天空" for _ in range(n)]
+            else:
+                # 首译：丢引号（触发 quote_loss）
+                out = ["早上好他轻声说道窗外是一片蔚蓝的天空" for _ in range(n)]
+            return json.dumps({"translations": out}, ensure_ascii=False)
+        return routing_handler(messages, tier, json_mode)
+
+    def test_quote_loss_caught_and_refixed(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            self._write(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.polish = False
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            store = Orchestrator(cfg, client=FakeClient(handler=self._handler)).run(txt)
+            ch = store.load_chapter(0)
+            target = ch.text_segments[1].target
+            # 最终译文带引号（定向重译采纳，替换了丢引号的首译）
+            self.assertTrue(any(q in target for q in "“”「」『』"),
+                            f"最终译文应保留引号：{target!r}")
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            linted = [e for e in events if e["event"] == "batch_linted" and e["chapter"] == 0]
+            refixed = [e for e in events if e["event"] == "lint_refixed" and e["chapter"] == 0]
+            self.assertTrue(linted, "丢引号首译应触发 batch_linted")
+            self.assertTrue(
+                any(i["type"] == "quote_loss" for e in linted for i in e["issues"]),
+                "batch_linted 摘要应含 quote_loss")
+            self.assertTrue(refixed, "重译修复后应发 lint_refixed")
+            self.assertEqual(refixed[0]["index"], 1)
+            self.assertNotIn("“", refixed[0]["before"])
+            self.assertIn("“", refixed[0]["after"])
+
+
+class TestPolishQuoteRejection(unittest.TestCase):
+    """章末排干润色：润色剥掉引号（引入新 lint issue）→ polish_rejected，保留润色前译文。"""
+
+    SRC = "「おはようございます」と彼は静かな声で言った。"
+
+    def _write(self, path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# 第一章\n\n{self.SRC}\n")
+
+    @staticmethod
+    def _handler(messages, tier, json_mode):
+        sys = messages[0]["content"]
+        user = messages[-1]["content"]
+        if "文学翻译" in sys:
+            n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
+            return json.dumps(
+                {"translations": ["“早上好”他轻声说道" for _ in range(n)]},
+                ensure_ascii=False)
+        if "中文润色编辑" in sys:
+            target_block = user.split("【待润色中文译文】", 1)[-1]
+            n = len(re.findall(r"^\[(\d+)\] ", target_block, re.M))
+            # 润色把引号剥掉了——引入新的 quote_loss，应被回退拒绝
+            return json.dumps(
+                {"polished": ["早上好他轻声说道" for _ in range(n)]}, ensure_ascii=False)
+        return routing_handler(messages, tier, json_mode)
+
+    def test_polish_stripping_quotes_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            self._write(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.polish = True
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            store = Orchestrator(cfg, client=FakeClient(handler=self._handler)).run(txt)
+            ch = store.load_chapter(0)
+            target = ch.text_segments[1].target
+            # 润色剥引号被拒：保留润色前（带引号）译文，而非润色后的无引号文本
+            self.assertTrue(any(q in target for q in "“”「」『』"),
+                            f"应保留润色前带引号的译文：{target!r}")
+            self.assertIn("早上好", target)
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            rejected = [e for e in events if e["event"] == "polish_rejected"]
+            self.assertTrue(rejected, "润色剥引号应触发 polish_rejected")
+            self.assertEqual(rejected[0]["chapter"], 0)
+            self.assertEqual(rejected[0]["index"], 1)
+            self.assertIn("quote_loss", rejected[0]["reason"])
+            self.assertNotIn("“", rejected[0]["polished"])
+
+
+class TestLintTooShortReportOnly(unittest.TestCase):
+    """too_short/too_long 降为 report-only：批循环 lint 发现但不触发定向重译。"""
+
+    SRC = ("This is a sufficiently long English source sentence, padded with "
+          "extra descriptive words, written specifically so its character "
+          "count comfortably clears the one-twenty threshold for this test.")
+
+    def _write(self, path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# Chapter One\n\n{self.SRC}\n")
+
+    @staticmethod
+    def _handler(messages, tier, json_mode):
+        sys = messages[0]["content"]
+        user = messages[-1]["content"]
+        if "文学翻译" in sys:
+            n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
+            return json.dumps({"translations": ["short" for _ in range(n)]},
+                              ensure_ascii=False)
+        return routing_handler(messages, tier, json_mode)
+
+    def test_too_short_reported_but_not_retranslated(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            self._write(txt)
+            cfg = Config.from_dict({
+                "language": {"source": "en", "target": "zh"},
+                "llm": {"provider": "fake", "tiers": {
+                    "strong": {"model": "p"}, "cheap": {"model": "f"}}},
+                "segment": {"max_chars_per_batch": 1800},
+                "pipeline": {"review": False, "polish": False,
+                             "backtranslate_sample": 0.0, "consistency_qa": False,
+                             "book_understanding": False},
+                "paths": {"state_dir": os.path.join(d, "state")},
+            })
+            client = FakeClient(handler=self._handler)
+            store = Orchestrator(cfg, client=client).run(txt)
+
+            translate_calls = [c for c in client.calls
+                               if "文学翻译" in c["messages"][0]["content"]]
+            self.assertEqual(len(translate_calls), 1,
+                             "too_short 不属于可重译类型，不该触发定向重译")
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            self.assertFalse(any(e["event"] == "lint_refixed" for e in events))
+            linted = [e for e in events if e["event"] == "batch_linted"]
+            self.assertTrue(
+                any(i["type"] == "too_short" for e in linted for i in e["issues"]),
+                "过短译文应被 lint 发现并记入 batch_linted")
+
+            ch = store.load_chapter(0)
+            recorded = [i for i in ch.meta["review_issues"]
+                       if i.get("type") == "too_short" and i.get("stage") == "lint"]
+            self.assertTrue(recorded, "too_short 应作为 report-only 记入 review_issues")
+            self.assertTrue(all(i.get("fixed") is False for i in recorded))
+
+
+class TestLintSkipBranchRecordsIssue(unittest.TestCase):
+    """崩溃续跑：已译批次走跳过分支时，确定性 lint 仍复检一遍记录未修复项（不重译）。"""
+
+    SRC = "「おはよう」と彼は言った。"
+
+    def _write(self, path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# 第一章\n\n{self.SRC}\n")
+
+    @staticmethod
+    def _handler(messages, tier, json_mode):
+        sys = messages[0]["content"]
+        user = messages[-1]["content"]
+        if "文学翻译" in sys:
+            n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
+            # 首译、定向重译都返回丢引号译文（模拟修复失败，issue 保持未解决）
+            return json.dumps({"translations": ["早上好他说道" for _ in range(n)]},
+                              ensure_ascii=False)
+        return routing_handler(messages, tier, json_mode)
+
+    def test_skip_branch_relints_without_retranslating(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            self._write(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.polish = False
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            store = Orchestrator(cfg, client=FakeClient(handler=self._handler)).run(txt)
+            ch = store.load_chapter(0)
+            unresolved = [i for i in ch.meta["review_issues"]
+                         if i.get("type") == "quote_loss" and i.get("stage") == "lint"]
+            self.assertTrue(unresolved, "首译丢引号且重译未修复，应作为未解决 lint issue 记录")
+
+            # 模拟崩溃窗口：章已 DONE 但 review_issues 被清空、状态改回 pending，
+            # 段译文原样保留（已落盘、未变）——续跑应走批跳过分支，不重译。
+            ch.meta["review_issues"] = []
+            store.save_chapter(ch)
+            store.set_chapter_status(0, STATUS_PENDING)
+
+            client2 = FakeClient(handler=self._handler)
+            store2 = Orchestrator(cfg, client=client2).run(txt)
+
+            translate_calls = [c for c in client2.calls
+                               if "文学翻译" in c["messages"][0]["content"]]
+            self.assertEqual(len(translate_calls), 0, "跳过分支不得重译")
+
+            ch2 = store2.load_chapter(0)
+            recovered = [i for i in ch2.meta["review_issues"]
+                        if i.get("type") == "quote_loss" and i.get("stage") == "lint"]
+            self.assertTrue(recovered, "跳过分支应重新记录未修复的 lint issue，不静默丢失")
+
 
 
 if __name__ == "__main__":

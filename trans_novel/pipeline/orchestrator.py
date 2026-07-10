@@ -38,7 +38,7 @@ from ..agents.synopsis import Synopsizer
 from ..agents.translator import Translator
 from ..agents.reviewer import Reviewer, BackTranslator
 from ..agents.polisher import Polisher
-from . import checks
+from . import checks, lint
 from .backmatter import is_back_matter
 from .context import RollingContext
 from .runstore import RunStore, slugify, STATUS_DONE, STATUS_PENDING
@@ -272,7 +272,9 @@ class Orchestrator:
                 it.setdefault("fixed", False)
                 it["stage"] = "review"
             chapter = store.load_chapter(ci)
-            chapter.meta["review_issues"] = new_issues
+            lint_kept = [i for i in chapter.meta.get("review_issues", [])
+                        if i.get("stage") == "lint"]
+            chapter.meta["review_issues"] = lint_kept + new_issues
             store.save_chapter(chapter)
             store.set_review_pending(ci, False)
             store.log_event(
@@ -600,8 +602,11 @@ class Orchestrator:
         # 断点续跑（段/批级）：上次中断前已译完并落盘的批次，整批跳过、不重翻，只重建上下文。
         review_issues: list[dict] = [
             i for i in chapter.meta.get("review_issues", [])
-            if i.get("stage") != "length"
+            if i.get("stage") not in ("length", "lint")
         ]
+        # lint 层（确定性、零 LLM）产出的未解决 issue 单独累积，最终并入 review_issues：
+        # review 分支会重置/异步覆盖 review_issues 本身，须避免被那条通道悄悄冲掉。
+        lint_review_issues: list[dict] = []
         polish_on = self.config.pipeline.polish
         # start_index → 本轮新提交的润色 future；章末排干时与 chapter.meta["pending_polish"]
         # （含续跑遗留、本轮未重译的批次）合并处理，保证续跑不丢润色。
@@ -622,6 +627,20 @@ class Orchestrator:
                         s.source for s in text_segs[seg_base + len(b):])
                     if changed and GlossaryStore.terms_in(changed, remaining_src):
                         term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
+                # 崩溃续跑：跳过批次不重译（保持跳过语义），但确定性 lint 零成本，
+                # 仍跑一遍记录未修复项，防止崩溃窗口下确定性问题永久漏检。
+                locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
+                for it in lint.lint_targets(
+                        [s.source for s in b], existing_targets, locked_terms=locked,
+                        src_lang=self.config.source_lang):
+                    lint_review_issues.append({
+                        "chapter": ci,
+                        "index": seg_base + it.index,
+                        "type": it.type,
+                        "detail": it.detail,
+                        "stage": "lint",
+                        "fixed": False,
+                    })
                 store.log_event(
                     "batch_skipped",
                     chapter=ci,
@@ -643,6 +662,77 @@ class Orchestrator:
             ctx_text = context.render(self.config.pipeline.rolling_context_segments)
             raw_targets = self._process_batch(b, term_snapshot, ctx_text, style,
                                               book_synopsis, chapter_digest)
+
+            # 确定性 lint（零 LLM，宁漏勿误报）：引号丢失/数字失配/锁定专名漂移/
+            # 未译残留 + 复用的长度异常。flag 段带审校意见定向重译，每段最多一轮，
+            # 采纳条件=重译后 issue 数严格减少（防越修越糟）。
+            locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
+            lint_issues = lint.lint_targets(
+                [s.source for s in b], raw_targets, locked_terms=locked,
+                src_lang=self.config.source_lang)
+            if lint_issues:
+                store.log_event(
+                    "batch_linted",
+                    chapter=ci,
+                    start_index=seg_base,
+                    issues=[
+                        {"index": seg_base + it.index, "type": it.type, "detail": it.detail}
+                        for it in lint_issues
+                    ],
+                )
+                by_idx: dict[int, list] = {}
+                for it in lint_issues:
+                    by_idx.setdefault(it.index, []).append(it)
+                for idx, seg_issues in sorted(by_idx.items()):
+                    if not any(it.type in lint.ACTIONABLE_TYPES for it in seg_issues):
+                        # too_short/too_long 等非定向重译类型：只记录，不重译
+                        # （en→zh 合法压缩比波动实测极大，交由人工/审校 agent 判断）。
+                        for it in seg_issues:
+                            lint_review_issues.append({
+                                "chapter": ci,
+                                "index": seg_base + idx,
+                                "type": it.type,
+                                "detail": it.detail,
+                                "stage": "lint",
+                                "fixed": False,
+                            })
+                        continue
+                    seg = b[idx]
+                    feedback = "；".join(it.detail for it in seg_issues)
+                    before = "\n".join(raw_targets[j] for j in range(max(0, idx - 2), idx))
+                    after = "\n".join(
+                        raw_targets[j] for j in range(idx + 1, min(len(b), idx + 3)))
+                    new_t = self.translator.retranslate_with_feedback(
+                        seg.source, feedback=feedback, glossary_terms=term_snapshot,
+                        style=style, context_before=before, context_after=after,
+                        book_synopsis=book_synopsis, chapter_digest=chapter_digest)
+                    new_issues = (
+                        lint.lint_targets([seg.source], [new_t], locked_terms=locked,
+                                          src_lang=self.config.source_lang)
+                        if new_t else [])
+                    if new_t and len(new_issues) < len(seg_issues):
+                        store.log_event(
+                            "lint_refixed",
+                            chapter=ci,
+                            index=seg_base + idx,
+                            before=raw_targets[idx],
+                            after=new_t,
+                            issues=[{"type": it.type, "detail": it.detail}
+                                    for it in seg_issues],
+                        )
+                        raw_targets[idx] = new_t
+                        remaining = new_issues
+                    else:
+                        remaining = seg_issues
+                    for it in remaining:
+                        lint_review_issues.append({
+                            "chapter": ci,
+                            "index": seg_base + idx,
+                            "type": it.type,
+                            "detail": it.detail,
+                            "stage": "lint",
+                            "fixed": False,
+                        })
             for s, t in zip(b, raw_targets):
                 s.target = t
             batch_start = seg_base
@@ -788,7 +878,7 @@ class Orchestrator:
             if s.target:
                 glossary.add_tm(s.source, s.target, ci)
 
-        chapter.meta["review_issues"] = review_issues
+        chapter.meta["review_issues"] = review_issues + lint_review_issues
         chapter.meta["backtranslation_issues"] = bt_issues
         store.save_chapter(chapter)
         store.set_chapter_status(ci, STATUS_DONE)
@@ -833,6 +923,33 @@ class Orchestrator:
                 final = raw   # Polisher 本身失败已回退原文；这里再兜一层意外异常
             if self.config.punctuation_normalize:
                 final = [normalize_zh(t) if t else t for t in final]
+            # 润色回退：final 若比 raw（同样先 normalize_zh，公平比较）多引入新的 lint
+            # issue 类型（如剥掉引号/丢了锁定专名），该段保留 raw，发 polish_rejected。
+            srcs = [text_segs[start + i].source for i in range(count)]
+            raw_normalized = ([normalize_zh(t) if t else t for t in raw]
+                              if self.config.punctuation_normalize else raw)
+            locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
+            raw_types: dict[int, set[str]] = {}
+            for it in lint.lint_targets(srcs, raw_normalized, locked_terms=locked,
+                                        src_lang=self.config.source_lang):
+                raw_types.setdefault(it.index, set()).add(it.type)
+            final_types: dict[int, set[str]] = {}
+            for it in lint.lint_targets(srcs, final, locked_terms=locked,
+                                        src_lang=self.config.source_lang):
+                final_types.setdefault(it.index, set()).add(it.type)
+            for i in range(count):
+                introduced = final_types.get(i, set()) - raw_types.get(i, set())
+                if not introduced:
+                    continue
+                rejected_text = final[i]
+                final[i] = raw_normalized[i]
+                store.log_event(
+                    "polish_rejected",
+                    chapter=ci,
+                    index=start + i,
+                    reason=sorted(introduced),
+                    polished=rejected_text,
+                )
             for i, t in enumerate(final):
                 text_segs[start + i].target = t
             chapter.meta["pending_polish"] = [
