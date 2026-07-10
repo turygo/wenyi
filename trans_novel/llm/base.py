@@ -115,7 +115,19 @@ def parse_json_loose(text: str) -> Any:
             return value
         except Exception:
             pass
-    # 最后兜底：修复字符串内未转义的引号再试一次
+    # 最后兜底：修复字符串内未转义的引号，再从完整文本解析首个 JSON 值。
+    # 必须先做这一步：若同时有未转义引号和尾部多余字符，直接截取内部数组
+    # 会丢掉外层对象（如 {"translations": [...]}）。
+    repaired = _repair_unescaped_quotes(text)
+    starts = [i for i in (repaired.find("{"), repaired.find("[")) if i != -1]
+    if starts:
+        try:
+            value, _ = json.JSONDecoder().raw_decode(repaired[min(starts):])
+            return value
+        except Exception:
+            pass
+
+    # 修复后仍无法解析时，才依次尝试完整文本和对象/数组片段。
     for candidate in (text, *(
         text[s : e + 1]
         for o, c in (("[", "]"), ("{", "}"))
