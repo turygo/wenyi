@@ -87,10 +87,10 @@ uv run trans-novel translate book.epub --no-qa
 读取输入
 → 解析章节、正文段落和 EPUB 目录
 → 模型识别源语言（或使用配置指定语言）
-→ 预扫整本书，生成全书概览和逐章梗概
-→ 分析样章，建立初始术语表
-→ 按章、按批翻译
-→ 可选润色
+→ 分析样章，建立风格指南与初始术语表
+→ 预扫整本书：逐章梗概 → 源文侧术语候选挖掘 → 一次性全书定名 → 全书概览
+→ 按章、按批翻译（批后确定性 lint：引号/数字/锁定专名/未译，命中即带反馈定向重译）
+→ 可选润色（润色若引入 lint 回归，该段回退润色前译文）
 → 标点规范化
 → 章末 review
 → 可选严重项自动重译
@@ -102,11 +102,12 @@ uv run trans-novel translate book.epub --no-qa
 
 ## 一致性机制
 
-- **术语库**：人名、地名、专有名词和敬称会进入 SQLite 术语库，翻译时按配置注入提示词。
+- **术语库**：翻译前从源文挖掘专名候选（英文走确定性统计，其他语言走 fast 档），由强档一次性统一定名后写入 SQLite 术语库，翻译期只读、按配置注入提示词；人物条目锁定后由 lint 硬校验。日文轻小说等需要译后确认称呼变体的场景可开 `pipeline.inflight_glossary` 保留旧的译后抽取。
 - **全书理解**：翻译前预扫源文，生成全书概览和章节梗概，让早期章节也能参考全书走向。
 - **滚动上下文**：章内批次串行处理，后一个批次能看到前面最近几段译文。
 - **段数对齐**：每批输入 N 段，要求模型输出 N 段 JSON；段数不符会重试，仍失败则逐段兜底。
-- **章末 review**：按章检查漏译、误译、术语、人称等问题；默认只记录问题，是否自动修复由 `autofix_severe` 控制。
+- **确定性 lint**：零成本机器校验直接引语引号保留、数字一致、锁定专名命中、整段未译；翻译后与润色后各跑一遍，命中即定向重译或回退，其余记录进报告。
+- **章末 review**：按章检查漏译、误译、专名、人称等语义问题（机械问题已由 lint 兜住）；是否自动重译严重项由 `autofix_severe` 控制。
 - **标点规范化**：译文统一为简体中文大陆常用全角标点。
 
 ## 常用工具
@@ -125,9 +126,9 @@ uv run trans-novel tools assemble book.epub
 
 默认配置使用 DeepSeek，并通过 OpenAI SDK 调用 `https://api.deepseek.com`。
 
-- `strong`: 翻译、润色、全局分析、标题翻译。
+- `strong`: 翻译、润色、全书定名、全局分析、标题翻译。
 - `cheap`: 章末 review、一致性 QA、回译比对。
-- `fast`: 全书预扫、章节梗概、术语抽取、回译等机械任务。
+- `fast`: 全书预扫、章节梗概、非英文源的术语候选挖掘、回译等机械任务（英文候选挖掘与 lint 为纯本地计算，零 token）。
 
 如果模型 ID 变化，直接改 `config.yaml` 里的 `llm.tiers`。
 
@@ -137,9 +138,9 @@ uv run trans-novel tools assemble book.epub
 trans_novel/
   ingest/       输入解析、EPUB/FB2/TXT 切分
   llm/          LLM 抽象接口、DeepSeek provider、FakeClient
-  glossary/     SQLite 术语库、抽取、冲突处理
-  agents/       分析、翻译、审校、润色、一致性、提示词
-  pipeline/     编排器、断点状态、滚动上下文、校验
+  glossary/     SQLite 术语库、源文候选挖掘、译后抽取（可选）、冲突处理
+  agents/       分析、翻译、审校、润色、定名、一致性、提示词
+  pipeline/     编排器、断点状态、滚动上下文、确定性 lint、校验
   postprocess/  标点规范化
   assemble/     EPUB/TXT 回填导出、QA 报告
 tests/          离线测试
