@@ -63,6 +63,15 @@ class TestTranslatorAlignment(unittest.TestCase):
         self.assertGreaterEqual(len(single_calls), 3)
 
 
+class TestTranslatorPromptOrder(unittest.TestCase):
+    def test_static_chapter_digest_precedes_dynamic_glossary(self):
+        for template in (prompts.TRANSLATOR_USER, prompts.TRANSLATOR_FIX_USER):
+            self.assertLess(
+                template.template.index("【本章梗概】"),
+                template.template.index("【专有名词对照表】"),
+            )
+
+
 class TestPromptBlockOrder(unittest.TestCase):
     """翻译提示词块序契约：恒定块（风格→全书概览→本章梗概）在前，
     易变块（术语表→前文译文→待译段）在后。顺序被无意打破会破坏
