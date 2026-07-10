@@ -31,6 +31,7 @@ from ..config import Config
 from ..glossary.extractor import GlossaryExtractor
 from ..glossary.store import GlossaryStore, TYPE_PERSON
 from ..llm.base import LLMClient, build_client
+from ..ingest.models import KIND_HEADING
 from ..ingest.segmenter import load_document, batch_segments
 from ..postprocess.punct import normalize_zh
 from ..agents.analyzer import Analyzer
@@ -442,23 +443,39 @@ class Orchestrator:
 
         titled_chapters = [c for c in chapters if _flat(c.get("title", ""))]
         m.pop("title_translated", None)
-        if (all(c.get("title_translated") for c in titled_chapters)
+
+        # 正文标题复用：首段是已译 heading 的章，标题直接取该段译文（与正文用词一致，
+        # 避免独立标题 agent 无上下文另起译法），不进 LLM 列表。
+        llm_chapters = []
+        for c in titled_chapters:
+            chapter = store.load_chapter(c["index"])
+            segs = chapter.segments
+            heading_target = _flat(segs[0].target) if segs and segs[0].kind == KIND_HEADING else ""
+            if heading_target:
+                c["title_translated"] = heading_target
+            else:
+                llm_chapters.append(c)
+        store.save_manifest(m)  # 先落盘复用结果，即便后续 LLM 调用失败也不丢失
+
+        if (all(c.get("title_translated") for c in llm_chapters)
                 and all(e.get("title_translated") for e in toc_entries)):
-            store.save_manifest(m)
             store.log_event("titles_skipped", reason="already_translated")
-            return  # 已译，断点续跑不重复调用
+            return  # 已译（含复用），断点续跑不重复调用
 
         titles = (
-            [_flat(c.get("title", "")) for c in titled_chapters]
+            [_flat(c.get("title", "")) for c in llm_chapters]
             + [_flat(e.get("title", "")) for e in toc_entries]
         )
         if not any(t.strip() for t in titles):
-            return
+            return  # 全部复用/已译，LLM 列表为空，不发请求
+        analysis = store.load_analysis() or {}
+        book_synopsis = analysis.get("book_synopsis") or "（无）"
         system = prompts.render("title_translator_system",
                                 src=self.config.source_lang, tgt=self.config.target_lang,
                                 n=len(titles))
         user = prompts.render("title_translator_user",
                               src=self.config.source_lang, tgt=self.config.target_lang,
+                              book_synopsis=book_synopsis,
                               glossary=prompts.render_glossary(glossary.all_terms()),
                               n=len(titles), numbered_titles=prompts.numbered(titles))
         try:
@@ -477,9 +494,9 @@ class Orchestrator:
             )
             return
         out = [str(t).strip() for t in out]
-        chapter_out = out[:len(titled_chapters)]
-        toc_out = out[len(titled_chapters):]
-        for c, t in zip(titled_chapters, chapter_out):
+        chapter_out = out[:len(llm_chapters)]
+        toc_out = out[len(llm_chapters):]
+        for c, t in zip(llm_chapters, chapter_out):
             c["title_translated"] = t or c.get("title")
         for e, t in zip(toc_entries, toc_out):
             e["title_translated"] = t or e.get("title")

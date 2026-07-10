@@ -155,11 +155,15 @@ TITLE_TRANSLATOR_SYSTEM = Template("""\
 4. 标题须简洁、合乎中文书名/章节命名习惯；不加引号、书名号或解释；
    形如「第3章」「序章」「エピローグ」之类的卷章序号/通用标记，按中文惯例翻译
    （如「第3章」「序章」「尾声」），不要音译。
-5. $punct_rule
+5. 结合【全书概览】理解标题语境（如 reception 是婚礼酒会而非开业），周/星期表记与全书约定一致。
+6. $punct_rule
 仅输出 JSON：{"titles":["第0条标题译文","第1条标题译文",...]}，长度与输入条数相等。\
 """)
 
 TITLE_TRANSLATOR_USER = Template("""\
+【全书概览】
+$book_synopsis
+
 【专有名词对照表】
 $glossary
 

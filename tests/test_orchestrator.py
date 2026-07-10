@@ -335,6 +335,72 @@ class TestTermMiningRobustness(unittest.TestCase):
                                  "back_matter=full 时 Notes 章不得进入挖掘候选输入")
 
 
+class TestTitleReuse(unittest.TestCase):
+    """标题复用（正文 heading 段优先）+ 标题 prompt 注入全书概览。"""
+
+    def _title_calls(self, calls):
+        return [c for c in calls if "标题翻译" in c["messages"][0]["content"]]
+
+    def test_heading_titles_reused_no_llm_call(self):
+        """两章标题都来自已译 heading 段：title_translated 取自正文，零标题 LLM 请求。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+
+            client = FakeClient(handler=routing_handler)
+            store = Orchestrator(cfg, client=client).run(txt)
+
+            m = store.load_manifest()
+            for c in m["chapters"]:
+                heading = store.load_chapter(c["index"]).segments[0]
+                self.assertEqual(heading.kind, "heading")
+                self.assertEqual(c["title_translated"], " ".join(heading.target.split()))
+            # 全部复用，标题 agent 一次都不该被调用
+            self.assertEqual(len(self._title_calls(client.calls)), 0)
+
+    def test_non_heading_title_falls_back_to_llm_with_synopsis(self):
+        """无可复用 heading 段的章 + toc_entries 仍走标题 agent；user prompt 含全书概览块，
+        且已复用章的标题不重复进入 numbered 列表。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+
+            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+
+            # 模拟章 0 无可复用 heading（如非文本源、或首段未译）：清空首段译文
+            ch0 = store.load_chapter(0)
+            ch0.segments[0].target = ""
+            store.save_chapter(ch0)
+            m = store.load_manifest()
+            m["chapters"][0]["title_translated"] = None
+            meta = m.setdefault("meta", {})
+            meta["toc_entries"] = [{"href": "extra.xhtml", "title": "特別編"}]
+            store.save_manifest(m)
+
+            captured = {}
+
+            def handler(messages, tier, json_mode):
+                if "标题翻译" in messages[0]["content"]:
+                    captured["user"] = messages[-1]["content"]
+                return routing_handler(messages, tier, json_mode)
+
+            glossary = GlossaryStore(store.glossary_path)
+            client2 = FakeClient(handler=handler)
+            Orchestrator(cfg, client=client2)._translate_titles(store, glossary)
+            glossary.close()
+
+            self.assertIn("user", captured)
+            self.assertIn("【全书概览】", captured["user"])
+            # 只有章0 + toc 条目共 2 条进入 LLM 列表（章1 已复用，不重复发送）
+            self.assertEqual(len(re.findall(r"^\[(\d+)\]", captured["user"], re.M)), 2)
+
+            m2 = store.load_manifest()
+            self.assertTrue(m2["chapters"][0]["title_translated"])
+            self.assertTrue(m2["meta"]["toc_entries"][0]["title_translated"])
+
+
 class TestRunSteps(unittest.TestCase):
     def test_subset_only_assemble(self):
         """run_steps 步骤子集：仅回填时不应再产生翻译调用（幂等）。"""
