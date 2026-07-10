@@ -16,8 +16,9 @@ fast 档逐章 LLM 挖掘（mine_candidates_llm）。
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 # 大写词序列中允许夹在中间的小写连接词（如 "University of Tokyo"）。
 _CONNECTORS = {"of", "the", "and", "de", "von", "van", "der", "du",
@@ -195,24 +196,42 @@ def mine_candidates_en(chapters: list[tuple[int, str]]) -> list[Candidate]:
     return out
 
 
-def mine_candidates_llm(chapters: list[tuple[int, str]], agent: Any) -> list[Candidate]:
-    """非英文源退路：fast 档逐章挖掘（只看源文，不给译名），本函数负责跨章合并计数。"""
+def mine_candidates_llm(chapters: list[tuple[int, str]], agent: Any, *,
+                        concurrency: int = 1,
+                        on_progress: Callable[[int, int], None] | None = None,
+                        ) -> list[Candidate]:
+    """非英文源退路：fast 档逐章挖掘（只看源文，不给译名），本函数负责跨章合并计数。
+
+    各章调用相互独立 → 按 concurrency 并行（LLM 调用进线程池；合并计数在主线程，
+    且按输入章序合并，输出与串行完全一致）。on_progress(done, total) 按完成数回调
+    （主线程触发，供进度条使用）。
+    """
     from ..agents import prompts
 
-    candidates: dict[str, Candidate] = {}
-    for ci, text in chapters:
-        if not text.strip():
-            continue
+    todo = [(ci, text) for ci, text in chapters if text.strip()]
+
+    def _mine_one(ci: int, text: str) -> list[str]:
         system = prompts.render("term_miner_system", src=agent.src, tgt=agent.tgt)
         user = prompts.render("term_miner_user", src=agent.src, tgt=agent.tgt,
                               chapter=ci, source=text[:8000])
         # 不设 default：某章挖掘失败若被兜成空列表，会让 term_mining_done 静默永久
         # 落盘——异常整体冒泡，交由调用方（orchestrator）捕获并放弃本次落标记、下次续跑重试。
         raw = agent._ask_json(system, user, tier="fast", key="candidates")
-        for surface in raw or []:
-            if not isinstance(surface, str) or not surface.strip():
-                continue
-            surface = surface.strip()
+        return [s.strip() for s in raw or []
+                if isinstance(s, str) and s.strip()]
+
+    results: dict[int, list[str]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
+        futs = {ex.submit(_mine_one, ci, text): ci for ci, text in todo}
+        for i, fut in enumerate(as_completed(futs), 1):
+            results[futs[fut]] = fut.result()  # 异常冒泡；池随 with 收尾
+            if on_progress:
+                on_progress(i, len(todo))
+
+    # 按输入章序合并（与并发完成顺序无关，保证输出确定性）
+    candidates: dict[str, Candidate] = {}
+    for ci, _ in todo:
+        for surface in results.get(ci, []):
             c = candidates.setdefault(surface, Candidate(surface=surface))
             c.count += 1
             if ci not in c.chapters:
@@ -224,13 +243,17 @@ def mine_candidates_llm(chapters: list[tuple[int, str]], agent: Any) -> list[Can
 
 
 def mine_candidates(src_lang: str, chapters: list[tuple[int, str]],
-                    agent: Any) -> list[Candidate]:
+                    agent: Any, *, concurrency: int = 1,
+                    on_progress: Callable[[int, int], None] | None = None,
+                    ) -> list[Candidate]:
     """入口：en 走"确定性大写通道 ∪ fast 档 LLM 通道"双通道合并；其它语言只走 LLM 通道。"""
     if not (src_lang or "").strip().lower().startswith("en"):
-        return mine_candidates_llm(chapters, agent)
+        return mine_candidates_llm(chapters, agent, concurrency=concurrency,
+                                   on_progress=on_progress)
 
     det = mine_candidates_en(chapters)
-    llm = mine_candidates_llm(chapters, agent)
+    llm = mine_candidates_llm(chapters, agent, concurrency=concurrency,
+                              on_progress=on_progress)
     return _merge_candidates(det, llm)
 
 

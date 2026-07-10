@@ -1256,5 +1256,25 @@ class TestLintSkipBranchRecordsIssue(unittest.TestCase):
 
 
 
+class TestProgressLabels(unittest.TestCase):
+    """进度回调覆盖译前/译中/译后全阶段——防止新增阶段静默停在"准备中"。"""
+
+    def test_stage_labels_appear_in_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt"); write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            labels: list[str] = []
+            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+            orch.run_steps(txt, {"translate", "qa", "report", "assemble"},
+                           progress=lambda done, total, label: labels.append(label))
+            expected = ["解析文档…", "分析全书风格…", "预扫章节梗概", "挖掘术语候选",
+                        "全书术语定名…", "生成全书概览…", "翻译完成",
+                        "一致性 QA…", "生成报告…", "回填译文…"]
+            it = iter(labels)
+            missing = [e for e in expected if e not in it]
+            self.assertEqual(missing, [],
+                             f"缺失或乱序的阶段标签：{missing}；实际序列={labels}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -179,5 +179,55 @@ class TestMineCandidatesDualChannel(unittest.TestCase):
         self.assertEqual([c.surface for c in result], ["堀北"])
 
 
+class TestMineCandidatesLlmConcurrency(unittest.TestCase):
+    """LLM 通道并行化：输出与串行完全一致（按输入章序合并）、进度按完成数回调、
+    单章异常照旧冒泡（不得被兜成空列表）。"""
+
+    class _PerChapterAgent:
+        """按 user prompt 里的章号返回该章候选；值为异常实例时抛出（模拟单章失败）。"""
+        def __init__(self, per_chapter: dict):
+            self.src, self.tgt = "ja", "zh"
+            self._per = per_chapter
+
+        def _ask_json(self, system, user, *, tier, key=None, default=None, max_tokens=None):
+            import re
+            ci = int(re.search(r"第(\d+)章", user).group(1))
+            val = self._per[ci]
+            if isinstance(val, Exception):
+                raise val
+            return list(val)
+
+    _CHAPTERS = [(1, "一章目。"), (2, "二章目。"), (3, "三章目。")]
+    _PER = {1: ["堀北", "綾小路"], 2: ["堀北"], 3: ["綾小路", "堀北"]}
+
+    def _mine(self, concurrency: int, on_progress=None):
+        from trans_novel.glossary.miner import mine_candidates_llm
+        agent = self._PerChapterAgent(self._PER)
+        return mine_candidates_llm(self._CHAPTERS, agent,
+                                   concurrency=concurrency, on_progress=on_progress)
+
+    def test_concurrent_output_identical_to_serial(self):
+        serial = self._mine(1)
+        parallel = self._mine(3)
+        key = lambda cands: [(c.surface, c.count, c.chapters) for c in cands]
+        self.assertEqual(key(parallel), key(serial))
+        by_surface = {c.surface: c for c in parallel}
+        self.assertEqual(by_surface["堀北"].count, 3)
+        self.assertEqual(by_surface["堀北"].chapters, [1, 2, 3])  # 输入章序，与完成顺序无关
+
+    def test_on_progress_counts_completions(self):
+        calls: list[tuple[int, int]] = []
+        self._mine(2, on_progress=lambda i, n: calls.append((i, n)))
+        self.assertEqual([i for i, _ in calls], [1, 2, 3])
+        self.assertTrue(all(n == 3 for _, n in calls))
+
+    def test_single_chapter_failure_propagates(self):
+        from trans_novel.glossary.miner import mine_candidates_llm
+        per = {**self._PER, 2: ValueError("boom")}
+        agent = self._PerChapterAgent(per)
+        with self.assertRaises(ValueError):
+            mine_candidates_llm(self._CHAPTERS, agent, concurrency=2)
+
+
 if __name__ == "__main__":
     unittest.main()
