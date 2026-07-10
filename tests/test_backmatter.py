@@ -223,6 +223,7 @@ class TestBackMatterFull(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             _write_doc(txt)
             cfg = _config(os.path.join(d, "state"), "full")
+            cfg.pipeline.inflight_glossary = True  # 该断言依赖译后抽取路径（正文章应照常抽词）
 
             client = FakeClient(handler=routing_handler)
             store = Orchestrator(cfg, client=client).run(txt)

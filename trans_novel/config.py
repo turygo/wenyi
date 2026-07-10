@@ -51,6 +51,10 @@ class PipelineConfig(BaseModel):
     # full=完整翻译流水线。任何档位都不从附属章抽术语（引文人名/书名会污染全书术语表）。
     # 非法值启动即报错（成本开关必须 fail-fast）；升档重跑自动重开已完成的附属章，降档不回退。
     back_matter: Literal["skip", "light", "full"] = "light"
+    # 术语供给策略：False（默认）=只用翻译前一次性定名的结果，翻译期术语表只读，
+    # 不再从译后 (源文,译文) 对里抽词回灌（避免把首译直译固化成铁律、避免伪冲突）；
+    # True=保留旧的"译后逐批+章末抽取"行为（日文轻小说的称呼变体/口癖场景仍需要译后确认）。
+    inflight_glossary: bool = False
 
 
 class OutputConfig(BaseModel):

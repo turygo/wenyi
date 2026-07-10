@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from trans_novel.config import Config
+from trans_novel.glossary.store import GlossaryStore
 from trans_novel.llm.base import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator, _normalize_lang
 from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING
@@ -59,21 +60,32 @@ class TestOrchestrator(unittest.TestCase):
             ch0 = store.load_chapter(0)
             self.assertTrue(all(s.target for s in ch0.text_segments))
 
-            # 术语抽取写入了「堀北」；分析器种入了「绫小路」
+            # 默认配置（inflight_glossary=False）：术语库有 namer 一次性定名种入的条目
+            # （fake 全书定名路由把候选原样定名，type=人物）；分析器种入了「绫小路」；
+            # 全程不应向 FakeClient 发出旧版"抽取器" system 请求。
             from trans_novel.glossary.store import GlossaryStore
             g = GlossaryStore(store.glossary_path)
             self.assertIsNotNone(g.get_term("綾小路"))
             self.assertIsNotNone(g.get_term("堀北"))
             self.assertGreater(g.stats()["tm_entries"], 0)  # 翻译记忆库已写入
             g.close()
+            extractor_calls = [c for c in client.calls
+                               if "术语" in c["messages"][0]["content"]
+                               and "抽取器" in c["messages"][0]["content"]]
+            self.assertEqual(len(extractor_calls), 0, "默认路径不得调用旧版抽取器")
+            analysis = store.load_analysis() or {}
+            self.assertTrue(analysis.get("term_mining_done"))
 
-            # ── 续跑：所有章已 done，不应再产生翻译调用 ──
+            # ── 续跑：所有章已 done，不应再产生翻译调用；也不应重复定名 ──
             client2 = FakeClient(handler=routing_handler)
             orch2 = Orchestrator(cfg, client=client2)
             orch2.run(txt)  # resume 语义
             translate_calls = [c for c in client2.calls
                                if "文学翻译" in c["messages"][0]["content"]]
             self.assertEqual(len(translate_calls), 0)
+            naming_calls = [c for c in client2.calls
+                            if "全书定名" in c["messages"][0]["content"]]
+            self.assertEqual(len(naming_calls), 0, "续跑不应重复定名")
 
     def test_resume_after_partial(self):
         with tempfile.TemporaryDirectory() as d:
@@ -226,6 +238,101 @@ class TestBookUnderstanding(unittest.TestCase):
                        if "梗概员" in c["messages"][0]["content"]
                        or "概览员" in c["messages"][0]["content"]]
             self.assertEqual(len(prepass), 0)
+
+
+class TestTermMiningRobustness(unittest.TestCase):
+    """reviewer 三个 major 缺陷的回归：定名失败不落幂等标记、既有人物确认后升级锁定、
+    预扫挖掘输入用 is_back_matter 排除附属章。"""
+
+    @staticmethod
+    def _events(store):
+        with open(store.event_log_path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_naming_failure_does_not_set_flag_and_retries_on_resume(self):
+        """一次强档定名异常：term_mining_done 不落盘，不静默永久跳过；续跑重试并成功。"""
+        def failing_handler(messages, tier, json_mode):
+            if "全书定名" in messages[0]["content"]:
+                raise RuntimeError("strong tier timeout")
+            return routing_handler(messages, tier, json_mode)
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+
+            client = FakeClient(handler=failing_handler)
+            store = Orchestrator(cfg, client=client).run(txt)
+
+            analysis = store.load_analysis() or {}
+            self.assertFalse(analysis.get("term_mining_done"),
+                             "定名异常时不得落盘 term_mining_done")
+            g = GlossaryStore(store.glossary_path)
+            self.assertIsNone(g.get_term("堀北"))
+            g.close()
+            failed = [e for e in self._events(store) if e["event"] == "cast_naming_failed"]
+            self.assertTrue(failed, "应记录 cast_naming_failed 事件")
+
+            # 续跑：换正常 handler，应重试挖掘/定名并成功落盘（不是静默永久跳过）
+            client2 = FakeClient(handler=routing_handler)
+            store2 = Orchestrator(cfg, client=client2).run(txt)
+            analysis2 = store2.load_analysis() or {}
+            self.assertTrue(analysis2.get("term_mining_done"))
+            g2 = GlossaryStore(store2.glossary_path)
+            self.assertIsNotNone(g2.get_term("堀北"))
+            g2.close()
+
+    def test_namer_confirmed_person_gets_locked(self):
+        """seed_glossary 先种入的未锁定人物，被 namer 确认沿用译法后应升级为 locked+高置信度。"""
+        from trans_novel.glossary.store import GlossaryTerm, TYPE_PERSON
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+
+            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+            store = orch.prepare(txt)
+            g = GlossaryStore(store.glossary_path)
+            # 模拟 seed_glossary 种入的未锁定人物：source 与 mining 固定候选「堀北」同名，
+            # target 与 fake 全书定名路由的原样定名结果一致，用于验证确认升级逻辑。
+            g.upsert_term(GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON,
+                                       confidence="medium", locked=False), chapter=1)
+            g.close()
+
+            Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+
+            g2 = GlossaryStore(store.glossary_path)
+            term = g2.get_term("堀北")
+            self.assertTrue(term.locked, "namer 确认沿用后应升级为锁定")
+            self.assertEqual(term.confidence, "high")
+            g2.close()
+
+    def test_full_back_matter_excluded_from_mining_input(self):
+        """back_matter=full 时 _back_matter_mode 恒不旁路，但挖掘输入仍须用 is_back_matter
+        排除 Notes 等附属章——引文人名/书目标题不得混入候选。"""
+        marker = "ZZQ_NOTES_MINING_MARKER"
+        body = "綾小路は教室の窓際に座っていた。空はどこまでも青く鳥が鳴いていた。" + "あ" * 220
+        dialog = "「おはよう、綾小路くん」と堀北が声をかけた。彼女はいつも通り無表情だった。"
+        notes = f"1. Endnote {marker} on chapter one, page 12.\n\n2. Bibliography entry."
+        doc = f"# 第一章 出会い\n\n{body}\n\n{dialog}\n\n# Notes\n\n{notes}\n"
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            with open(txt, "w", encoding="utf-8") as f:
+                f.write(doc)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.back_matter = "full"
+
+            client = FakeClient(handler=routing_handler)
+            Orchestrator(cfg, client=client).run(txt)
+
+            mining_calls = [c for c in client.calls
+                            if "术语候选挖掘" in c["messages"][0]["content"]]
+            self.assertTrue(mining_calls, "应产生挖掘调用（正文章）")
+            for c in mining_calls:
+                self.assertNotIn(marker, c["messages"][-1]["content"],
+                                 "back_matter=full 时 Notes 章不得进入挖掘候选输入")
 
 
 class TestRunSteps(unittest.TestCase):
@@ -466,6 +573,7 @@ class TestGlossaryScope(unittest.TestCase):
             cfg.pipeline.review = False
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
+            cfg.pipeline.inflight_glossary = True
             cfg.segment.max_chars_per_batch = 10
 
             client = FakeClient(handler=handler)
@@ -506,9 +614,39 @@ class TestGlossaryScope(unittest.TestCase):
             cfg.pipeline.polish = False
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
+            cfg.pipeline.inflight_glossary = True
             cfg.segment.max_chars_per_batch = 200
 
             Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+
+
+class TestInflightGlossary(unittest.TestCase):
+    """inflight_glossary=True：旧版"译后逐批+章末抽取"路径原样保留（日文轻小说场景）。"""
+
+    def test_legacy_extraction_path_still_works(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.inflight_glossary = True
+
+            client = FakeClient(handler=routing_handler)
+            store = Orchestrator(cfg, client=client).run(txt)
+
+            extractor_calls = [c for c in client.calls
+                               if "术语" in c["messages"][0]["content"]
+                               and "抽取器" in c["messages"][0]["content"]]
+            self.assertTrue(extractor_calls, "inflight_glossary=True 时应调用旧版抽取器")
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            self.assertTrue(any(e["event"] == "batch_glossary_extracted" for e in events))
+            self.assertTrue(any(e["event"] == "chapter_glossary_extracted" for e in events))
+
+            from trans_novel.glossary.store import GlossaryStore
+            g = GlossaryStore(store.glossary_path)
+            self.assertIsNotNone(g.get_term("堀北"))
+            g.close()
 
 
 class TestTierRouting(unittest.TestCase):
@@ -525,7 +663,7 @@ class TestTierRouting(unittest.TestCase):
 
             expect = {
                 "章节梗概员": "fast", "全书概览员": "fast",
-                "术语与称呼抽取器": "fast", "回译译者": "fast",
+                "术语候选挖掘": "fast", "全书定名": "strong", "回译译者": "fast",
                 "译文审校": "cheap", "保真度": "cheap",
                 "文学翻译": "strong",
             }

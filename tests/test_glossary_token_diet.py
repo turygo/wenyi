@@ -33,7 +33,7 @@ from tests.fake_llm import routing_handler
 
 def _cfg(state_dir, *, back_matter="full", max_chars_per_batch=1800,
          review=True, polish=True, backtranslate=1.0,
-         book_understanding=True, consistency_qa=True):
+         book_understanding=True, consistency_qa=True, inflight_glossary=True):
     return Config.from_dict({
         "language": {"source": "ja", "target": "zh"},
         "llm": {"provider": "fake", "tiers": {
@@ -44,7 +44,8 @@ def _cfg(state_dir, *, back_matter="full", max_chars_per_batch=1800,
                      "backtranslate_sample": backtranslate,
                      "consistency_qa": consistency_qa,
                      "book_understanding": book_understanding,
-                     "back_matter": back_matter},
+                     "back_matter": back_matter,
+                     "inflight_glossary": inflight_glossary},
         "paths": {"state_dir": state_dir},
     })
 

@@ -210,6 +210,26 @@ class GlossaryStore:
             )
         self.conn.commit()
 
+    def confirm_locked(self, source: str, target: str) -> bool:
+        """namer 一次性定名确认沿用某已有译法时调用：把该条目升级为 locked+高置信度。
+
+        seed_glossary 先种入的角色（medium/未锁）光靠 upsert_term 的同译法分支升不了
+        locked（该分支只合并别名/补字段，不动 locked/confidence），term_miss 硬校验因此
+        形同虚设。仅当当前 target 与确认值完全一致才生效，防止把错误译法锁死。
+        返回是否执行了升级（未命中/已是最高状态时返回 False，避免多余 UPDATE）。
+        """
+        existing = self.get_term(source)
+        if existing is None or existing.target != target:
+            return False
+        if existing.locked and existing.confidence == "high":
+            return False
+        self.conn.execute(
+            "UPDATE glossary SET locked=1, confidence='high', status='ok', updated_at=? WHERE source=?",
+            (time.time(), source),
+        )
+        self.conn.commit()
+        return True
+
     def all_terms(self) -> list[GlossaryTerm]:
         rows = self.conn.execute(
             "SELECT * FROM glossary ORDER BY type, source"

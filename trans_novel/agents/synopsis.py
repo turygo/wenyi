@@ -29,17 +29,17 @@ class Synopsizer(Agent):
         # 机械任务走 fast 档（免思考）；梗概 ≤200 字，上限留足裕量防输出失控
         return self._ask_text(system, user, tier="fast", max_tokens=600)
 
-    def book_synopsis(self, digests: list[str], analysis_brief: str) -> str:
-        """把各章梗概 + 前期分析归并成全书概览。超长则分组 map-reduce。"""
+    def book_synopsis(self, digests: list[str], analysis_brief: str, cast: str = "") -> str:
+        """把各章梗概 + 前期分析 + 人物定名表归并成全书概览。超长则分组 map-reduce。"""
         items = [d.strip() for d in digests if d and d.strip()]
         if not items:
             return ""
         while True:
             groups = self._group(items, _REDUCE_BUDGET)
             if len(groups) == 1:
-                return self._synth(groups[0], analysis_brief)
+                return self._synth(groups[0], analysis_brief, cast)
             # 多组：每组先归并为一段较粗的概览，再进入下一轮归并
-            items = [self._synth(g, analysis_brief) for g in groups]
+            items = [self._synth(g, analysis_brief, cast) for g in groups]
             items = [s for s in items if s.strip()]
             if not items:
                 return ""
@@ -61,10 +61,11 @@ class Synopsizer(Agent):
             groups.append(cur)
         return groups
 
-    def _synth(self, digests: list[str], analysis_brief: str) -> str:
+    def _synth(self, digests: list[str], analysis_brief: str, cast: str = "") -> str:
         numbered = "\n".join(f"[{i}] {d}" for i, d in enumerate(digests))
         system = prompts.render("book_synopsis_system", src=self.src, tgt=self.tgt)
         user = prompts.render("book_synopsis_user", src=self.src, tgt=self.tgt,
-                              analysis=analysis_brief or "（无）", digests=numbered)
+                              analysis=analysis_brief or "（无）", digests=numbered,
+                              cast=cast or "（无）")
         # 概览 ≤500 字，fast 档 + 上限
         return self._ask_text(system, user, tier="fast", max_tokens=1200)

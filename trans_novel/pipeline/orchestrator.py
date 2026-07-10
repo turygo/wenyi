@@ -38,6 +38,9 @@ from ..agents.synopsis import Synopsizer
 from ..agents.translator import Translator
 from ..agents.reviewer import Reviewer, BackTranslator
 from ..agents.polisher import Polisher
+from ..agents.namer import CastNamer
+from ..agents import prompts
+from ..glossary.miner import mine_candidates
 from . import checks, lint
 from .backmatter import is_back_matter
 from .context import RollingContext
@@ -81,6 +84,7 @@ class Orchestrator:
         self.backtrans = BackTranslator(self.client, config)
         self.polisher = Polisher(self.client, config)
         self.extractor = GlossaryExtractor(self.client, config)
+        self.namer = CastNamer(self.client, config)
 
     # ── 语言解析 ────────────────────────────────────────────────────────────
     def _apply_language(self, lang: str) -> None:
@@ -88,7 +92,7 @@ class Orchestrator:
         resolved = lang or self.config.source_lang
         self.config.source_lang = resolved
         for ag in (self.analyzer, self.synopsizer, self.translator, self.reviewer,
-                   self.backtrans, self.polisher, self.extractor):
+                   self.backtrans, self.polisher, self.extractor, self.namer):
             ag.src = resolved
 
     # ── 准备 / 续跑入口 ──────────────────────────────────────────────────
@@ -198,7 +202,7 @@ class Orchestrator:
         context = RollingContext.from_dict(store.load_context() or {})
         style = self.analyzer.style_brief(store.load_analysis() or {})
         # 翻译前预扫源文，建立全书理解（幂等、可续跑）；全书概览注入每章翻译
-        book_synopsis = self._build_understanding(store)
+        book_synopsis = self._build_understanding(store, glossary)
         # 附属章档位升档（skip→light/full、light→full）时重开已完成的附属章重译；
         # 旁路产物（原文副本/fast 粗翻）否则会被批级续跑当成已译整批复用。降档不回退。
         self._reopen_upgraded_back_matter(store)
@@ -313,11 +317,11 @@ class Orchestrator:
         return total
 
     # ── 全书理解预扫（源文逐章梗概 + 全书概览）────────────────────────────────
-    def _build_understanding(self, store: RunStore) -> str:
+    def _build_understanding(self, store: RunStore, glossary: GlossaryStore) -> str:
         """翻译前预扫源文：逐章梗概存入 chapter.meta，归并出全书概览存入 analysis。
 
         幂等、可续跑：已有梗概/概览则跳过。返回全书概览（注入各章翻译 prompt）。
-        关闭 book_understanding 时直接返回空串。
+        关闭 book_understanding 时直接返回空串（含一次性定名阶段，一并跳过）。
         """
         if not self.config.pipeline.book_understanding:
             store.log_event("book_understanding_skipped", reason="disabled")
@@ -329,10 +333,10 @@ class Orchestrator:
         # 保持原子写不竞争，且逐章增量落盘、续跑粒度不变）。已有梗概的章跳过（幂等）。
         loaded = {c.get("index", i): store.load_chapter(c.get("index", i))
                   for i, c in enumerate(chapters)}
-        todo = [(ci, "\n".join(s.source for s in ch.text_segments))
-                for ci, ch in loaded.items()
-                if not ch.meta.get("source_digest")
-                and not self._back_matter_mode(ch.title, ci, len(chapters))]
+        body_chapters = [ci for ci, ch in loaded.items()
+                         if not self._back_matter_mode(ch.title, ci, len(chapters))]
+        todo = [(ci, "\n".join(s.source for s in loaded[ci].text_segments))
+                for ci in body_chapters if not loaded[ci].meta.get("source_digest")]
         if todo:
             store.log_event(
                 "book_understanding_chapter_digest_started",
@@ -358,10 +362,54 @@ class Orchestrator:
                    for i, c in enumerate(chapters)]
 
         analysis = store.load_analysis() or {}
+
+        # 一次性全书定名：源文侧挖掘候选 + 强档一次性定名，取代译后逐批抽取——
+        # 翻译期术语表只读（见 _translate_chapter 的 inflight_glossary 门控）。
+        # 幂等标记 term_mining_done：已跑过（含续跑）则跳过，不重复定名。
+        if not analysis.get("term_mining_done"):
+            # 挖掘输入必须用 is_back_matter（而非 _back_matter_mode）排除附属章：
+            # back_matter=full 时 _back_matter_mode 恒返回 None（不旁路），但附属章
+            # 仍是附属章——引文人名/书目标题混进候选正是本次重构要消灭的污染源。
+            mine_chapters = [ci for ci, ch in loaded.items()
+                             if not is_back_matter(ch.title, index=ci, total=len(chapters))]
+            src_chapters = [
+                (ci, "\n".join(s.source for s in loaded[ci].text_segments))
+                for ci in mine_chapters
+            ]
+            # 挖掘/定名任一环节异常都不得吞掉：一次强档超时若被默认值兜住，
+            # term_mining_done 会静默永久落盘为 True，续跑再也不会重试。
+            # 因此这里不设 default，异常整体冒泡，本轮降级为无定名（不写标记），
+            # 下次续跑重新尝试；真挖掘为空（无异常、无候选）才照常写标记。
+            try:
+                candidates = mine_candidates(self.config.source_lang, src_chapters, self.namer)
+                store.log_event("term_candidates_mined", count=len(candidates))
+                existing = glossary.all_terms()
+                named = self.namer.name_terms(
+                    candidates, self.analyzer.style_brief(analysis), digests, existing=existing)
+            except Exception as e:
+                store.log_event("cast_naming_failed", error=str(e))
+                named = None
+            if named is not None:
+                inserted = 0
+                for t in named:
+                    result = glossary.upsert_term(t, chapter=0)
+                    if result in ("inserted", "updated"):
+                        inserted += 1
+                    if t.type == TYPE_PERSON:
+                        # namer 确认沿用已有译法时（seed_glossary 先种入的 medium/未锁）
+                        # upsert_term 的同译法分支不会升级 locked/confidence，这里显式
+                        # 补一次；仅当当前 target 与确认值一致才生效，防止锁错译法。
+                        glossary.confirm_locked(t.source, t.target)
+                analysis["term_mining_done"] = True
+                store.save_analysis(analysis)
+                store.log_event("cast_named", count=inserted)
+
         synopsis = analysis.get("book_synopsis", "")
         if not synopsis and any(d.strip() for d in digests):
+            cast_text = prompts.render_glossary(
+                [t for t in glossary.all_terms() if t.type == TYPE_PERSON])
             synopsis = self.synopsizer.book_synopsis(
-                digests, self.analyzer.style_brief(analysis))
+                digests, self.analyzer.style_brief(analysis), cast=cast_text)
             analysis["book_synopsis"] = synopsis
             store.save_analysis(analysis)
             store.log_event("book_synopsis_saved", synopsis=synopsis)
@@ -619,7 +667,7 @@ class Orchestrator:
                 # 抽取保持同步现状，遗留的 pending_polish 标记留到章末统一排干。
                 context.add_targets(existing_targets)
                 summary = None
-                if not bm:
+                if not bm and self.config.pipeline.inflight_glossary:
                     summary, changed = self._extract_batch_glossary(
                         glossary, store, ci, seg_base, b)
                     # 与新译批一致的条件刷新：新词命中本章剩余源文才重建快照，保前缀缓存。
@@ -785,7 +833,8 @@ class Orchestrator:
             # future 占满 4 worker 时反向阻塞主线程，把后台工作拖回翻译关键路径。保住
             # 不变量 (a)（落库不领先落盘）与 (d)（下一批可见上一批新词）。
             # 附属章 full 档跳过抽取；新词仅当命中剩余源文时才刷新快照以保前缀缓存。
-            if not bm:
+            # inflight_glossary=False（新默认）：术语只来自翻译前一次性定名，本处不抽取。
+            if not bm and self.config.pipeline.inflight_glossary:
                 batch_src = "\n".join(s.source for s in b)
                 terms = self.extractor.extract(
                     batch_src, "\n".join(raw_targets),
@@ -811,8 +860,8 @@ class Orchestrator:
 
         # 全章术语抽取入库：保留为兜底，捕捉跨段才能确认的称呼/口癖/固定表达；
         # 在润色后的最终文本上跑，放在 review 前让本章审校也能用上兜底抽出的术语。
-        # 附属章 full 档不抽词。
-        if not bm:
+        # 附属章 full 档不抽词；inflight_glossary=False（新默认）时整段跳过（不刷新快照）。
+        if not bm and self.config.pipeline.inflight_glossary:
             src_text = "\n".join(s.source for s in text_segs)
             tgt_text = "\n".join(s.target or "" for s in text_segs)
             self.extractor.extract_and_store(glossary, src_text, tgt_text, ci)

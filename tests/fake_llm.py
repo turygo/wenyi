@@ -41,6 +41,16 @@ def routing_handler(messages, tier, json_mode):
     if "译文审校" in system:
         return json.dumps({"issues": []}, ensure_ascii=False)
 
+    if "术语候选挖掘" in system:
+        return json.dumps({"candidates": ["堀北"]}, ensure_ascii=False)
+
+    if "全书定名" in system:
+        surfaces = re.findall(r"^\[\d+\] (\S+?)（", user, re.M)
+        return json.dumps({"terms": [
+            {"source": s, "target": s, "type": "人物", "gender": "女"}
+            for s in dict.fromkeys(surfaces)
+        ]}, ensure_ascii=False)
+
     if "术语" in system and "抽取器" in system:
         return json.dumps({"terms": [
             {"source": "堀北", "target": "堀北", "type": "人物", "gender": "女"}
