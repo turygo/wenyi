@@ -29,6 +29,7 @@ class Analyzer(Agent):
             data.setdefault(key, "")
         data.setdefault("characters", [])
         data.setdefault("terms", [])
+        data.setdefault("conventions", "")
         return data
 
     def seed_glossary(self, store: GlossaryStore, analysis: dict[str, Any]) -> int:
@@ -70,6 +71,8 @@ class Analyzer(Agent):
             lines.append(f"语气文体：{analysis['tone']}")
         if analysis.get("style_guide"):
             lines.append(f"风格指南：{analysis['style_guide']}")
+        if analysis.get("conventions"):
+            lines.append(f"格式约定：{analysis['conventions']}")
         # 细粒度风格维度（旧 analysis.json 缺字段时自动跳过，向后兼容）
         for key, tag in (("narration", "叙事"), ("pacing", "句式节奏"),
                          ("register", "语域"), ("dialogue_style", "对话风格"),

@@ -183,7 +183,8 @@ ANALYZER_SYSTEM = Template("""\
   "dialogue_style": "对话风格（口癖、语气词、称呼习惯）",
   "rhetoric": "修辞倾向（比喻密度、心理描写方式等）",
   "characters": [{"source":"原文名","reading":"读音(可空)","target":"建议中文译名","gender":"男/女/未知","note":"性格/语气特征，须包含说话方式：自称、口癖、敬语习惯"}],
-  "terms": [{"source":"原文词","reading":"读音(可空)","target":"建议中文译法","type":"地名/组织/术语","note":""}]
+  "terms": [{"source":"原文词","reading":"读音(可空)","target":"建议中文译法","type":"地名/组织/术语","note":""}],
+  "conventions": "全书格式约定（中文，2-4 条：数字与年代格式（如统一'20世纪90年代'）、星期表记（统一'星期X'或'周X'）、度量单位处理）"
 }\
 """)
 

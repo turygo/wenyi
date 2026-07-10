@@ -22,6 +22,7 @@ def routing_handler(messages, tier, json_mode):
             "genre": "校园", "tone": "冷峻", "style_guide": "克制",
             "characters": [{"source": "綾小路", "target": "绫小路", "gender": "男"}],
             "terms": [],
+            "conventions": "年代统一用'20世纪90年代'；星期统一用'星期X'。",
         }, ensure_ascii=False)
 
     if "标题翻译" in system:

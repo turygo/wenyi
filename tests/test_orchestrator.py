@@ -493,6 +493,9 @@ class TestStyleAnalysis(unittest.TestCase):
         self.assertIn("语域：口语", brief)
         self.assertIn("对话风格：语气词丰富", brief)
         self.assertIn("叙事：第一人称", brief)
+        # 格式约定（年代/星期/度量单位）渲染为独立行
+        conv = ana.style_brief({"genre": "校园", "conventions": "年代统一用'20世纪90年代'。"})
+        self.assertIn("格式约定：年代统一用'20世纪90年代'。", conv)
         # 旧格式：只有老字段
         old = ana.style_brief({"genre": "校园", "tone": "冷峻"})
         self.assertIn("体裁：校园", old)
