@@ -103,7 +103,7 @@ class Orchestrator:
     def prepare(self, input_path: str, *,
                 progress: Optional[ProgressFn] = None) -> RunStore:
         if progress:
-            progress(0, 0, "解析文档…")
+            progress(0, 0, "读取原书…")
         # 超长段按句拆分（max_chars_per_segment），续段标 cont 供回填并回
         doc = load_document(input_path, self.config.source_lang, self.config.target_lang,
                             split_segments=self.config.segment.max_chars_per_segment)
@@ -357,7 +357,7 @@ class Orchestrator:
             )
             workers = max(1, self.config.pipeline.prescan_concurrency)
             if progress:
-                progress(0, len(todo), "预扫章节梗概")
+                progress(0, len(todo), "通读全书章节…")
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 futs = {ex.submit(self.synopsizer.digest_chapter, src): ci
                         for ci, src in todo}
@@ -371,7 +371,7 @@ class Orchestrator:
                         digest=loaded[ci].meta["source_digest"],
                     )
                     if progress:
-                        progress(n_done, len(todo), "预扫章节梗概")
+                        progress(n_done, len(todo), "通读全书章节…")
 
         # 按 manifest 章序组装（与并发完成顺序无关）
         digests = [loaded[c.get("index", i)].meta.get("source_digest", "") or ""
@@ -400,7 +400,7 @@ class Orchestrator:
                 candidates = mine_candidates(
                     self.config.source_lang, src_chapters, self.namer,
                     concurrency=max(1, self.config.pipeline.prescan_concurrency),
-                    on_progress=(lambda i, n: progress(i, n, "挖掘术语候选"))
+                    on_progress=(lambda i, n: progress(i, n, "查找专有名词…"))
                     if progress else None)
                 store.log_event("term_candidates_mined", count=len(candidates))
                 existing = glossary.all_terms()
@@ -408,7 +408,7 @@ class Orchestrator:
                     candidates, self.analyzer.style_brief(analysis), digests,
                     existing=existing,
                     concurrency=max(1, self.config.pipeline.prescan_concurrency),
-                    on_progress=(lambda i, n: progress(i, n, "全书术语定名…"))
+                    on_progress=(lambda i, n: progress(i, n, "统一译名…"))
                     if progress else None)
             except Exception as e:
                 store.log_event("cast_naming_failed", error=str(e))
@@ -1238,7 +1238,7 @@ class Orchestrator:
         try:
             if "qa" in steps:
                 if progress:
-                    progress(0, 0, "一致性 QA…")
+                    progress(0, 0, "检查全书一致性…")
                 qa_issues = ConsistencyChecker(self.client, self.config).check(store, glossary)
                 store.log_event(
                     "consistency_qa_finished",
@@ -1260,7 +1260,7 @@ class Orchestrator:
         outputs: list[str] = []
         if "assemble" in steps:
             if progress:
-                progress(0, 0, "回填译文…")
+                progress(0, 0, "生成译文文件…")
             out_cfg = self.config.output
             do_mono, do_bilingual = out_cfg.mono, out_cfg.bilingual
             if not do_mono and not do_bilingual:

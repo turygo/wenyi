@@ -1352,9 +1352,9 @@ class TestProgressLabels(unittest.TestCase):
             orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
             orch.run_steps(txt, {"translate", "qa", "report", "assemble"},
                            progress=lambda done, total, label: labels.append(label))
-            expected = ["解析文档…", "分析全书风格…", "预扫章节梗概", "挖掘术语候选",
-                        "全书术语定名…", "生成全书概览…", "翻译完成",
-                        "一致性 QA…", "生成报告…", "回填译文…"]
+            expected = ["读取原书…", "分析全书风格…", "通读全书章节…", "查找专有名词…",
+                        "统一译名…", "生成全书概览…", "翻译完成",
+                        "检查全书一致性…", "生成报告…", "生成译文文件…"]
             it = iter(labels)
             missing = [e for e in expected if e not in it]
             self.assertEqual(missing, [],
