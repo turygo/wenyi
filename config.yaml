@@ -1,80 +1,102 @@
 # trans-novel 配置（多语言小说 → 中文）
-# 修改后无需改代码；模型 ID、档位、流水线开关都在这里。
+# 改这里就能调整行为，不用动代码：模型 ID、档位、流水线开关都在这。
 
 language:
-  source: auto # auto 由模型识别来源语言；也可写死 ja / en / ko / ru / de 等语言代码
-  target: zh # 译文语言
+  # 来源语言：auto 让模型自动识别；也可写死语言代码，如 ja / en / ko / ru / de
+  source: auto
+  # 译文语言
+  target: zh
 
-# ── LLM：DeepSeek 三档（经 OpenAI SDK 调 https://api.deepseek.com）─────────
-# strong/cheap 开 thinking（求质量的判断类任务）；fast 关 thinking（机械任务，
-# thinking 推理 token 按输出计费，关掉大幅省钱提速）。缺档按 fast→cheap→strong 回退。
+# ── LLM：DeepSeek 三档（通过 OpenAI SDK 调用 https://api.deepseek.com）─────
+# strong / cheap 开思考（要动脑的判断类任务）；fast 关思考（机械任务，思考会多花
+# 推理 token 且按输出计费，关掉能明显省钱提速）。某档没配时按 fast→cheap→strong 找替补。
 llm:
-  provider: deepseek # deepseek | fake（fake 用于离线测试，不发网络请求）
+  # 模型来源：deepseek 正常联网；fake 用于离线测试，不发任何网络请求
+  provider: deepseek
   base_url: https://api.deepseek.com
-  api_key_env: DEEPSEEK_API_KEY # 从该环境变量读取 key
-  timeout: 600 # 单次请求超时（秒），思考模式耗时较长
-  max_retries: 4 # 失败重试次数（指数退避）
+  # 从这个环境变量读取 API key
+  api_key_env: DEEPSEEK_API_KEY
+  # 单次请求超时（秒）；开思考时耗时较长，别设太小
+  timeout: 600
+  # 请求失败后的重试次数（间隔逐次拉长）
+  max_retries: 4
   tiers:
     strong:
-      model: deepseek-v4-pro # 翻译 / 润色 / 全局分析 / 标题
+      # 翻译 / 润色 / 全局分析 / 起标题
+      model: deepseek-v4-pro
       reasoning_effort: high
       thinking: true
     cheap:
-      model: deepseek-v4-flash # 审校 / 一致性 QA / 回译比对（判断类，保留思考）
+      # 审校 / 一致性检查 / 回译比对（都是判断类，保留思考）
+      model: deepseek-v4-flash
       reasoning_effort: high
       thinking: true
     fast:
-      model: deepseek-v4-flash # 梗概 / 全书概览 / 术语抽取 / 回译（机械任务，免思考）
+      # 梗概 / 全书概览 / 术语抽取 / 回译（机械任务，不开思考）
+      model: deepseek-v4-flash
       thinking: false
 
 # ── 切分 ─────────────────────────────────────────────────────────────────
 segment:
-  # 一个翻译批次（句群）的目标大小，按字符粗略估算 token。
+  # 每个翻译批次的目标大小（按字符数粗估 token）
   max_chars_per_batch: 1800
-  # 单个段落超过该长度时按句末标点再切成多段（续段回填时并回同段），避免超长段。
+  # 单段超过这个长度就在句末标点处再切开，翻译后仍合并回原段，避免出现超长段落
   max_chars_per_segment: 1200
 
-# ── 流水线开关（质量/成本平衡）───────────────────────────────────────────
+# ── 流水线开关（在质量和成本之间取舍）──────────────────────────────────
 pipeline:
-  review: true # 章末整章审校（廉价档）：漏译/误译/术语/人称检查
-  autofix_severe: true # 审校后自动重译严重项（漏译/误译）；审校已收窄到专名+语义实错，误报率可控，重译回路闭合
+  # 每章译完后整章审校（用 cheap 档）：查漏译、误译、术语、人称
+  review: true
+  # 审校发现严重问题（漏译 / 误译）后自动重译；审校只盯专名和真正的语义错误，误报少
+  autofix_severe: true
+  # 译文与原文对不齐时的重试上限
   align_retry_limit: 2
-  polish: true # 润色（强档）：等于用 pro 把全书再翻一遍，最烧钱；默认关
-  backtranslate_sample: 0 # 回译抽检比例（0 关闭）
-  consistency_qa: false # 全书跨章一致性收尾扫描
-  rolling_context_segments: 6 # 注入的前文译文尾段数
-  book_understanding:
-    true # 翻译前预扫源文，生成全书概览+逐章梗概注入翻译（让译者对全书有理解）；
-    # fast 档免思考，全书概览为恒定前缀可命中缓存复用；关掉省去预扫成本
-  prescan_concurrency: 4 # 预扫逐章梗概的并发线程数（各章独立，1=串行）
-  glossary_scope: chapter # chapter=只注入本章出现的词条+锁定人物（长书省 token）；full=全量表
-  # 附属章（Notes/Index/参考文献/致谢等，按标题关键词+全书首尾位置识别）处理档位：
-  # skip=原文直通、零成本；light=fast 档粗翻，跳过审校/润色/回译（省成本）；
-  # full=完整翻译流水线。任何档位都不从附属章抽术语（引文人名/书名会污染全书术语表）。
-  # 非法值启动即报错；升档重跑自动重开已完成的附属章重译，降档不回退已有译文。
+  # 润色（用 strong 档）：相当于用 pro 把全书再翻一遍，最费钱，默认关
+  polish: true
+  # 回译抽检的比例（0 表示关闭）
+  backtranslate_sample: 0
+  # 全书翻完后再做一次跨章一致性检查
+  consistency_qa: false
+  # 注入给译者参考的前文译文段落数（保持上下文连贯）
+  rolling_context_segments: 6
+  # 翻译前先通读原文，生成全书概览和每章梗概注入翻译，让译者对整本书心里有数；
+  # 全书概览是固定前缀，能命中缓存反复复用。关掉可省去这次预扫的成本
+  book_understanding: true
+  # 预扫每章梗概时的并发线程数（各章互不影响，1 为串行）
+  prescan_concurrency: 4
+  # 术语注入范围：chapter 只注入本章出现的词条加锁定的人物名（长书省 token）；full 注入整张术语表
+  glossary_scope: chapter
+  # 附属章（前言 / 注释 / 索引 / 参考文献 / 致谢等，按标题关键词和全书首尾位置识别）的处理档位：
+  # skip 原文直接输出、不花钱；light 用 fast 档粗翻，跳过审校 / 润色 / 回译（省成本）；full 走完整流水线。
+  # 任何档位都不从附属章抽术语（里面的人名书名会污染全书术语表）。填错值启动即报错。
   back_matter: light
-  # 术语供给策略：false（默认）=只用翻译前一次性定名的结果（源文侧挖掘+强档定名），
-  # 翻译期术语表只读，不再从译后 (源文,译文) 对里抽词回灌，避免把首译直译固化成全书
-  # 铁律、避免伪冲突；true=保留旧的"译后逐批+章末抽取"行为（日文轻小说的称呼变体/
-  # 口癖场景仍需要译后确认，建议设为 true）。
+  # 是否在翻译过程中从已译内容里回收术语：false（默认）只用翻译前一次性定名的结果，
+  # 翻译期术语表只读，避免把初稿的直译固化成全书标准、也避免制造假冲突；
+  # true 恢复旧行为（边译边抽 + 章末抽取），日文轻小说称呼变体、口癖多时建议开
   inflight_glossary: false
-  naturalize: true # 去翻译腔（单语审读+改写，三道关卡把关采纳）；已完成章不自动补跑，存量已译书用 `tools naturalize` 手动补跑
+  # 去翻译腔：只看中文译文来审读并改写，改动要过三道关卡才采纳；
+  # 已译章节不会自动补做，老书想补跑用 `tools naturalize`
+  naturalize: true
 
-# ── 敬称策略（日语源文本时生效，其它语言通常不会用到）────────────────────
+# ── 敬称策略（源文为日语时生效，其它语言一般用不到）────────────────────
 honorific:
-  # keep_style: 体现语气（前辈/小X/X君…）; normalize: 按统一规则；drop: 省略
+  # keep_style 体现语气（前辈 / 小X / X君…）；normalize 按统一规则处理；drop 直接省略
   strategy: keep_style
 
-# ── 标点规范化（统一为简体中文大陆通用全角标点）────────────────────────────
+# ── 标点规范化（统一成简体中文大陆常用的全角标点）───────────────────────
 punctuation:
   normalize: true
 
 # ── 路径 ─────────────────────────────────────────────────────────────────
 paths:
-  state_dir: state # 运行状态、各章中间产物、术语库
+  # 运行状态、各章中间产物、术语库的存放目录
+  state_dir: state
 
 # ── 双语输出 ───────────────────────────────────────────────────────────────
 output:
-  mono: true            # 产出单语中文版
-  bilingual: true       # 产出双语版（原文淡化，与译文对照）
-  bilingual_order: target_first  # target_first=译文在上原文在下; source_first=原文在上
+  # 输出纯中文版
+  mono: true
+  # 输出双语对照版（原文淡化显示）
+  bilingual: true
+  # 双语顺序：target_first 译文在上原文在下；source_first 原文在上
+  bilingual_order: target_first
