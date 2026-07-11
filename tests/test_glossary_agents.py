@@ -12,7 +12,10 @@ from trans_novel.llm.base import FakeClient
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm, TYPE_PERSON
 from trans_novel.glossary.extractor import GlossaryExtractor
 from trans_novel.agents.analyzer import Analyzer
+from trans_novel.agents.glossary_auditor import GlossaryAuditor
 from trans_novel.pipeline.context import RollingContext
+from trans_novel.pipeline.runstore import RunStore
+from trans_novel.ingest.models import Chapter, Segment
 
 
 def _cfg():
@@ -149,6 +152,181 @@ class TestRollingContext(unittest.TestCase):
         ctx = RollingContext(recent_targets=["x", "y"])
         ctx2 = RollingContext.from_dict(ctx.to_dict())
         self.assertEqual(ctx2.recent_targets, ["x", "y"])
+
+
+class TestLatinResidueFix(unittest.TestCase):
+    """确定性拉丁残留修复 pass（GlossaryAuditor._fix_latin_residue / audit）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = RunStore(os.path.join(self.tmp.name, "run"))
+        self.store.save_manifest({"chapters": [{"index": 0}]})
+        segments = [
+            Segment(index=0, source="To Liya.", target="致 Liya"),
+            Segment(index=1, source="Liya (again).", target="利亚(Liya)"),
+            Segment(index=2, source="Dear Liya,", target="Dear Liya,"),
+            Segment(index=3, source="He is Mark.", target="他是Mark。"),
+        ]
+        self.store.save_chapter(Chapter(index=0, segments=segments))
+        self.glossary = GlossaryStore(self.store.glossary_path)
+        # 已锁定的拉丁人名术语：应被修复
+        self.glossary.upsert_term(
+            GlossaryTerm(source="Liya", target="利亚", type=TYPE_PERSON,
+                         confidence="high", locked=True),
+        )
+        # 未锁定术语：即使正文含 Mark 也不得替换
+        self.glossary.upsert_term(GlossaryTerm(source="Mark", target="马克", confidence="medium"))
+
+    def tearDown(self):
+        self.glossary.close()
+        self.tmp.cleanup()
+
+    def _client(self):
+        return FakeClient(handler=lambda messages, tier, json_mode: "{}")
+
+    def test_fixes_locked_latin_residue_and_squeezes_space(self):
+        applied = GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
+        rec = next(a for a in applied if a["source"] == "Liya")
+        self.assertEqual(rec["canonical"], "利亚")
+        self.assertEqual(rec["variants"], ["Liya"])
+        ch = self.store.load_chapter(0)
+        self.assertEqual(ch.segments[0].target, "致利亚")
+
+    def test_bracketed_gloss_left_untouched(self):
+        GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
+        ch = self.store.load_chapter(0)
+        self.assertEqual(ch.segments[1].target, "利亚(Liya)")
+
+    def test_pure_latin_segment_without_cjk_untouched(self):
+        GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
+        ch = self.store.load_chapter(0)
+        self.assertEqual(ch.segments[2].target, "Dear Liya,")
+
+    def test_unlocked_term_not_replaced(self):
+        GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
+        ch = self.store.load_chapter(0)
+        self.assertEqual(ch.segments[3].target, "他是Mark。")
+
+    def test_word_boundary_does_not_match_inside_longer_name(self):
+        self.glossary.upsert_term(
+            GlossaryTerm(source="Li", target="李", confidence="high", locked=True),
+        )
+        GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
+        ch = self.store.load_chapter(0)
+        # "Liya" 不应被 source="Li" 的术语误伤
+        self.assertEqual(ch.segments[0].target, "致利亚")
+
+    def test_idempotent_rerun_yields_no_further_changes(self):
+        auditor = GlossaryAuditor(self._client(), _cfg())
+        auditor.audit(self.store, self.glossary)
+        applied2 = auditor.audit(self.store, self.glossary)
+        latin_fixes = [a for a in applied2 if a["source"] == "Liya"]
+        self.assertEqual(latin_fixes, [])
+        ch = self.store.load_chapter(0)
+        self.assertEqual(ch.segments[0].target, "致利亚")
+
+    def test_tm_synced_for_fixed_segment(self):
+        GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
+        self.assertEqual(self.glossary.tm_lookup("To Liya."), "致利亚")
+
+class TestGlossaryAuditGuards(unittest.TestCase):
+    """五道确定性防线单测（2026-07-11 事故后新增）：
+    防线1/2/3 = _candidates 的候选收紧；防线4 = _decide 的裁定过滤；
+    防线5 = _fix_latin_residue 的逐命中 CJK 近邻门控。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = RunStore(os.path.join(self.tmp.name, "run"))
+        self.glossary = GlossaryStore(self.store.glossary_path)
+
+    def tearDown(self):
+        self.glossary.close()
+        self.tmp.cleanup()
+
+    def _seed_chapter(self, targets):
+        self.store.save_manifest({"chapters": [{"index": 0}]})
+        segments = [Segment(index=i, source=f"s{i}", target=t) for i, t in enumerate(targets)]
+        self.store.save_chapter(Chapter(index=0, segments=segments))
+
+    def _client(self, handler=None):
+        return FakeClient(handler=handler or (lambda m, t, j: "{}"))
+
+    def test_two_char_target_no_hamming_candidates(self):
+        """防线2：2字译名（len<3）直接返回空，不产生 hamming 候选。"""
+        self.glossary.upsert_term(GlossaryTerm(source="Liya", target="利亚", type=TYPE_PERSON))
+        self._seed_chapter(["利亚在东京。", "东亚经济增长。", "南亚气候炎热。", "利用工具。", "利益相关。"])
+        cand = GlossaryAuditor(self._client(), _cfg())._candidates(self.store, self.glossary)
+        self.assertNotIn("Liya", cand)
+
+    def test_non_person_term_no_hamming_candidates(self):
+        """防线1：非 TYPE_PERSON 术语不扫描 hamming，即使正文里有形近词。"""
+        self.glossary.upsert_term(GlossaryTerm(source="supply chain", target="供应链条", type="术语"))
+        self._seed_chapter(["供应链条很重要。", "供应连条断裂了。"])
+        cand = GlossaryAuditor(self._client(), _cfg())._candidates(self.store, self.glossary)
+        self.assertNotIn("supply chain", cand)
+
+    def test_person_three_char_name_variant_still_candidate(self):
+        """回归保护：TYPE_PERSON 3字名的 1 个形近变体仍走原流程产出候选。"""
+        self.glossary.upsert_term(GlossaryTerm(source="Kaho", target="佳穂子", type=TYPE_PERSON))
+        self._seed_chapter(["佳穂子和佳穗子在一起。"])
+        cand = GlossaryAuditor(self._client(), _cfg())._candidates(self.store, self.glossary)
+        self.assertIn("Kaho", cand)
+        self.assertEqual(cand["Kaho"]["variants"], ["佳穗子"])
+
+    def test_excess_variants_term_discarded(self):
+        """防线3：单术语变体数 >8（模式噪声签名）时整体丢弃该术语候选。"""
+        self.glossary.upsert_term(GlossaryTerm(source="Kaho", target="佳穂子", type=TYPE_PERSON))
+        variants = [f"佳{c}子" for c in "穗和平安宁静祥瑞康"]  # 9 个形近变体
+        self.assertEqual(len(variants), 9)
+        self._seed_chapter(["".join(variants)])
+        cand = GlossaryAuditor(self._client(), _cfg())._candidates(self.store, self.glossary)
+        self.assertNotIn("Kaho", cand)
+
+    def test_decide_drops_variants_outside_candidates(self):
+        """防线4：LLM 返回的变体必须 ⊆ 提交候选集合，超集部分静默丢弃，不进 replace_map/别名。"""
+        self.glossary.upsert_term(GlossaryTerm(source="Kaho", target="佳穂子", type=TYPE_PERSON))
+        self._seed_chapter(["佳穂子和佳穗子在一起。"])
+
+        def handler(messages, tier, json_mode):
+            return json.dumps({"unifications": [
+                {"source": "Kaho", "canonical": "佳穂子",
+                 "variants": ["佳穗子", "幻觉变体"], "reason": "统一"},
+            ]}, ensure_ascii=False)
+
+        auditor = GlossaryAuditor(self._client(handler), _cfg())
+        applied = auditor.audit(self.store, self.glossary)
+        rec = next(a for a in applied if a["source"] == "Kaho")
+        self.assertEqual(rec["variants"], ["佳穗子"])
+        ch = self.store.load_chapter(0)
+        self.assertEqual(ch.segments[0].target, "佳穂子和佳穂子在一起。")
+        term = self.glossary.get_term("Kaho")
+        self.assertNotIn("幻觉变体", term.aliases)
+
+    def test_latin_residue_skips_hit_embedded_in_all_latin_quote(self):
+        """防线5：命中点前后各12字符内两侧全拉丁/标点（英文引文里的人名）时跳过该次命中。"""
+        self.glossary.upsert_term(
+            GlossaryTerm(source="Samsung", target="三星", type=TYPE_PERSON,
+                         confidence="high", locked=True),
+        )
+        self._seed_chapter(["供应35%的市场：Ken Koyanagi, \u201cSamsung Deal\u2026\u201d"])
+        GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
+        ch = self.store.load_chapter(0)
+        self.assertEqual(
+            ch.segments[0].target,
+            "供应35%的市场：Ken Koyanagi, \u201cSamsung Deal\u2026\u201d",
+        )
+
+    def test_latin_residue_replaces_hit_near_cjk(self):
+        """防线5 正向用例：命中点近邻有 CJK 时仍替换（不误伤真实场景）。"""
+        self.glossary.upsert_term(
+            GlossaryTerm(source="Samsung", target="三星", type=TYPE_PERSON,
+                         confidence="high", locked=True),
+        )
+        self._seed_chapter(["他说 Samsung 是巨头。"])
+        GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
+        ch = self.store.load_chapter(0)
+        self.assertEqual(ch.segments[0].target, "他说三星是巨头。")
 
 
 if __name__ == "__main__":

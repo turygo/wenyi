@@ -134,19 +134,19 @@ class TestGlossaryAudit(unittest.TestCase):
             orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
             store = orch.run(txt)
 
-            # 人为制造译法漂移：术语表写入 佳穂，章节正文里混入 佳穗
+            # 人为制造译法漂移：术语表写入 佳穂子，章节正文里混入 佳穗子（3字，避开防线2的2字上限）
             g = GlossaryStore(store.glossary_path)
-            g.upsert_term(GlossaryTerm(source="カホ", target="佳穂", type="人物"), chapter=0)
+            g.upsert_term(GlossaryTerm(source="カホ", target="佳穂子", type="人物"), chapter=0)
             g.close()
             ch = store.load_chapter(0)
-            ch.segments[1].target = "佳穂和佳穗在一起。"  # 同名两种写法
+            ch.segments[1].target = "佳穂子和佳穗子在一起。"  # 同名两种写法
             store.save_chapter(ch)
 
             def handler(messages, tier, json_mode):
                 if "术语一致性审计员" in messages[0]["content"]:
                     return json.dumps({"unifications": [
-                        {"source": "カホ", "canonical": "佳穂",
-                         "variants": ["佳穗"], "reason": "统一为佳穂"}
+                        {"source": "カホ", "canonical": "佳穂子",
+                         "variants": ["佳穗子"], "reason": "统一为佳穂子"}
                     ]}, ensure_ascii=False)
                 return "{}"
 
@@ -155,12 +155,12 @@ class TestGlossaryAudit(unittest.TestCase):
             self.assertEqual(len(applied), 1)
             term = g.get_term("カホ")
             self.assertTrue(term.locked)
-            self.assertIn("佳穗", term.aliases)
+            self.assertIn("佳穗子", term.aliases)
             g.close()
 
-            # 正文里的 佳穗 应已被改写为 佳穂
+            # 正文里的 佳穗子 应已被改写为 佳穂子
             ch2 = store.load_chapter(0)
-            self.assertEqual(ch2.segments[1].target, "佳穂和佳穂在一起。")
+            self.assertEqual(ch2.segments[1].target, "佳穂子和佳穂子在一起。")
 
 
 class TestRunAll(unittest.TestCase):

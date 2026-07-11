@@ -6,12 +6,20 @@
 
 from __future__ import annotations
 
-from .store import GlossaryStore
+from .store import GlossaryStore, GlossaryTerm
 
 
 def resolve(store: GlossaryStore, source: str, target: str) -> None:
-    """裁定 source 的最终中文译法：覆盖、锁定、清除冲突标记。"""
-    store.lock_term(source, target)
+    """裁定 source 的最终中文译法：覆盖、锁定、清除冲突标记。
+
+    术语不存在时直接创建并锁定（而非静默 no-op）。
+    """
+    if store.get_term(source) is None:
+        store.upsert_term(
+            GlossaryTerm(source=source, target=target, confidence="high", locked=True),
+        )
+    else:
+        store.lock_term(source, target)
     store.mark_conflicts_resolved(source)
 
 

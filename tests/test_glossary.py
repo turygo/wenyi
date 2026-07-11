@@ -12,6 +12,7 @@ from trans_novel.glossary.store import (
     TYPE_APPELLATION,
     TYPE_PERSON,
 )
+from trans_novel.glossary.resolver import resolve
 
 
 class TestGlossary(unittest.TestCase):
@@ -95,6 +96,39 @@ class TestGlossary(unittest.TestCase):
         s = self.store.stats()
         self.assertEqual(s["terms"], 1)
         self.assertEqual(s["tm_entries"], 1)
+
+class TestResolve(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = GlossaryStore(os.path.join(self.tmp.name, "g.db"))
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_resolve_creates_and_locks_missing_term(self):
+        self.assertIsNone(self.store.get_term("Liya"))
+        resolve(self.store, "Liya", "利亚")
+        t = self.store.get_term("Liya")
+        assert t is not None
+        self.assertTrue(t.locked)
+        self.assertEqual(t.target, "利亚")
+        self.assertEqual(t.confidence, "high")
+
+    def test_resolve_overwrites_and_locks_existing_term(self):
+        self.store.upsert_term(GlossaryTerm(source="Liya", target="莉雅", confidence="low"))
+        resolve(self.store, "Liya", "利亚")
+        t = self.store.get_term("Liya")
+        assert t is not None
+        self.assertTrue(t.locked)
+        self.assertEqual(t.target, "利亚")
+
+    def test_resolve_clears_conflict_flags(self):
+        self.store.upsert_term(GlossaryTerm(source="Liya", target="莉雅", locked=True, confidence="high"))
+        self.store.upsert_term(GlossaryTerm(source="Liya", target="丽雅"))  # 触发冲突记录
+        self.assertEqual(len(self.store.open_conflicts()), 1)
+        resolve(self.store, "Liya", "利亚")
+        self.assertEqual(len(self.store.open_conflicts()), 0)
 
 
 if __name__ == "__main__":
