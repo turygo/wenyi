@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from trans_novel.cli import app
+from trans_novel.cli import _configure_windows_console, app
 from trans_novel.config import Config
 
 
@@ -199,6 +199,24 @@ class TestCliConfig(unittest.TestCase):
             self.assertEqual(result.exit_code, 1, result.output)
             self.assertIn("尚无进度", result.output)
             self.assertFalse(os.path.exists(state_dir))
+
+
+class TestWindowsConsoleEncoding(unittest.TestCase):
+    class _Stream:
+        def __init__(self):
+            self.calls = []
+
+        def reconfigure(self, **kwargs):
+            self.calls.append(kwargs)
+
+    def test_configures_utf8_for_windows_streams(self):
+        out = self._Stream()
+        err = self._Stream()
+
+        _configure_windows_console((out, err), is_windows=True)
+
+        self.assertEqual(out.calls, [{"encoding": "utf-8", "errors": "replace"}])
+        self.assertEqual(err.calls, [{"encoding": "utf-8", "errors": "replace"}])
 
 
 if __name__ == "__main__":

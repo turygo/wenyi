@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Optional
 
 import typer
@@ -25,6 +26,28 @@ from rich.table import Table
 from .config import Config
 from .ingest.segmenter import load_document
 from .pipeline.runstore import STATUS_DONE, RunStore, slugify
+
+
+def _configure_windows_console(
+    streams: tuple[object, ...] | None = None,
+    *,
+    is_windows: bool | None = None,
+) -> None:
+    """让 Windows 控制台能输出中文；PyInstaller 单文件启动时尤其需要。"""
+    if is_windows is None:
+        is_windows = os.name == "nt"
+    if not is_windows:
+        return
+    for stream in streams or (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
+_configure_windows_console()
 
 app = typer.Typer(add_completion=False, help="多 Agent 小说翻译系统（多语言 → 中文）")
 tools_app = typer.Typer(
