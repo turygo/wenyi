@@ -404,10 +404,12 @@ class Orchestrator:
                     if progress else None)
                 store.log_event("term_candidates_mined", count=len(candidates))
                 existing = glossary.all_terms()
-                if progress:
-                    progress(0, 0, "全书术语定名…")
                 named = self.namer.name_terms(
-                    candidates, self.analyzer.style_brief(analysis), digests, existing=existing)
+                    candidates, self.analyzer.style_brief(analysis), digests,
+                    existing=existing,
+                    concurrency=max(1, self.config.pipeline.prescan_concurrency),
+                    on_progress=(lambda i, n: progress(i, n, "全书术语定名…"))
+                    if progress else None)
             except Exception as e:
                 store.log_event("cast_naming_failed", error=str(e))
                 named = None

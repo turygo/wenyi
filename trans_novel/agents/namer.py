@@ -8,6 +8,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable
+
 from ..glossary.miner import Candidate
 from ..glossary.store import TYPE_PERSON, GlossaryTerm
 from . import prompts
@@ -30,12 +33,19 @@ def _render_candidates(candidates: list[Candidate]) -> str:
 class CastNamer(Agent):
     def name_terms(self, candidates: list[Candidate], analysis_brief: str,
                     digests: list[str], existing: list[GlossaryTerm] | None = None,
+                    *, concurrency: int = 1,
+                    on_progress: Callable[[int, int], None] | None = None,
                     ) -> list[GlossaryTerm]:
         """给候选定唯一中文译名 + type/gender/note；候选按字符预算分组，每组一次强档
         调用，组间独立无 reduce（候选已按 surface 去重，组间不会互相冲突）。
 
         existing：已入库条目（analyzer.seed_glossary 的样章种入等），渲染进 prompt
         要求模型沿用已有译法、不重复输出。
+
+        各组相互独立（同一 existing 快照、无跨组 reduce）→ 按 concurrency 并行，
+        输出按输入组序合并，与串行完全一致。on_progress(done, total) 按完成组数回调
+        （主线程触发，供进度条使用）。任一组异常整体冒泡，交 orchestrator 捕获后
+        放弃本次落 term_mining_done（下次续跑重试），绝不静默吞成空定名。
         """
         if not candidates:
             return []
@@ -43,11 +53,21 @@ class CastNamer(Agent):
         if len(digest_text) > _GROUP_CHAR_BUDGET:
             digest_text = digest_text[:_GROUP_CHAR_BUDGET]
         glossary_text = prompts.render_glossary(existing or [])
+        groups = self._group(candidates, _GROUP_CHAR_BUDGET)
 
-        terms: list[GlossaryTerm] = []
-        for group in self._group(candidates, _GROUP_CHAR_BUDGET):
-            terms.extend(self._name_group(group, analysis_brief, digest_text, glossary_text))
-        return terms
+        def name_one(group: list[Candidate]) -> list[GlossaryTerm]:
+            return self._name_group(group, analysis_brief, digest_text, glossary_text)
+
+        if on_progress:
+            on_progress(0, len(groups))
+        results: dict[int, list[GlossaryTerm]] = {}
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
+            futs = {ex.submit(name_one, g): i for i, g in enumerate(groups)}
+            for done, fut in enumerate(as_completed(futs), 1):
+                results[futs[fut]] = fut.result()  # 异常冒泡；池随 with 收尾
+                if on_progress:
+                    on_progress(done, len(groups))
+        return [t for i in range(len(groups)) for t in results[i]]
 
     # ── 内部 ────────────────────────────────────────────────────────────────
     @staticmethod
