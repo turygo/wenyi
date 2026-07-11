@@ -349,6 +349,75 @@ $candidates
 请为值得入表的候选给出唯一定名，输出 JSON：{"terms":[...]}。\
 """)
 
+NATURALIZE_SCREEN_SYSTEM = Template("""\
+你是中文书稿的母语审读编辑。你只看中文稿，手边没有任何外文原文。
+任务：找出「读起来像从外文直译、不像中文母语作者手笔」的段落——即翻译腔：生硬的欧化句式、别扭的搭配、冗余的对称结构、准被动堆叠、不自然的抽象名词化等。
+要求：只标你有把握的。正常的书面语、专业术语、合理的被动句、新闻体叙述不要标。宁缺勿滥。
+输出 JSON：{"issues":[{"index":段号,"quote":"该段中最别扭的原文短语(照抄，≤30字)","reason":"一句话说明哪里不自然","rewrite":"更自然的说法"}]}；全部自然则 {"issues":[]}\
+""")
+
+NATURALIZE_SCREEN_USER = Template("""\
+【待审读中文段落】（共 $n 段，只看措辞是否自然，不涉及任何外文原文）
+$numbered
+
+请找出翻译腔段落，输出 JSON：{"issues":[...]}。\
+""")
+
+NATURALIZE_REWRITE_SYSTEM = Template("""\
+你是中文母语改写编辑。你只看中文文本，手边没有任何外文原文。给定一段读起来像翻译腔的中文，把它改写得更像母语作者的自然表达。
+要求：只改变表达方式（句式、搭配、语序、措辞），绝不改变信息内容；完整保留数字、专有名词、引号内容、括注
+（如「利亚(Liya)」中的英文括注）。
+仅输出 JSON：{"rewritten":"改写后的整段文本"}。\
+""")
+
+NATURALIZE_REWRITE_USER = Template("""\
+【原段落】
+$text
+
+【审读提示】
+别扭之处：$quote
+原因：$reason
+
+请改写该段，使其更自然，同时严格保留原有信息、专名、数字、引号与括注。输出 JSON：{"rewritten":"..."}。\
+""")
+
+NATURALIZE_PAIR_SYSTEM = Template("""\
+你是中文母语审读编辑。下面给出同一段落的两个版本 A 和 B（只看中文）。判断哪个版本更像中文母语作者的自然表达（搭配、句式、节奏）。输出 JSON：{"winner":"A|B|tie","reason":"一句话"}\
+""")
+
+NATURALIZE_PAIR_USER = Template("""\
+【版本 A】
+$a
+
+【版本 B】
+$b
+
+请判断哪个更自然，输出 JSON：{"winner":"A|B|tie","reason":"..."}。\
+""")
+
+NATURALIZE_FIDELITY_SYSTEM = Template("""\
+你是双语翻译审核员。给定外文源文、译文原版、译文改写版。改写只允许改变中文表达方式，不允许改变内容。
+逐项核对改写版相对原版是否发生了以下任何变化（以源文为准）：
+- 丢失或弱化了源文的信息：修饰语、限定词（如 any/every/only）、程度副词、语气强度、逻辑关系；
+- 增加了源文没有的信息或强调；
+- 改变了指称、因果、时间关系。
+只要有一项成立即不通过。纯表达方式变化（语序/搭配/句式）不算。
+输出 JSON：{"faithful":true|false,"detail":"不通过时一句话指出具体差异，通过则空"}\
+""")
+
+NATURALIZE_FIDELITY_USER = Template("""\
+【源文】
+$source
+
+【译文原版】
+$orig
+
+【译文改写版】
+$rewritten
+
+请核对改写版是否忠实于源文（相对原版未丢失/增加/改变信息），输出 JSON：{"faithful":true|false,"detail":"..."}。\
+""")
+
 _DEFAULTS = {
     "translator_system": TRANSLATOR_SYSTEM,
     "translator_user": TRANSLATOR_USER,
@@ -376,6 +445,14 @@ _DEFAULTS = {
     "term_miner_user": TERM_MINER_USER,
     "cast_naming_system": CAST_NAMING_SYSTEM,
     "cast_naming_user": CAST_NAMING_USER,
+    "naturalize_screen_system": NATURALIZE_SCREEN_SYSTEM,
+    "naturalize_screen_user": NATURALIZE_SCREEN_USER,
+    "naturalize_rewrite_system": NATURALIZE_REWRITE_SYSTEM,
+    "naturalize_rewrite_user": NATURALIZE_REWRITE_USER,
+    "naturalize_pair_system": NATURALIZE_PAIR_SYSTEM,
+    "naturalize_pair_user": NATURALIZE_PAIR_USER,
+    "naturalize_fidelity_system": NATURALIZE_FIDELITY_SYSTEM,
+    "naturalize_fidelity_user": NATURALIZE_FIDELITY_USER,
 }
 
 def render(name: str, *, src: str = "ja", tgt: str = "zh", **kwargs) -> str:

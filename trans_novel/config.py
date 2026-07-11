@@ -55,6 +55,10 @@ class PipelineConfig(BaseModel):
     # 不再从译后 (源文,译文) 对里抽词回灌（避免把首译直译固化成铁律、避免伪冲突）；
     # True=保留旧的"译后逐批+章末抽取"行为（日文轻小说的称呼变体/口癖场景仍需要译后确认）。
     inflight_glossary: bool = False
+    # 去翻译腔（单语审读+改写，三道关卡把关采纳；实验证明轻度直译修复有效）；章级插入点在
+    # 润色写回完成之后、章末审校之前，续跑靠 chapter.meta["naturalized"] 幂等——
+    # 已完成章不自动补跑；存量已译书用 `tools naturalize` 手动补跑。
+    naturalize: bool = True
 
 
 class OutputConfig(BaseModel):

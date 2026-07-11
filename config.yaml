@@ -58,6 +58,7 @@ pipeline:
   # 铁律、避免伪冲突；true=保留旧的"译后逐批+章末抽取"行为（日文轻小说的称呼变体/
   # 口癖场景仍需要译后确认，建议设为 true）。
   inflight_glossary: false
+  naturalize: true # 去翻译腔（单语审读+改写，三道关卡把关采纳）；已完成章不自动补跑，存量已译书用 `tools naturalize` 手动补跑
 
 # ── 敬称策略（日语源文本时生效，其它语言通常不会用到）────────────────────
 honorific:

@@ -39,6 +39,7 @@ from ..agents.synopsis import Synopsizer
 from ..agents.translator import Translator
 from ..agents.reviewer import Reviewer, BackTranslator
 from ..agents.polisher import Polisher
+from ..agents.naturalizer import Naturalizer, naturalize_chapter
 from ..agents.namer import CastNamer
 from ..agents import prompts
 from ..glossary.miner import mine_candidates
@@ -86,6 +87,7 @@ class Orchestrator:
         self.polisher = Polisher(self.client, config)
         self.extractor = GlossaryExtractor(self.client, config)
         self.namer = CastNamer(self.client, config)
+        self.naturalizer = Naturalizer(self.client, config)
 
     # ── 语言解析 ────────────────────────────────────────────────────────────
     def _apply_language(self, lang: str) -> None:
@@ -93,7 +95,8 @@ class Orchestrator:
         resolved = lang or self.config.source_lang
         self.config.source_lang = resolved
         for ag in (self.analyzer, self.synopsizer, self.translator, self.reviewer,
-                   self.backtrans, self.polisher, self.extractor, self.namer):
+                   self.backtrans, self.polisher, self.extractor, self.namer,
+                   self.naturalizer):
             ag.src = resolved
 
     # ── 准备 / 续跑入口 ──────────────────────────────────────────────────
@@ -907,6 +910,17 @@ class Orchestrator:
             self.extractor.extract_and_store(glossary, src_text, tgt_text, ci)
             term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
             store.log_event("chapter_glossary_extracted", chapter=ci)
+
+        # 去翻译腔（三道关卡，见 naturalizer.py）：插入点在润色写回完成之后、章末审校
+        # 之前，让审校能看到去腔后的最终文本。幂等靠 chapter.meta["naturalized"]——
+        # 续跑时已处理过的章节不重复跑。back_matter 旁路由 naturalize_chapter 内部
+        # 按 is_back_matter 过滤，此处不重复判断。标记与改写在 naturalize_chapter
+        # 内部同一次 save_chapter 中一并落盘（避免两次保存之间崩溃导致的续跑重复审读）。
+        if self.config.pipeline.naturalize and not chapter.meta.get("naturalized"):
+            locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
+            naturalize_chapter(
+                self.naturalizer, chapter, ci, n_ch, locked, self.config, store,
+                dry_run=False, remaining=None)
 
         # ── 章末整章审校（块内 index 映射回章内段号）──
         # 幂等：续跑重入章末时清掉旧审校项，防重复累积。

@@ -718,6 +718,91 @@ class TestInflightGlossary(unittest.TestCase):
             g.close()
 
 
+class TestNaturalizePipeline(unittest.TestCase):
+    """去翻译腔升级为章级流水线环节（config.pipeline.naturalize，默认开）。"""
+
+    NATURALIZE_MARKERS = ("书稿的母语审读编辑", "改写编辑", "两个版本", "双语翻译审核员")
+
+    @staticmethod
+    def _naturalize_handler(messages, tier, json_mode):
+        system = messages[0]["content"]
+        user = messages[-1]["content"]
+        if "书稿的母语审读编辑" in system:
+            return json.dumps(
+                {"issues": [{"index": 0, "quote": "别扭", "reason": "翻译腔"}]},
+                ensure_ascii=False)
+        if "改写编辑" in system:
+            return json.dumps({"rewritten": "这是更自然的表达"}, ensure_ascii=False)
+        if "双语翻译审核员" in system:
+            return json.dumps({"faithful": True, "detail": ""}, ensure_ascii=False)
+        if "两个版本" in system:
+            m = re.search(r"【版本 A】\n(.*?)\n\n【版本 B】\n(.*?)\n\n请判断", user, re.S)
+            winner = "A" if "更自然" in m.group(1) else "B"
+            return json.dumps({"winner": winner}, ensure_ascii=False)
+        return routing_handler(messages, tier, json_mode)
+
+    def _naturalize_calls(self, calls):
+        return [c for c in calls if any(
+            marker in c["messages"][0]["content"] for marker in self.NATURALIZE_MARKERS)]
+
+    def test_naturalize_applied_and_meta_flag_set(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+
+            client = FakeClient(handler=self._naturalize_handler)
+            store = Orchestrator(cfg, client=client).run(txt)
+
+            m = store.load_manifest()
+            for ci in range(len(m["chapters"])):
+                ch = store.load_chapter(ci)
+                self.assertTrue(ch.meta.get("naturalized"),
+                                 f"第 {ci} 章 naturalize 后应标记 meta['naturalized']")
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            applied = [e for e in events if e["event"] == "naturalize_applied"]
+            self.assertTrue(applied, "嫌疑段应走完三道关卡闭环并采纳写回")
+
+    def test_naturalize_disabled_zero_calls(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.naturalize = False
+
+            client = FakeClient(handler=self._naturalize_handler)
+            store = Orchestrator(cfg, client=client).run(txt)
+
+            self.assertEqual(self._naturalize_calls(client.calls), [],
+                              "naturalize=False 时不应发生任何 naturalize 相关调用")
+            m = store.load_manifest()
+            for ci in range(len(m["chapters"])):
+                self.assertFalse(store.load_chapter(ci).meta.get("naturalized"))
+
+    def test_naturalize_idempotent_on_resume(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+
+            store = Orchestrator(
+                cfg, client=FakeClient(handler=self._naturalize_handler)).run(txt)
+            self.assertTrue(store.load_chapter(0).meta.get("naturalized"))
+
+            # 模拟"naturalize 已完成、meta 已落盘，但章末 DONE 标记前中断"续跑：
+            # 章状态改回 pending，meta["naturalized"] 保持 True（幂等标记未丢）。
+            store.set_chapter_status(0, STATUS_PENDING)
+
+            client2 = FakeClient(handler=self._naturalize_handler)
+            Orchestrator(cfg, client=client2).run(txt, only_chapter=0)
+
+            self.assertEqual(self._naturalize_calls(client2.calls), [],
+                              "meta 标记已置位，续跑不应重复 naturalize")
+
+
+
 class TestTierRouting(unittest.TestCase):
     def test_task_tiers(self):
         """机械任务走 fast 档、判断类走 cheap、翻译走 strong；梗概带 max_tokens 上限。"""
