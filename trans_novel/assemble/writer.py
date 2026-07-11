@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 
 from ..ingest.models import KIND_HEADING, Chapter
 from ..pipeline.runstore import RunStore
+from ..postprocess.punct import normalize_heading_numbering
 
 _ILLEGAL_FN = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 _HTML_EXTS = (".xhtml", ".html", ".htm")
@@ -76,8 +77,9 @@ def bilingual_out_path(out_path: str) -> str:
 
 
 def _ch_title(c: dict) -> str:
-    """章节展示标题：优先译名，回退原标题。"""
-    return (c.get("title_translated") or c.get("title") or "").strip()
+    """章节展示标题：优先译名，回退原标题；标题编号数字风格统一为汉字。"""
+    title = (c.get("title_translated") or c.get("title") or "").strip()
+    return normalize_heading_numbering(title)
 
 
 def _seg_text(seg) -> str:
@@ -107,7 +109,10 @@ def _merged_paragraphs(chapter: Chapter) -> list[tuple[str, str, str]]:
             paras.append([_seg_text(s)])
             srcs.append([s.source])
             kinds.append(s.kind)
-    return [(k, "".join(p), "".join(sr)) for k, p, sr in zip(kinds, paras, srcs)]
+    return [
+        (k, normalize_heading_numbering("".join(p)) if k == KIND_HEADING else "".join(p), "".join(sr))
+        for k, p, sr in zip(kinds, paras, srcs)
+    ]
 
 
 def _bilingual_source(source: str, target: str) -> str:
@@ -172,6 +177,8 @@ def _render_chapter_html(
         el = soup.find(True, attrs={"data-tn-id": anchor})
         if el is None:
             continue
+        if kind_by_anchor.get(anchor) == KIND_HEADING:
+            text = normalize_heading_numbering(text)
         el.clear()
         el.append(text)
         del el["data-tn-id"]
@@ -373,7 +380,7 @@ def _assemble_epub(
         href = entry.get("href")
         title_value = entry.get("title_translated") or entry.get("title")
         base = _base_no_frag(href if isinstance(href, str) else "")
-        title = title_value.strip() if isinstance(title_value, str) else ""
+        title = normalize_heading_numbering(title_value.strip()) if isinstance(title_value, str) else ""
         if base and title:
             title_by_base[base] = title
     book_title = ""

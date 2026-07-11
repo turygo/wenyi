@@ -186,6 +186,69 @@ class TestTitleTranslation(unittest.TestCase):
         self.assertNotIn(">old<", dec)
 
 
+class TestHeadingNumberInWriter(unittest.TestCase):
+    """章节标题编号数字风格（阿拉伯 → 汉字）在回填输出侧统一。"""
+
+    def test_epub_heading_and_toc_normalized(self):
+        with tempfile.TemporaryDirectory() as d:
+            ep = os.path.join(d, "novel.epub")
+            write_sample_epub(ep)
+            store, _ = _run(ep, os.path.join(d, "state"))
+            ch = store.load_chapter(0)
+            ch.segments[0].target = "第5章 迫击炮"  # 正文首段（heading 段）落成阿拉伯数字
+            store.save_chapter(ch)
+            m = store.load_manifest()
+            m["chapters"][0]["title_translated"] = "第5章 迫击炮"  # 目录/nav 用的标题译名
+            store.save_manifest(m)
+
+            out = assemble(store, ep, out_format="epub")
+            with zipfile.ZipFile(out) as z:
+                html = z.read("OEBPS/ch1.xhtml").decode("utf-8")
+            self.assertIn("<h1>第五章 迫击炮</h1>", html)
+            self.assertNotIn("第5章", html)
+
+    def test_txt_heading_normalized(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            store, _ = _run(txt, os.path.join(d, "state"))
+            ch = store.load_chapter(0)
+            ch.segments[0].target = "第5章 相遇"
+            store.save_chapter(ch)
+
+            out_path = os.path.join(d, "novel.zh.txt")
+            from trans_novel.assemble.writer import _assemble_text
+            _assemble_text(store, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn("第五章 相遇", text)
+            self.assertNotIn("第5章", text)
+
+    def test_toc_entries_title_translated_normalized_in_nav(self):
+        with tempfile.TemporaryDirectory() as d:
+            ep = os.path.join(d, "novel.epub")
+            write_sample_epub(ep)
+            with zipfile.ZipFile(ep, "a", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr(
+                    "OEBPS/nav.xhtml",
+                    '<html xmlns:epub="http://www.idpf.org/2007/ops">'
+                    "<body><nav epub:type=\"toc\"><ol>"
+                    '<li><a href="ch2.xhtml">old</a></li>'
+                    "</ol></nav></body></html>",
+                )
+            store, _ = _run(ep, os.path.join(d, "state"))
+            m = store.load_manifest()
+            meta = m.setdefault("meta", {})
+            meta["toc_entries"] = [{"href": "ch2.xhtml", "title_translated": "第8章 尾声"}]
+            store.save_manifest(m)
+
+            out = assemble(store, ep, out_format="epub")
+            with zipfile.ZipFile(out) as z:
+                nav = z.read("OEBPS/nav.xhtml").decode("utf-8")
+            self.assertIn("第八章 尾声", nav)
+            self.assertNotIn("第8章", nav)
+
+
 class TestReport(unittest.TestCase):
     def test_report_summary(self):
         with tempfile.TemporaryDirectory() as d:
