@@ -7,32 +7,44 @@ import os
 import tempfile
 import unittest
 
-from trans_novel.config import Config
-from trans_novel.llm.base import FakeClient
-from trans_novel.glossary.store import GlossaryStore, GlossaryTerm, TYPE_PERSON
-from trans_novel.glossary.extractor import GlossaryExtractor
 from trans_novel.agents.analyzer import Analyzer
 from trans_novel.agents.glossary_auditor import GlossaryAuditor
+from trans_novel.config import Config
+from trans_novel.glossary.extractor import GlossaryExtractor
+from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
+from trans_novel.ingest.models import Chapter, Segment
+from trans_novel.llm.base import FakeClient
 from trans_novel.pipeline.context import RollingContext
 from trans_novel.pipeline.runstore import RunStore
-from trans_novel.ingest.models import Chapter, Segment
 
 
 def _cfg():
-    return Config.from_dict({
-        "language": {"source": "ja", "target": "zh"},
-        "llm": {"provider": "fake", "tiers": {
-            "strong": {"model": "p"}, "cheap": {"model": "f"}}},
-    })
+    return Config.from_dict(
+        {
+            "language": {"source": "ja", "target": "zh"},
+            "llm": {
+                "provider": "fake",
+                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+            },
+        }
+    )
 
 
 class TestAnalyzer(unittest.TestCase):
     def test_analyze_and_seed(self):
         analysis = {
-            "genre": "校园", "tone": "冷峻第三人称",
+            "genre": "校园",
+            "tone": "冷峻第三人称",
             "style_guide": "保持克制",
-            "characters": [{"source": "綾小路", "target": "绫小路",
-                            "gender": "男", "reading": "あやのこうじ", "note": "第一人称用俺"}],
+            "characters": [
+                {
+                    "source": "綾小路",
+                    "target": "绫小路",
+                    "gender": "男",
+                    "reading": "あやのこうじ",
+                    "note": "第一人称用俺",
+                }
+            ],
             "terms": [{"source": "高度育成高校", "target": "高度育成高中", "type": "组织"}],
         }
         client = FakeClient(handler=lambda m, t, j: json.dumps(analysis, ensure_ascii=False))
@@ -54,11 +66,18 @@ class TestAnalyzer(unittest.TestCase):
 
 class TestExtractor(unittest.TestCase):
     def test_extract_and_store(self):
-        terms = {"terms": [
-            {"source": "堀北", "target": "堀北", "type": "人物", "gender": "女",
-             "aliases": ["堀北さん"]},
-            {"source": "屋上", "target": "天台", "type": "地名", "gender": "未知"},
-        ]}
+        terms = {
+            "terms": [
+                {
+                    "source": "堀北",
+                    "target": "堀北",
+                    "type": "人物",
+                    "gender": "女",
+                    "aliases": ["堀北さん"],
+                },
+                {"source": "屋上", "target": "天台", "type": "地名", "gender": "未知"},
+            ]
+        }
         client = FakeClient(handler=lambda m, t, j: json.dumps(terms, ensure_ascii=False))
         ext = GlossaryExtractor(client, _cfg())
         with tempfile.TemporaryDirectory() as d:
@@ -95,22 +114,24 @@ class TestExtractor(unittest.TestCase):
             store = GlossaryStore(os.path.join(d, "g.db"))
             # 预置：高置信词条（制造 conflict）+ 低置信词条（制造 updated）。
             store.upsert_term(
-                GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON,
-                             confidence="high"), chapter=1)
+                GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON, confidence="high"),
+                chapter=1,
+            )
             store.upsert_term(
-                GlossaryTerm(source="屋上", target="天台", type="地名",
-                             confidence="low"), chapter=1)
+                GlossaryTerm(source="屋上", target="天台", type="地名", confidence="low"), chapter=1
+            )
             terms = [
-                GlossaryTerm(source="龙园", target="龙园", type=TYPE_PERSON),          # inserted
-                GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON),          # unchanged
-                GlossaryTerm(source="屋上", target="屋顶", type="地名",
-                             confidence="high"),                                       # updated（新胜出）
-                GlossaryTerm(source="堀北", target="北堀", type=TYPE_PERSON,
-                             confidence="low"),                                        # conflict（现有胜出）
+                GlossaryTerm(source="龙园", target="龙园", type=TYPE_PERSON),  # inserted
+                GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON),  # unchanged
+                GlossaryTerm(
+                    source="屋上", target="屋顶", type="地名", confidence="high"
+                ),  # updated（新胜出）
+                GlossaryTerm(
+                    source="堀北", target="北堀", type=TYPE_PERSON, confidence="low"
+                ),  # conflict（现有胜出）
             ]
             summary, changed = ext.store_terms(store, terms, chapter=2)
-            self.assertEqual(
-                summary, {"inserted": 1, "updated": 1, "conflict": 1, "unchanged": 1})
+            self.assertEqual(summary, {"inserted": 1, "updated": 1, "conflict": 1, "unchanged": 1})
             self.assertEqual({t.source for t in changed}, {"龙园", "屋上"})
             store.close()
 
@@ -126,9 +147,12 @@ class TestExtractor(unittest.TestCase):
         ext = GlossaryExtractor(client, _cfg())
         with tempfile.TemporaryDirectory() as d:
             store = GlossaryStore(os.path.join(d, "g.db"))
-            store.upsert_term(GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON), chapter=1)
             store.upsert_term(
-                GlossaryTerm(source="龙园", target="龙园", type=TYPE_PERSON, locked=True), chapter=1)
+                GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON), chapter=1
+            )
+            store.upsert_term(
+                GlossaryTerm(source="龙园", target="龙园", type=TYPE_PERSON, locked=True), chapter=1
+            )
             store.upsert_term(GlossaryTerm(source="屋上", target="天台", type="地名"), chapter=1)
             ext.extract_and_store(store, "堀北在教室", "堀北在教室的翻译", chapter=2)
             prompt = captured["user"]
@@ -171,8 +195,9 @@ class TestLatinResidueFix(unittest.TestCase):
         self.glossary = GlossaryStore(self.store.glossary_path)
         # 已锁定的拉丁人名术语：应被修复
         self.glossary.upsert_term(
-            GlossaryTerm(source="Liya", target="利亚", type=TYPE_PERSON,
-                         confidence="high", locked=True),
+            GlossaryTerm(
+                source="Liya", target="利亚", type=TYPE_PERSON, confidence="high", locked=True
+            ),
         )
         # 未锁定术语：即使正文含 Mark 也不得替换
         self.glossary.upsert_term(GlossaryTerm(source="Mark", target="马克", confidence="medium"))
@@ -229,6 +254,7 @@ class TestLatinResidueFix(unittest.TestCase):
         GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
         self.assertEqual(self.glossary.tm_lookup("To Liya."), "致利亚")
 
+
 class TestGlossaryAuditGuards(unittest.TestCase):
     """五道确定性防线单测（2026-07-11 事故后新增）：
     防线1/2/3 = _candidates 的候选收紧；防线4 = _decide 的裁定过滤；
@@ -255,13 +281,17 @@ class TestGlossaryAuditGuards(unittest.TestCase):
     def test_two_char_target_no_hamming_candidates(self):
         """防线2：2字译名（len<3）直接返回空，不产生 hamming 候选。"""
         self.glossary.upsert_term(GlossaryTerm(source="Liya", target="利亚", type=TYPE_PERSON))
-        self._seed_chapter(["利亚在东京。", "东亚经济增长。", "南亚气候炎热。", "利用工具。", "利益相关。"])
+        self._seed_chapter(
+            ["利亚在东京。", "东亚经济增长。", "南亚气候炎热。", "利用工具。", "利益相关。"]
+        )
         cand = GlossaryAuditor(self._client(), _cfg())._candidates(self.store, self.glossary)
         self.assertNotIn("Liya", cand)
 
     def test_non_person_term_no_hamming_candidates(self):
         """防线1：非 TYPE_PERSON 术语不扫描 hamming，即使正文里有形近词。"""
-        self.glossary.upsert_term(GlossaryTerm(source="supply chain", target="供应链条", type="术语"))
+        self.glossary.upsert_term(
+            GlossaryTerm(source="supply chain", target="供应链条", type="术语")
+        )
         self._seed_chapter(["供应链条很重要。", "供应连条断裂了。"])
         cand = GlossaryAuditor(self._client(), _cfg())._candidates(self.store, self.glossary)
         self.assertNotIn("supply chain", cand)
@@ -289,10 +319,19 @@ class TestGlossaryAuditGuards(unittest.TestCase):
         self._seed_chapter(["佳穂子和佳穗子在一起。"])
 
         def handler(messages, tier, json_mode):
-            return json.dumps({"unifications": [
-                {"source": "Kaho", "canonical": "佳穂子",
-                 "variants": ["佳穗子", "幻觉变体"], "reason": "统一"},
-            ]}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "unifications": [
+                        {
+                            "source": "Kaho",
+                            "canonical": "佳穂子",
+                            "variants": ["佳穗子", "幻觉变体"],
+                            "reason": "统一",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
 
         auditor = GlossaryAuditor(self._client(handler), _cfg())
         applied = auditor.audit(self.store, self.glossary)
@@ -306,8 +345,9 @@ class TestGlossaryAuditGuards(unittest.TestCase):
     def test_latin_residue_skips_hit_embedded_in_all_latin_quote(self):
         """防线5：命中点前后各12字符内两侧全拉丁/标点（英文引文里的人名）时跳过该次命中。"""
         self.glossary.upsert_term(
-            GlossaryTerm(source="Samsung", target="三星", type=TYPE_PERSON,
-                         confidence="high", locked=True),
+            GlossaryTerm(
+                source="Samsung", target="三星", type=TYPE_PERSON, confidence="high", locked=True
+            ),
         )
         self._seed_chapter(["供应35%的市场：Ken Koyanagi, \u201cSamsung Deal\u2026\u201d"])
         GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
@@ -320,8 +360,9 @@ class TestGlossaryAuditGuards(unittest.TestCase):
     def test_latin_residue_replaces_hit_near_cjk(self):
         """防线5 正向用例：命中点近邻有 CJK 时仍替换（不误伤真实场景）。"""
         self.glossary.upsert_term(
-            GlossaryTerm(source="Samsung", target="三星", type=TYPE_PERSON,
-                         confidence="high", locked=True),
+            GlossaryTerm(
+                source="Samsung", target="三星", type=TYPE_PERSON, confidence="high", locked=True
+            ),
         )
         self._seed_chapter(["他说 Samsung 是巨头。"])
         GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)

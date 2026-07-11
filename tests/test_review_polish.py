@@ -5,26 +5,32 @@ from __future__ import annotations
 import json
 import unittest
 
+from trans_novel.agents.polisher import Polisher
+from trans_novel.agents.reviewer import BackTranslator, Reviewer
 from trans_novel.config import Config
 from trans_novel.llm.base import FakeClient
-from trans_novel.agents.reviewer import Reviewer, BackTranslator
-from trans_novel.agents.polisher import Polisher
 
 
 def _cfg():
-    return Config.from_dict({
-        "language": {"source": "ja", "target": "zh"},
-        "llm": {"provider": "fake", "tiers": {
-            "strong": {"model": "p"}, "cheap": {"model": "f"}}},
-    })
+    return Config.from_dict(
+        {
+            "language": {"source": "ja", "target": "zh"},
+            "llm": {
+                "provider": "fake",
+                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+            },
+        }
+    )
 
 
 class TestReviewer(unittest.TestCase):
     def test_review_reports_issues(self):
-        issues = {"issues": [
-            {"index": 0, "type": "missing", "detail": "漏了后半句"},
-            {"index": 1, "type": "terminology", "detail": "人名译法不符"},
-        ]}
+        issues = {
+            "issues": [
+                {"index": 0, "type": "missing", "detail": "漏了后半句"},
+                {"index": 1, "type": "terminology", "detail": "人名译法不符"},
+            ]
+        }
         client = FakeClient(handler=lambda m, t, j: json.dumps(issues, ensure_ascii=False))
         r = Reviewer(client, _cfg())
         out = r.review(["あ", "い"], ["甲", "乙"])
@@ -34,24 +40,31 @@ class TestReviewer(unittest.TestCase):
 
 class TestPolisher(unittest.TestCase):
     def test_polish_ok(self):
-        client = FakeClient(handler=lambda m, t, j: json.dumps(
-            {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False))
+        client = FakeClient(
+            handler=lambda m, t, j: json.dumps(
+                {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False
+            )
+        )
         p = Polisher(client, _cfg())
         out = p.polish(["甲", "乙"], ["a", "b"])
         self.assertEqual(out, ["润色甲", "润色乙"])
         self.assertEqual(client.calls[-1]["tier"], "strong")
 
     def test_polish_mismatch_keeps_original(self):
-        client = FakeClient(handler=lambda m, t, j: json.dumps(
-            {"polished": ["只有一段"]}, ensure_ascii=False))
+        client = FakeClient(
+            handler=lambda m, t, j: json.dumps({"polished": ["只有一段"]}, ensure_ascii=False)
+        )
         p = Polisher(client, _cfg())
         out = p.polish(["甲", "乙"], ["a", "b"])
         self.assertEqual(out, ["甲", "乙"])  # 段数不符 → 保守保留原译
 
     def test_polish_prompt_includes_source_for_fidelity(self):
         # 契约：润色必须把源文作为忠实度参照注入 prompt，且落在【源文对照】块内。
-        client = FakeClient(handler=lambda m, t, j: json.dumps(
-            {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False))
+        client = FakeClient(
+            handler=lambda m, t, j: json.dumps(
+                {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False
+            )
+        )
         p = Polisher(client, _cfg())
         # sources 用独特英文串，便于在 prompt 中定位
         p.polish(["甲", "乙"], sources=["ALPHA_SRC", "BETA_SRC"], style="S")
@@ -78,8 +91,9 @@ class TestBackTranslator(unittest.TestCase):
             if "回译译者" in system:
                 return json.dumps({"backtranslations": ["あ", "い"]}, ensure_ascii=False)
             if "保真度" in system:
-                return json.dumps({"issues": [{"index": 1, "detail": "含义改变"}]},
-                                  ensure_ascii=False)
+                return json.dumps(
+                    {"issues": [{"index": 1, "detail": "含义改变"}]}, ensure_ascii=False
+                )
             return "{}"
 
         bt = BackTranslator(FakeClient(handler=handler), _cfg())

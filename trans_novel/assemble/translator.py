@@ -31,18 +31,23 @@ class Translator(Agent):
     ) -> list[str]:
         n = len(sources)
         system = prompts.render(
-            "translator_system", src=self.src, tgt=self.tgt, n=n,
-            lang_guidance=langprofile.translate_guidance(
-                self.src, self.config.honorific_strategy),
+            "translator_system",
+            src=self.src,
+            tgt=self.tgt,
+            n=n,
+            lang_guidance=langprofile.translate_guidance(self.src, self.config.honorific_strategy),
         )
         user = prompts.render(
-            "translator_user", src=self.src, tgt=self.tgt,
+            "translator_user",
+            src=self.src,
+            tgt=self.tgt,
             style=style or "（无）",
             book_synopsis=book_synopsis or "（无）",
             glossary=prompts.render_glossary(glossary_terms),
             chapter_digest=chapter_digest or "（无）",
             context=context or "（无）",
-            n=n, n_minus_1=n - 1,
+            n=n,
+            n_minus_1=n - 1,
             numbered_source=prompts.numbered(sources),
         )
         # 不传 default：调用失败照常抛出，由 translate_batch 的重试/兜底逻辑处理
@@ -51,10 +56,19 @@ class Translator(Agent):
             raise AlignmentError("模型未返回译文数组")
         return [str(x) for x in items]
 
-    def _translate_one(self, source, glossary_terms, style, context,
-                       book_synopsis, chapter_digest, tier: str = "strong") -> str:
-        out = self._call_batch([source], glossary_terms, style, context,
-                               book_synopsis, chapter_digest, tier=tier)
+    def _translate_one(
+        self,
+        source,
+        glossary_terms,
+        style,
+        context,
+        book_synopsis,
+        chapter_digest,
+        tier: str = "strong",
+    ) -> str:
+        out = self._call_batch(
+            [source], glossary_terms, style, context, book_synopsis, chapter_digest, tier=tier
+        )
         return out[0] if out else ""
 
     def retranslate_with_feedback(
@@ -75,12 +89,16 @@ class Translator(Agent):
         user 用 translator_fix_user：前缀块与主翻译一致，上下文换成前文+后文译文，附审校意见。
         """
         system = prompts.render(
-            "translator_system", src=self.src, tgt=self.tgt, n=1,
-            lang_guidance=langprofile.translate_guidance(
-                self.src, self.config.honorific_strategy),
+            "translator_system",
+            src=self.src,
+            tgt=self.tgt,
+            n=1,
+            lang_guidance=langprofile.translate_guidance(self.src, self.config.honorific_strategy),
         )
         user = prompts.render(
-            "translator_fix_user", src=self.src, tgt=self.tgt,
+            "translator_fix_user",
+            src=self.src,
+            tgt=self.tgt,
             style=style or "（无）",
             book_synopsis=book_synopsis or "（无）",
             glossary=prompts.render_glossary(glossary_terms or []),
@@ -90,8 +108,7 @@ class Translator(Agent):
             feedback=feedback or "（无）",
             source=source,
         )
-        items = self._ask_json(system, user, tier="strong",
-                               key="translations", default=None)
+        items = self._ask_json(system, user, tier="strong", key="translations", default=None)
         if isinstance(items, list) and items:
             return str(items[0]).strip()
         return ""
@@ -116,13 +133,23 @@ class Translator(Agent):
         attempts = self.config.pipeline.align_retry_limit + 1
         for _ in range(attempts):
             try:
-                out = self._call_batch(sources, glossary_terms, style, context,
-                                       book_synopsis, chapter_digest, tier=tier)
+                out = self._call_batch(
+                    sources,
+                    glossary_terms,
+                    style,
+                    context,
+                    book_synopsis,
+                    chapter_digest,
+                    tier=tier,
+                )
             except Exception:
                 out = []
             if len(out) == n:
                 return out
         # 兜底：逐段翻译，保证 1:1
-        return [self._translate_one(s, glossary_terms, style, context,
-                                    book_synopsis, chapter_digest, tier=tier)
-                for s in sources]
+        return [
+            self._translate_one(
+                s, glossary_terms, style, context, book_synopsis, chapter_digest, tier=tier
+            )
+            for s in sources
+        ]

@@ -13,17 +13,25 @@ from .base import Agent
 
 
 class Polisher(Agent):
-    def polish(self, targets: list[str], sources: list[str], *,
-               glossary_terms: list[GlossaryTerm] | None = None,
-               style: str = "") -> list[str]:
+    def polish(
+        self,
+        targets: list[str],
+        sources: list[str],
+        *,
+        glossary_terms: list[GlossaryTerm] | None = None,
+        style: str = "",
+    ) -> list[str]:
         if not targets:
             return []
         n = len(targets)
         system = prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=n)
         user = prompts.render(
-            "polisher_user", src=self.src, tgt=self.tgt,
+            "polisher_user",
+            src=self.src,
+            tgt=self.tgt,
             glossary=prompts.render_glossary(glossary_terms or []),
-            style=style or "（无）", n=n,
+            style=style or "（无）",
+            n=n,
             numbered_source=prompts.numbered(sources),
             numbered_target=prompts.numbered(targets),
         )

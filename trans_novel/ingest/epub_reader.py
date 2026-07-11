@@ -124,7 +124,8 @@ def _toc_label_map(zf: zipfile.ZipFile, toc_paths: list[str]) -> dict[str, str]:
 
         soup = BeautifulSoup(data, "html.parser")
         toc_navs = [
-            n for n in soup.find_all("nav")
+            n
+            for n in soup.find_all("nav")
             if "toc" in (_attr_str(n.get("epub:type")) or _attr_str(n.get("type"))).split()
         ]
         for nav in toc_navs or [soup]:
@@ -139,7 +140,9 @@ def _toc_label_map(zf: zipfile.ZipFile, toc_paths: list[str]) -> dict[str, str]:
 def _looks_like_internal_title(title: str, href: str, book_title: str = "") -> bool:
     base = posixpath.basename(href).rsplit(".", 1)[0]
     stripped = title.strip()
-    return (bool(base) and stripped == base) or (bool(book_title) and stripped == book_title.strip())
+    return (bool(base) and stripped == base) or (
+        bool(book_title) and stripped == book_title.strip()
+    )
 
 
 def _extract_chapter(
@@ -191,9 +194,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
         book_title, hrefs, toc_paths = _parse_opf(zf, opf_path)
         toc_titles = _toc_label_map(zf, toc_paths)
         toc_entries = [
-            {"href": href, "title": title}
-            for href, title in toc_titles.items()
-            if href and title
+            {"href": href, "title": title} for href, title in toc_titles.items() if href and title
         ]
 
         chapters: list[Chapter] = []

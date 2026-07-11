@@ -7,10 +7,14 @@ import tempfile
 import unittest
 import zipfile
 
-from trans_novel.ingest.segmenter import (
-    load_document, chapter_batches, split_long_segments, _split_text)
+from tests.sample_data import write_sample_epub, write_sample_txt
 from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
-from tests.sample_data import write_sample_txt, write_sample_epub
+from trans_novel.ingest.segmenter import (
+    _split_text,
+    chapter_batches,
+    load_document,
+    split_long_segments,
+)
 
 
 class TestTextIngest(unittest.TestCase):
@@ -115,9 +119,18 @@ class TestFb2Ingest(unittest.TestCase):
         doc = self._load(_FB2_BLOCKS)
         ch = doc.chapters[0]
         texts = [s.source for s in ch.segments]
-        for expect in ["题记一行。", "题记作者", "普通段落。", "诗名",
-                       "第一诗行。", "第二诗行。", "诗人", "引文段落。",
-                       "引文作者", "结尾段落。"]:
+        for expect in [
+            "题记一行。",
+            "题记作者",
+            "普通段落。",
+            "诗名",
+            "第一诗行。",
+            "第二诗行。",
+            "诗人",
+            "引文段落。",
+            "引文作者",
+            "结尾段落。",
+        ]:
             self.assertIn(expect, texts)
         # subtitle 作为 heading
         headings = [s.source for s in ch.segments if s.kind == KIND_HEADING]
@@ -128,8 +141,9 @@ class TestFb2Ingest(unittest.TestCase):
         # 部标题成一章 + 两个子章，正文一段不丢
         titles = [ch.title for ch in doc.chapters]
         self.assertEqual(titles, ["第一部", "第一章", "第二章"])
-        all_text = [s.source for ch in doc.chapters
-                    for s in ch.text_segments if s.kind != KIND_HEADING]
+        all_text = [
+            s.source for ch in doc.chapters for s in ch.text_segments if s.kind != KIND_HEADING
+        ]
         self.assertIn("一章首段。", all_text)
         self.assertIn("一章次段。", all_text)
         self.assertIn("二章仅一段。", all_text)
@@ -137,18 +151,22 @@ class TestFb2Ingest(unittest.TestCase):
 
 class TestSplitLongSegments(unittest.TestCase):
     def test_split_by_sentence_and_cont_flag(self):
-        long_src = "第一句。" * 10            # 40 字符
-        ch = Chapter(index=0, title="章", segments=[
-            Segment(index=0, source="标题", kind=KIND_HEADING, anchor="a0"),
-            Segment(index=1, source=long_src, kind=KIND_TEXT, anchor="a1"),
-            Segment(index=2, source="短。", kind=KIND_TEXT, anchor="a2"),
-        ])
+        long_src = "第一句。" * 10  # 40 字符
+        ch = Chapter(
+            index=0,
+            title="章",
+            segments=[
+                Segment(index=0, source="标题", kind=KIND_HEADING, anchor="a0"),
+                Segment(index=1, source=long_src, kind=KIND_TEXT, anchor="a1"),
+                Segment(index=2, source="短。", kind=KIND_TEXT, anchor="a2"),
+            ],
+        )
         split_long_segments([ch], max_chars=30)
         # 长段被拆成多段：首段保留 anchor，续段 cont=True 且无 anchor
         conts = [s.cont for s in ch.segments]
         self.assertIn(True, conts)
         long_parts = [s for s in ch.segments if not s.cont and s.anchor == "a1"]
-        self.assertEqual(len(long_parts), 1)            # 首段唯一带 a1
+        self.assertEqual(len(long_parts), 1)  # 首段唯一带 a1
         cont_parts = [s for s in ch.segments if s.cont]
         self.assertTrue(all(s.anchor is None for s in cont_parts))
         # index 连续重排
@@ -158,14 +176,17 @@ class TestSplitLongSegments(unittest.TestCase):
         self.assertEqual(joined, long_src)
 
     def test_no_split_when_short(self):
-        ch = Chapter(index=0, title="章", segments=[
-            Segment(index=0, source="短句。", kind=KIND_TEXT, anchor="a0")])
+        ch = Chapter(
+            index=0,
+            title="章",
+            segments=[Segment(index=0, source="短句。", kind=KIND_TEXT, anchor="a0")],
+        )
         split_long_segments([ch], max_chars=100)
         self.assertEqual(len(ch.segments), 1)
         self.assertFalse(ch.segments[0].cont)
 
     def test_oversized_single_sentence_hard_split(self):
-        chunks = _split_text("あ" * 50, 20)   # 无句末标点的超长串
+        chunks = _split_text("あ" * 50, 20)  # 无句末标点的超长串
         self.assertTrue(all(len(c) <= 20 for c in chunks))
         self.assertEqual("".join(chunks), "あ" * 50)
 

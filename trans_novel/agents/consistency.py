@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..glossary.store import GlossaryStore
-from ..pipeline.runstore import RunStore, STATUS_DONE
+from ..pipeline.runstore import STATUS_DONE, RunStore
 from . import prompts
 from .base import Agent
 
@@ -41,8 +41,7 @@ class ConsistencyChecker(Agent):
             + digests
             + '\n\n请输出 JSON：{"issues":[...]}。'
         )
-        return self.dict_items(
-            self._ask_json(system, user, tier="cheap", key="issues", default=[]))
+        return self.dict_items(self._ask_json(system, user, tier="cheap", key="issues", default=[]))
 
     def autofix(self, store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
         """对可安全机械修复的术语/译名不一致，生成确定替换并改写正文。
@@ -59,7 +58,8 @@ class ConsistencyChecker(Agent):
         user = (
             "【专有名词对照表】\n"
             + prompts.render_glossary(glossary.all_terms())
-            + "\n\n【各章译文摘要】\n" + digests
+            + "\n\n【各章译文摘要】\n"
+            + digests
             + '\n\n请输出 JSON：{"replacements":[...]}。'
         )
         raw = self._ask_json(system, user, tier="strong", key="replacements", default=[])
@@ -73,5 +73,7 @@ class ConsistencyChecker(Agent):
             if wrong and right and wrong != right:
                 replace_map[wrong] = right
                 applied.append({"wrong": wrong, "right": right, "reason": r.get("reason", "")})
-        rewritten = GlossaryAuditor._rewrite_targets(store, glossary, replace_map) if replace_map else 0
+        rewritten = (
+            GlossaryAuditor._rewrite_targets(store, glossary, replace_map) if replace_map else 0
+        )
         return {"replacements": applied, "rewritten": rewritten}

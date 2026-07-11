@@ -34,8 +34,13 @@ def pending_review(store: GlossaryStore) -> dict:
     return {
         "conflicts": store.open_conflicts(),
         "low_confidence": [
-            {"source": t.source, "target": t.target, "type": t.type,
-             "confidence": t.confidence, "status": t.status}
+            {
+                "source": t.source,
+                "target": t.target,
+                "type": t.type,
+                "confidence": t.confidence,
+                "status": t.status,
+            }
             for t in store.low_confidence_terms()
         ],
     }

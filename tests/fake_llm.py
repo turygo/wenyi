@@ -18,12 +18,17 @@ def routing_handler(messages, tier, json_mode):
         return json.dumps({"language": "ja"}, ensure_ascii=False)
 
     if "前期分析师" in system:
-        return json.dumps({
-            "genre": "校园", "tone": "冷峻", "style_guide": "克制",
-            "characters": [{"source": "綾小路", "target": "绫小路", "gender": "男"}],
-            "terms": [],
-            "conventions": "年代统一用'20世纪90年代'；星期统一用'星期X'。",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "genre": "校园",
+                "tone": "冷峻",
+                "style_guide": "克制",
+                "characters": [{"source": "綾小路", "target": "绫小路", "gender": "男"}],
+                "terms": [],
+                "conventions": "年代统一用'20世纪90年代'；星期统一用'星期X'。",
+            },
+            ensure_ascii=False,
+        )
 
     if "标题翻译" in system:
         n = _count_numbered(user)
@@ -47,15 +52,21 @@ def routing_handler(messages, tier, json_mode):
 
     if "全书定名" in system:
         surfaces = re.findall(r"^\[\d+\] (\S+?)（", user, re.M)
-        return json.dumps({"terms": [
-            {"source": s, "target": s, "type": "人物", "gender": "女"}
-            for s in dict.fromkeys(surfaces)
-        ]}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "terms": [
+                    {"source": s, "target": s, "type": "人物", "gender": "女"}
+                    for s in dict.fromkeys(surfaces)
+                ]
+            },
+            ensure_ascii=False,
+        )
 
     if "术语" in system and "抽取器" in system:
-        return json.dumps({"terms": [
-            {"source": "堀北", "target": "堀北", "type": "人物", "gender": "女"}
-        ]}, ensure_ascii=False)
+        return json.dumps(
+            {"terms": [{"source": "堀北", "target": "堀北", "type": "人物", "gender": "女"}]},
+            ensure_ascii=False,
+        )
 
     if "回译译者" in system:
         n = _count_numbered(user)

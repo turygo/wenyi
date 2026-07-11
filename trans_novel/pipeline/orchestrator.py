@@ -27,42 +27,69 @@ import random
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Optional
 
-from ..config import Config
-from ..glossary.extractor import GlossaryExtractor
-from ..glossary.store import GlossaryStore, TYPE_PERSON
-from ..llm.base import LLMClient, build_client
-from ..ingest.models import KIND_HEADING
-from ..ingest.segmenter import load_document, batch_segments
-from ..postprocess.punct import normalize_zh
+from ..agents import prompts
 from ..agents.analyzer import Analyzer
+from ..agents.namer import CastNamer
+from ..agents.naturalizer import Naturalizer, naturalize_chapter
+from ..agents.polisher import Polisher
+from ..agents.reviewer import BackTranslator, Reviewer
 from ..agents.synopsis import Synopsizer
 from ..agents.translator import Translator
-from ..agents.reviewer import Reviewer, BackTranslator
-from ..agents.polisher import Polisher
-from ..agents.naturalizer import Naturalizer, naturalize_chapter
-from ..agents.namer import CastNamer
-from ..agents import prompts
+from ..config import Config
+from ..glossary.extractor import GlossaryExtractor
 from ..glossary.miner import mine_candidates
+from ..glossary.store import TYPE_PERSON, GlossaryStore
+from ..ingest.models import KIND_HEADING
+from ..ingest.segmenter import batch_segments, load_document
+from ..llm.base import LLMClient, build_client
+from ..postprocess.punct import normalize_zh
 from . import checks, lint
 from .backmatter import is_back_matter
 from .context import RollingContext
-from .runstore import RunStore, slugify, STATUS_DONE, STATUS_PENDING
+from .runstore import STATUS_DONE, STATUS_PENDING, RunStore, slugify
 
 ProgressFn = Callable[[int, int, str], None]
 
 
 # 语言名/代码 → ISO 639-1 两字母代码（模型检测结果归一化）
 _LANG_ALIASES = {
-    "japanese": "ja", "日语": "ja", "日文": "ja", "jp": "ja", "jpn": "ja",
-    "english": "en", "英语": "en", "英文": "en", "eng": "en",
-    "russian": "ru", "俄语": "ru", "俄文": "ru", "rus": "ru",
-    "chinese": "zh", "中文": "zh", "汉语": "zh", "zh-cn": "zh", "zho": "zh",
-    "korean": "ko", "韩语": "ko", "韩文": "ko", "kor": "ko",
-    "french": "fr", "法语": "fr", "法文": "fr",
-    "german": "de", "德语": "de", "德文": "de",
-    "spanish": "es", "西班牙语": "es", "西班牙文": "es",
-    "italian": "it", "意大利语": "it", "意大利文": "it",
-    "portuguese": "pt", "葡萄牙语": "pt", "葡萄牙文": "pt",
+    "japanese": "ja",
+    "日语": "ja",
+    "日文": "ja",
+    "jp": "ja",
+    "jpn": "ja",
+    "english": "en",
+    "英语": "en",
+    "英文": "en",
+    "eng": "en",
+    "russian": "ru",
+    "俄语": "ru",
+    "俄文": "ru",
+    "rus": "ru",
+    "chinese": "zh",
+    "中文": "zh",
+    "汉语": "zh",
+    "zh-cn": "zh",
+    "zho": "zh",
+    "korean": "ko",
+    "韩语": "ko",
+    "韩文": "ko",
+    "kor": "ko",
+    "french": "fr",
+    "法语": "fr",
+    "法文": "fr",
+    "german": "de",
+    "德语": "de",
+    "德文": "de",
+    "spanish": "es",
+    "西班牙语": "es",
+    "西班牙文": "es",
+    "italian": "it",
+    "意大利语": "it",
+    "意大利文": "it",
+    "portuguese": "pt",
+    "葡萄牙语": "pt",
+    "葡萄牙文": "pt",
 }
 
 
@@ -94,19 +121,30 @@ class Orchestrator:
         """把解析出的源语言应用到 config 与各 agent（auto 检测后调用）。"""
         resolved = lang or self.config.source_lang
         self.config.source_lang = resolved
-        for ag in (self.analyzer, self.synopsizer, self.translator, self.reviewer,
-                   self.backtrans, self.polisher, self.extractor, self.namer,
-                   self.naturalizer):
+        for ag in (
+            self.analyzer,
+            self.synopsizer,
+            self.translator,
+            self.reviewer,
+            self.backtrans,
+            self.polisher,
+            self.extractor,
+            self.namer,
+            self.naturalizer,
+        ):
             ag.src = resolved
 
     # ── 准备 / 续跑入口 ──────────────────────────────────────────────────
-    def prepare(self, input_path: str, *,
-                progress: Optional[ProgressFn] = None) -> RunStore:
+    def prepare(self, input_path: str, *, progress: Optional[ProgressFn] = None) -> RunStore:
         if progress:
             progress(0, 0, "读取原书…")
         # 超长段按句拆分（max_chars_per_segment），续段标 cont 供回填并回
-        doc = load_document(input_path, self.config.source_lang, self.config.target_lang,
-                            split_segments=self.config.segment.max_chars_per_segment)
+        doc = load_document(
+            input_path,
+            self.config.source_lang,
+            self.config.target_lang,
+            split_segments=self.config.segment.max_chars_per_segment,
+        )
         run_dir = os.path.join(self.config.state_dir, slugify(doc.title))
         store = RunStore(run_dir)
         if store.exists():
@@ -173,8 +211,9 @@ class Orchestrator:
         )
         try:
             data = self.client.complete_json(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": sample}], tier="cheap")
+                [{"role": "system", "content": system}, {"role": "user", "content": sample}],
+                tier="cheap",
+            )
             code = (data.get("language") if isinstance(data, dict) else "") or ""
             return _normalize_lang(str(code))
         except Exception:
@@ -187,8 +226,7 @@ class Orchestrator:
         texts = ["\n".join(s.source for s in ch.text_segments) for ch in doc.chapters]
         texts = [t for t in texts if len(t) > 200]
         if not texts:  # 兜底：全书都是短章
-            joined = "\n".join(
-                s.source for ch in doc.chapters[:2] for s in ch.text_segments)
+            joined = "\n".join(s.source for ch in doc.chapters[:2] for s in ch.text_segments)
             return joined[:6000]
         if not labeled:
             return texts[0][:6000]
@@ -204,8 +242,13 @@ class Orchestrator:
             parts.append(f"【{tag}】\n{chunk}")
         return "\n\n".join(parts)
 
-    def run(self, input_path: str, *, only_chapter: int | None = None,
-            progress: Optional[ProgressFn] = None) -> RunStore:
+    def run(
+        self,
+        input_path: str,
+        *,
+        only_chapter: int | None = None,
+        progress: Optional[ProgressFn] = None,
+    ) -> RunStore:
         store = self.prepare(input_path, progress=progress)
         manifest = store.load_manifest()
         self._apply_language(manifest.get("source_lang") or self.config.source_lang)
@@ -237,13 +280,23 @@ class Orchestrator:
         pending_reviews: list[tuple[int, Future]] = []
         executor = ThreadPoolExecutor(max_workers=4)
         try:
-            self._resume_pending_reviews(store, glossary, executor, pending_reviews,
-                                         skip=set(targets))
+            self._resume_pending_reviews(
+                store, glossary, executor, pending_reviews, skip=set(targets)
+            )
             for ci in targets:
                 done = self._translate_chapter(
-                    ci, store, glossary, context, style, book_synopsis,
-                    executor=executor, pending_reviews=pending_reviews,
-                    progress=progress, done=done, total=total)
+                    ci,
+                    store,
+                    glossary,
+                    context,
+                    style,
+                    book_synopsis,
+                    executor=executor,
+                    pending_reviews=pending_reviews,
+                    progress=progress,
+                    done=done,
+                    total=total,
+                )
                 store.save_context(context.to_dict())
                 # 机会性排干：只处理已完成的审校 future，不阻塞下一章翻译
                 self._drain_ready_reviews(pending_reviews, store, blocking=False)
@@ -259,12 +312,12 @@ class Orchestrator:
         if progress and total:
             progress(total, total, "翻译完成")
         store.log_event("translate_run_finished", total_segments=total)
-        store.log_event("usage_summary", scope="translate",
-                        **self.client.usage_summary())
+        store.log_event("usage_summary", scope="translate", **self.client.usage_summary())
         return store
 
-    def _drain_ready_reviews(self, pending_reviews: list[tuple[int, Future]],
-                             store: RunStore, *, blocking: bool) -> None:
+    def _drain_ready_reviews(
+        self, pending_reviews: list[tuple[int, Future]], store: RunStore, *, blocking: bool
+    ) -> None:
         """写回已完成的章末审校 future（review=true 且 autofix_severe=false 的异步路径）。
 
         blocking=False：只处理已完成的（每章结束时机会性排干，不阻塞下一章翻译）；
@@ -287,8 +340,9 @@ class Orchestrator:
                 it.setdefault("fixed", False)
                 it["stage"] = "review"
             chapter = store.load_chapter(ci)
-            lint_kept = [i for i in chapter.meta.get("review_issues", [])
-                        if i.get("stage") == "lint"]
+            lint_kept = [
+                i for i in chapter.meta.get("review_issues", []) if i.get("stage") == "lint"
+            ]
             chapter.meta["review_issues"] = lint_kept + new_issues
             store.save_chapter(chapter)
             store.set_review_pending(ci, False)
@@ -300,10 +354,15 @@ class Orchestrator:
             )
         pending_reviews[:] = remaining
 
-    def _resume_pending_reviews(self, store: RunStore, glossary: GlossaryStore,
-                                executor: ThreadPoolExecutor,
-                                pending_reviews: list[tuple[int, Future]], *,
-                                skip: set[int]) -> None:
+    def _resume_pending_reviews(
+        self,
+        store: RunStore,
+        glossary: GlossaryStore,
+        executor: ThreadPoolExecutor,
+        pending_reviews: list[tuple[int, Future]],
+        *,
+        skip: set[int],
+    ) -> None:
         """续跑补跑：扫描已标 done 但 review_pending 未清的章，重新提交异步审校。
 
         覆盖崩溃窗口——章标 done 后、异步审校结果写回前进程被杀，manifest 里
@@ -315,8 +374,7 @@ class Orchestrator:
                 continue
             chapter = store.load_chapter(ci)
             pairs = [(s.source, s.target or "") for s in chapter.text_segments]
-            term_snapshot = self._chapter_term_snapshot(
-                glossary, chapter.text_segments)
+            term_snapshot = self._chapter_term_snapshot(glossary, chapter.text_segments)
             fut = executor.submit(self._review_chapter, pairs, list(term_snapshot))
             pending_reviews.append((ci, fut))
 
@@ -328,8 +386,9 @@ class Orchestrator:
         return total
 
     # ── 全书理解预扫（源文逐章梗概 + 全书概览）────────────────────────────────
-    def _build_understanding(self, store: RunStore, glossary: GlossaryStore,
-                             progress: Optional[ProgressFn] = None) -> str:
+    def _build_understanding(
+        self, store: RunStore, glossary: GlossaryStore, progress: Optional[ProgressFn] = None
+    ) -> str:
         """翻译前预扫源文：逐章梗概存入 chapter.meta，归并出全书概览存入 analysis。
 
         幂等、可续跑：已有梗概/概览则跳过。返回全书概览（注入各章翻译 prompt）。
@@ -343,12 +402,19 @@ class Orchestrator:
 
         # 各章梗概相互独立 → 并行调用（LLM 调用进线程池；落盘全部在主线程，
         # 保持原子写不竞争，且逐章增量落盘、续跑粒度不变）。已有梗概的章跳过（幂等）。
-        loaded = {c.get("index", i): store.load_chapter(c.get("index", i))
-                  for i, c in enumerate(chapters)}
-        body_chapters = [ci for ci, ch in loaded.items()
-                         if not self._back_matter_mode(ch.title, ci, len(chapters))]
-        todo = [(ci, "\n".join(s.source for s in loaded[ci].text_segments))
-                for ci in body_chapters if not loaded[ci].meta.get("source_digest")]
+        loaded = {
+            c.get("index", i): store.load_chapter(c.get("index", i)) for i, c in enumerate(chapters)
+        }
+        body_chapters = [
+            ci
+            for ci, ch in loaded.items()
+            if not self._back_matter_mode(ch.title, ci, len(chapters))
+        ]
+        todo = [
+            (ci, "\n".join(s.source for s in loaded[ci].text_segments))
+            for ci in body_chapters
+            if not loaded[ci].meta.get("source_digest")
+        ]
         if todo:
             store.log_event(
                 "book_understanding_chapter_digest_started",
@@ -359,8 +425,7 @@ class Orchestrator:
             if progress:
                 progress(0, len(todo), "通读全书章节…")
             with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(self.synopsizer.digest_chapter, src): ci
-                        for ci, src in todo}
+                futs = {ex.submit(self.synopsizer.digest_chapter, src): ci for ci, src in todo}
                 for n_done, fut in enumerate(as_completed(futs), 1):
                     ci = futs[fut]
                     loaded[ci].meta["source_digest"] = fut.result()  # 失败时 _ask_text 已回退 ""
@@ -374,8 +439,10 @@ class Orchestrator:
                         progress(n_done, len(todo), "通读全书章节…")
 
         # 按 manifest 章序组装（与并发完成顺序无关）
-        digests = [loaded[c.get("index", i)].meta.get("source_digest", "") or ""
-                   for i, c in enumerate(chapters)]
+        digests = [
+            loaded[c.get("index", i)].meta.get("source_digest", "") or ""
+            for i, c in enumerate(chapters)
+        ]
 
         analysis = store.load_analysis() or {}
 
@@ -386,11 +453,13 @@ class Orchestrator:
             # 挖掘输入必须用 is_back_matter（而非 _back_matter_mode）排除附属章：
             # back_matter=full 时 _back_matter_mode 恒返回 None（不旁路），但附属章
             # 仍是附属章——引文人名/书目标题混进候选正是本次重构要消灭的污染源。
-            mine_chapters = [ci for ci, ch in loaded.items()
-                             if not is_back_matter(ch.title, index=ci, total=len(chapters))]
+            mine_chapters = [
+                ci
+                for ci, ch in loaded.items()
+                if not is_back_matter(ch.title, index=ci, total=len(chapters))
+            ]
             src_chapters = [
-                (ci, "\n".join(s.source for s in loaded[ci].text_segments))
-                for ci in mine_chapters
+                (ci, "\n".join(s.source for s in loaded[ci].text_segments)) for ci in mine_chapters
             ]
             # 挖掘/定名任一环节异常都不得吞掉：一次强档超时若被默认值兜住，
             # term_mining_done 会静默永久落盘为 True，续跑再也不会重试。
@@ -398,18 +467,24 @@ class Orchestrator:
             # 下次续跑重新尝试；真挖掘为空（无异常、无候选）才照常写标记。
             try:
                 candidates = mine_candidates(
-                    self.config.source_lang, src_chapters, self.namer,
+                    self.config.source_lang,
+                    src_chapters,
+                    self.namer,
                     concurrency=max(1, self.config.pipeline.prescan_concurrency),
                     on_progress=(lambda i, n: progress(i, n, "查找专有名词…"))
-                    if progress else None)
+                    if progress
+                    else None,
+                )
                 store.log_event("term_candidates_mined", count=len(candidates))
                 existing = glossary.all_terms()
                 named = self.namer.name_terms(
-                    candidates, self.analyzer.style_brief(analysis), digests,
+                    candidates,
+                    self.analyzer.style_brief(analysis),
+                    digests,
                     existing=existing,
                     concurrency=max(1, self.config.pipeline.prescan_concurrency),
-                    on_progress=(lambda i, n: progress(i, n, "统一译名…"))
-                    if progress else None)
+                    on_progress=(lambda i, n: progress(i, n, "统一译名…")) if progress else None,
+                )
             except Exception as e:
                 store.log_event("cast_naming_failed", error=str(e))
                 named = None
@@ -433,17 +508,20 @@ class Orchestrator:
             if progress:
                 progress(0, 0, "生成全书概览…")
             cast_text = prompts.render_glossary(
-                [t for t in glossary.all_terms() if t.type == TYPE_PERSON])
+                [t for t in glossary.all_terms() if t.type == TYPE_PERSON]
+            )
             synopsis = self.synopsizer.book_synopsis(
-                digests, self.analyzer.style_brief(analysis), cast=cast_text)
+                digests, self.analyzer.style_brief(analysis), cast=cast_text
+            )
             analysis["book_synopsis"] = synopsis
             store.save_analysis(analysis)
             store.log_event("book_synopsis_saved", synopsis=synopsis)
         return synopsis
 
     # ── 章节标题 / 目录项翻译（书名保持原文）──────────────────────────────
-    def _translate_titles(self, store: RunStore, glossary: GlossaryStore,
-                          progress: Optional[ProgressFn] = None) -> None:
+    def _translate_titles(
+        self, store: RunStore, glossary: GlossaryStore, progress: Optional[ProgressFn] = None
+    ) -> None:
         """把各章标题和额外目录项翻成中文，写回 manifest（幂等：已全部译过则跳过）。
 
         书名保持原文，不写 title_translated；借术语表保证章节标题里的专名一致。
@@ -463,8 +541,11 @@ class Orchestrator:
         raw_toc_entries = meta.get("toc_entries", [])
         toc_entry_items = raw_toc_entries if isinstance(raw_toc_entries, list) else []
         toc_entries = [
-            e for e in toc_entry_items
-            if isinstance(e, dict) and e.get("href") not in chapter_hrefs and _flat(e.get("title", ""))
+            e
+            for e in toc_entry_items
+            if isinstance(e, dict)
+            and e.get("href") not in chapter_hrefs
+            and _flat(e.get("title", ""))
         ]
 
         titled_chapters = [c for c in chapters if _flat(c.get("title", ""))]
@@ -483,33 +564,41 @@ class Orchestrator:
                 llm_chapters.append(c)
         store.save_manifest(m)  # 先落盘复用结果，即便后续 LLM 调用失败也不丢失
 
-        if (all(c.get("title_translated") for c in llm_chapters)
-                and all(e.get("title_translated") for e in toc_entries)):
+        if all(c.get("title_translated") for c in llm_chapters) and all(
+            e.get("title_translated") for e in toc_entries
+        ):
             store.log_event("titles_skipped", reason="already_translated")
             return  # 已译（含复用），断点续跑不重复调用
 
-        titles = (
-            [_flat(c.get("title", "")) for c in llm_chapters]
-            + [_flat(e.get("title", "")) for e in toc_entries]
-        )
+        titles = [_flat(c.get("title", "")) for c in llm_chapters] + [
+            _flat(e.get("title", "")) for e in toc_entries
+        ]
         if not any(t.strip() for t in titles):
             return  # 全部复用/已译，LLM 列表为空，不发请求
         if progress:
             progress(0, 0, "翻译章节标题…")
         analysis = store.load_analysis() or {}
         book_synopsis = analysis.get("book_synopsis") or "（无）"
-        system = prompts.render("title_translator_system",
-                                src=self.config.source_lang, tgt=self.config.target_lang,
-                                n=len(titles))
-        user = prompts.render("title_translator_user",
-                              src=self.config.source_lang, tgt=self.config.target_lang,
-                              book_synopsis=book_synopsis,
-                              glossary=prompts.render_glossary(glossary.all_terms()),
-                              n=len(titles), numbered_titles=prompts.numbered(titles))
+        system = prompts.render(
+            "title_translator_system",
+            src=self.config.source_lang,
+            tgt=self.config.target_lang,
+            n=len(titles),
+        )
+        user = prompts.render(
+            "title_translator_user",
+            src=self.config.source_lang,
+            tgt=self.config.target_lang,
+            book_synopsis=book_synopsis,
+            glossary=prompts.render_glossary(glossary.all_terms()),
+            n=len(titles),
+            numbered_titles=prompts.numbered(titles),
+        )
         try:
             data = self.client.complete_json(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}], tier="strong")
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                tier="strong",
+            )
         except Exception:
             return
         out = data.get("titles") if isinstance(data, dict) else data
@@ -522,8 +611,8 @@ class Orchestrator:
             )
             return
         out = [str(t).strip() for t in out]
-        chapter_out = out[:len(llm_chapters)]
-        toc_out = out[len(llm_chapters):]
+        chapter_out = out[: len(llm_chapters)]
+        toc_out = out[len(llm_chapters) :]
         for c, t in zip(llm_chapters, chapter_out):
             c["title_translated"] = t or c.get("title")
         for e, t in zip(toc_entries, toc_out):
@@ -580,11 +669,17 @@ class Orchestrator:
             ch.meta.pop("backtranslation_issues", None)
             store.save_chapter(ch)
             store.set_chapter_status(c["index"], STATUS_PENDING)
-            store.log_event("back_matter_reopened", chapter=c["index"],
-                            title=c.get("title", ""), prev_mode=prev, mode=cur)
+            store.log_event(
+                "back_matter_reopened",
+                chapter=c["index"],
+                title=c.get("title", ""),
+                prev_mode=prev,
+                mode=cur,
+            )
 
-    def _translate_back_matter(self, mode, ci, chapter, text_segs, store, *,
-                               progress=None, done=0, total=0) -> int:
+    def _translate_back_matter(
+        self, mode, ci, chapter, text_segs, store, *, progress=None, done=0, total=0
+    ) -> int:
         """附属章旁路：skip=原文直通；light=fast 档粗翻。不碰 glossary/context/style/executor。"""
         label = f"第{ci}章 {chapter.title}"
         store.log_event("chapter_back_matter", chapter=ci, title=chapter.title, mode=mode)
@@ -609,8 +704,12 @@ class Orchestrator:
                     continue
                 raw = self.translator.translate_batch(
                     [s.source for s in b],
-                    glossary_terms=[], style="", context="",
-                    book_synopsis="", chapter_digest="", tier="fast",
+                    glossary_terms=[],
+                    style="",
+                    context="",
+                    book_synopsis="",
+                    chapter_digest="",
+                    tier="fast",
                 )
                 if self.config.punctuation_normalize:
                     raw = [normalize_zh(t) if t else t for t in raw]
@@ -658,13 +757,21 @@ class Orchestrator:
         )
         return done
 
-    def _translate_chapter(self, ci: int, store: RunStore,
-                           glossary: GlossaryStore, context: RollingContext,
-                           style: str, book_synopsis: str = "", *,
-                           executor: ThreadPoolExecutor,
-                           pending_reviews: list[tuple[int, Future]],
-                           progress: Optional[ProgressFn] = None,
-                           done: int = 0, total: int = 0) -> int:
+    def _translate_chapter(
+        self,
+        ci: int,
+        store: RunStore,
+        glossary: GlossaryStore,
+        context: RollingContext,
+        style: str,
+        book_synopsis: str = "",
+        *,
+        executor: ThreadPoolExecutor,
+        pending_reviews: list[tuple[int, Future]],
+        progress: Optional[ProgressFn] = None,
+        done: int = 0,
+        total: int = 0,
+    ) -> int:
         chapter = store.load_chapter(ci)
         text_segs = chapter.text_segments
         if not text_segs:
@@ -674,8 +781,9 @@ class Orchestrator:
         n_ch = len(store.load_manifest()["chapters"])
         bm_mode = self._back_matter_mode(chapter.title, ci, n_ch)
         if bm_mode:
-            return self._translate_back_matter(bm_mode, ci, chapter, text_segs, store,
-                                               progress=progress, done=done, total=total)
+            return self._translate_back_matter(
+                bm_mode, ci, chapter, text_segs, store, progress=progress, done=done, total=total
+            )
         # full/正文路径：附属章照常翻译，但不抽术语（skip/light 已在上方旁路返回）。
         bm = is_back_matter(chapter.title, index=ci, total=n_ch)
         # 走到完整流水线就清掉旁路痕迹（换档/门控收紧后 report 不再误报）。
@@ -694,7 +802,8 @@ class Orchestrator:
         # 润色批间无依赖，提交后不等，全部挪到章末统一排干（不阻塞下一批翻译）。
         # 断点续跑（段/批级）：上次中断前已译完并落盘的批次，整批跳过、不重翻，只重建上下文。
         review_issues: list[dict] = [
-            i for i in chapter.meta.get("review_issues", [])
+            i
+            for i in chapter.meta.get("review_issues", [])
             if i.get("stage") not in ("length", "lint")
         ]
         # lint 层（确定性、零 LLM）产出的未解决 issue 单独累积，最终并入 review_issues：
@@ -704,7 +813,7 @@ class Orchestrator:
         # start_index → 本轮新提交的润色 future；章末排干时与 chapter.meta["pending_polish"]
         # （含续跑遗留、本轮未重译的批次）合并处理，保证续跑不丢润色。
         polish_futures: dict[int, Future] = {}
-        seg_base = 0   # 当前批首段的章内段号（issue 批内下标 → 章内段号）
+        seg_base = 0  # 当前批首段的章内段号（issue 批内下标 → 章内段号）
         for b in batches:
             existing_targets = [s.target for s in b if s.target and s.target.strip()]
             if len(existing_targets) == len(b):
@@ -714,26 +823,31 @@ class Orchestrator:
                 summary = None
                 if not bm and self.config.pipeline.inflight_glossary:
                     summary, changed = self._extract_batch_glossary(
-                        glossary, store, ci, seg_base, b)
+                        glossary, store, ci, seg_base, b
+                    )
                     # 与新译批一致的条件刷新：新词命中本章剩余源文才重建快照，保前缀缓存。
-                    remaining_src = "\n".join(
-                        s.source for s in text_segs[seg_base + len(b):])
+                    remaining_src = "\n".join(s.source for s in text_segs[seg_base + len(b) :])
                     if changed and GlossaryStore.terms_in(changed, remaining_src):
                         term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
                 # 崩溃续跑：跳过批次不重译（保持跳过语义），但确定性 lint 零成本，
                 # 仍跑一遍记录未修复项，防止崩溃窗口下确定性问题永久漏检。
                 locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
                 for it in lint.lint_targets(
-                        [s.source for s in b], existing_targets, locked_terms=locked,
-                        src_lang=self.config.source_lang):
-                    lint_review_issues.append({
-                        "chapter": ci,
-                        "index": seg_base + it.index,
-                        "type": it.type,
-                        "detail": it.detail,
-                        "stage": "lint",
-                        "fixed": False,
-                    })
+                    [s.source for s in b],
+                    existing_targets,
+                    locked_terms=locked,
+                    src_lang=self.config.source_lang,
+                ):
+                    lint_review_issues.append(
+                        {
+                            "chapter": ci,
+                            "index": seg_base + it.index,
+                            "type": it.type,
+                            "detail": it.detail,
+                            "stage": "lint",
+                            "fixed": False,
+                        }
+                    )
                 store.log_event(
                     "batch_skipped",
                     chapter=ci,
@@ -753,16 +867,20 @@ class Orchestrator:
                 continue
 
             ctx_text = context.render(self.config.pipeline.rolling_context_segments)
-            raw_targets = self._process_batch(b, term_snapshot, ctx_text, style,
-                                              book_synopsis, chapter_digest)
+            raw_targets = self._process_batch(
+                b, term_snapshot, ctx_text, style, book_synopsis, chapter_digest
+            )
 
             # 确定性 lint（零 LLM，宁漏勿误报）：引号丢失/数字失配/锁定专名漂移/
             # 未译残留 + 复用的长度异常。flag 段带审校意见定向重译，每段最多一轮，
             # 采纳条件=重译后 issue 数严格减少（防越修越糟）。
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
             lint_issues = lint.lint_targets(
-                [s.source for s in b], raw_targets, locked_terms=locked,
-                src_lang=self.config.source_lang)
+                [s.source for s in b],
+                raw_targets,
+                locked_terms=locked,
+                src_lang=self.config.source_lang,
+            )
             if lint_issues:
                 store.log_event(
                     "batch_linted",
@@ -781,28 +899,41 @@ class Orchestrator:
                         # too_short/too_long 等非定向重译类型：只记录，不重译
                         # （en→zh 合法压缩比波动实测极大，交由人工/审校 agent 判断）。
                         for it in seg_issues:
-                            lint_review_issues.append({
-                                "chapter": ci,
-                                "index": seg_base + idx,
-                                "type": it.type,
-                                "detail": it.detail,
-                                "stage": "lint",
-                                "fixed": False,
-                            })
+                            lint_review_issues.append(
+                                {
+                                    "chapter": ci,
+                                    "index": seg_base + idx,
+                                    "type": it.type,
+                                    "detail": it.detail,
+                                    "stage": "lint",
+                                    "fixed": False,
+                                }
+                            )
                         continue
                     seg = b[idx]
                     feedback = "；".join(it.detail for it in seg_issues)
                     before = "\n".join(raw_targets[j] for j in range(max(0, idx - 2), idx))
-                    after = "\n".join(
-                        raw_targets[j] for j in range(idx + 1, min(len(b), idx + 3)))
+                    after = "\n".join(raw_targets[j] for j in range(idx + 1, min(len(b), idx + 3)))
                     new_t = self.translator.retranslate_with_feedback(
-                        seg.source, feedback=feedback, glossary_terms=term_snapshot,
-                        style=style, context_before=before, context_after=after,
-                        book_synopsis=book_synopsis, chapter_digest=chapter_digest)
+                        seg.source,
+                        feedback=feedback,
+                        glossary_terms=term_snapshot,
+                        style=style,
+                        context_before=before,
+                        context_after=after,
+                        book_synopsis=book_synopsis,
+                        chapter_digest=chapter_digest,
+                    )
                     new_issues = (
-                        lint.lint_targets([seg.source], [new_t], locked_terms=locked,
-                                          src_lang=self.config.source_lang)
-                        if new_t else [])
+                        lint.lint_targets(
+                            [seg.source],
+                            [new_t],
+                            locked_terms=locked,
+                            src_lang=self.config.source_lang,
+                        )
+                        if new_t
+                        else []
+                    )
                     if new_t and len(new_issues) < len(seg_issues):
                         store.log_event(
                             "lint_refixed",
@@ -810,22 +941,23 @@ class Orchestrator:
                             index=seg_base + idx,
                             before=raw_targets[idx],
                             after=new_t,
-                            issues=[{"type": it.type, "detail": it.detail}
-                                    for it in seg_issues],
+                            issues=[{"type": it.type, "detail": it.detail} for it in seg_issues],
                         )
                         raw_targets[idx] = new_t
                         remaining = new_issues
                     else:
                         remaining = seg_issues
                     for it in remaining:
-                        lint_review_issues.append({
-                            "chapter": ci,
-                            "index": seg_base + idx,
-                            "type": it.type,
-                            "detail": it.detail,
-                            "stage": "lint",
-                            "fixed": False,
-                        })
+                        lint_review_issues.append(
+                            {
+                                "chapter": ci,
+                                "index": seg_base + idx,
+                                "type": it.type,
+                                "detail": it.detail,
+                                "stage": "lint",
+                                "fixed": False,
+                            }
+                        )
             for s, t in zip(b, raw_targets):
                 s.target = t
             batch_start = seg_base
@@ -836,7 +968,8 @@ class Orchestrator:
                 # 滚动上下文改喂未润色译文：polisher 批间无依赖，容忍上下文带原始腔调。
                 context.add_targets(raw_targets)
                 chapter.meta.setdefault("pending_polish", []).append(
-                    {"start": batch_start, "count": len(b)})
+                    {"start": batch_start, "count": len(b)}
+                )
                 event_targets = raw_targets
                 punctuation_normalized = False
             else:
@@ -855,7 +988,7 @@ class Orchestrator:
                 chapter=ci,
                 start_index=batch_start,
                 count=len(b),
-                polished=False,   # 润色异步/关闭时此刻均未完成；结果见 batch_polished 事件
+                polished=False,  # 润色异步/关闭时此刻均未完成；结果见 batch_polished 事件
                 punctuation_normalized=punctuation_normalized,
                 segments=[
                     {"index": batch_start + i, "source": s.source, "target": t}
@@ -870,8 +1003,12 @@ class Orchestrator:
             if polish_on:
                 # 润色批间无依赖：提交后不等待，章末统一排干，不阻塞下一批翻译。
                 polish_futures[batch_start] = executor.submit(
-                    self.polisher.polish, list(raw_targets), [s.source for s in b],
-                    glossary_terms=list(term_snapshot), style=style)
+                    self.polisher.polish,
+                    list(raw_targets),
+                    [s.source for s in b],
+                    glossary_terms=list(term_snapshot),
+                    style=style,
+                )
 
             # 术语抽取：existing 按本批源文裁剪；落盘后在主线程同步抽取
             # （fast 档，耗时远小于下一批强档翻译），不进共享池——否则会被在飞的润色/审校
@@ -882,8 +1019,10 @@ class Orchestrator:
             if not bm and self.config.pipeline.inflight_glossary:
                 batch_src = "\n".join(s.source for s in b)
                 terms = self.extractor.extract(
-                    batch_src, "\n".join(raw_targets),
-                    GlossaryStore.terms_in(term_snapshot, batch_src))
+                    batch_src,
+                    "\n".join(raw_targets),
+                    GlossaryStore.terms_in(term_snapshot, batch_src),
+                )
                 summary, changed = self.extractor.store_terms(glossary, terms, ci)
                 remaining_src = "\n".join(s.source for s in text_segs[seg_base:])
                 if changed and GlossaryStore.terms_in(changed, remaining_src):
@@ -900,8 +1039,9 @@ class Orchestrator:
 
         # 章末：排干本章全部润色 future（本轮新提交的 + 续跑遗留在 pending_polish 里的），
         # 写回最终译文、清掉标记；每批清完即落盘，保证续跑不丢润色（不变量 b）。
-        self._drain_chapter_polish(chapter, text_segs, polish_futures, executor,
-                                   style, term_snapshot, store, ci)
+        self._drain_chapter_polish(
+            chapter, text_segs, polish_futures, executor, style, term_snapshot, store, ci
+        )
 
         # 全章术语抽取入库：保留为兜底，捕捉跨段才能确认的称呼/口癖/固定表达；
         # 在润色后的最终文本上跑，放在 review 前让本章审校也能用上兜底抽出的术语。
@@ -921,8 +1061,16 @@ class Orchestrator:
         if self.config.pipeline.naturalize and not chapter.meta.get("naturalized"):
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
             naturalize_chapter(
-                self.naturalizer, chapter, ci, n_ch, locked, self.config, store,
-                dry_run=False, remaining=None)
+                self.naturalizer,
+                chapter,
+                ci,
+                n_ch,
+                locked,
+                self.config,
+                store,
+                dry_run=False,
+                remaining=None,
+            )
 
         # ── 章末整章审校（块内 index 映射回章内段号）──
         # 幂等：续跑重入章末时清掉旧审校项，防重复累积。
@@ -938,9 +1086,16 @@ class Orchestrator:
                     issue_count=len(new_issues),
                     issues=new_issues,
                 )
-                self._autofix_severe(text_segs, new_issues, term_snapshot, style,
-                                     book_synopsis, chapter_digest,
-                                     store=store, chapter_index=ci)
+                self._autofix_severe(
+                    text_segs,
+                    new_issues,
+                    term_snapshot,
+                    style,
+                    book_synopsis,
+                    chapter_digest,
+                    store=store,
+                    chapter_index=ci,
+                )
                 for it in new_issues:
                     it["chapter"] = ci
                     it.setdefault("fixed", False)
@@ -951,8 +1106,7 @@ class Orchestrator:
                 # 由 run() 机会性/收尾统一排干、写回 review_issues、发 chapter_reviewed 事件。
                 # set_review_pending 落持久标记（写 manifest，随后 set STATUS_DONE 会保留它）：
                 # 崩溃发生在标 done 后、审校写回前时，续跑据此补跑，异步审校结果不静默丢失。
-                review_future = executor.submit(
-                    self._review_chapter, pairs, list(term_snapshot))
+                review_future = executor.submit(self._review_chapter, pairs, list(term_snapshot))
                 pending_reviews.append((ci, review_future))
                 store.set_review_pending(ci, True)
 
@@ -997,9 +1151,17 @@ class Orchestrator:
         )
         return done
 
-    def _drain_chapter_polish(self, chapter, text_segs, futures_by_start: dict[int, Future],
-                              executor: ThreadPoolExecutor, style: str, term_snapshot,
-                              store: RunStore, ci: int) -> None:
+    def _drain_chapter_polish(
+        self,
+        chapter,
+        text_segs,
+        futures_by_start: dict[int, Future],
+        executor: ThreadPoolExecutor,
+        style: str,
+        term_snapshot,
+        store: RunStore,
+        ci: int,
+    ) -> None:
         """章末排干本章全部润色 future：本轮新提交的 + 上轮中断遗留在 pending_polish 里的。
 
         遗留批次（本轮走了批跳过路径、未重译）没有对应 future，从已落盘的 raw 译文
@@ -1015,9 +1177,12 @@ class Orchestrator:
                 count = entry["count"]
                 raw = [text_segs[start + i].target or "" for i in range(count)]
                 futures_by_start[start] = executor.submit(
-                    self.polisher.polish, raw,
+                    self.polisher.polish,
+                    raw,
                     [text_segs[start + i].source for i in range(count)],
-                    glossary_terms=list(term_snapshot), style=style)
+                    glossary_terms=list(term_snapshot),
+                    style=style,
+                )
         for entry in sorted(pending, key=lambda e: e["start"]):
             start, count = entry["start"], entry["count"]
             fut = futures_by_start.pop(start, None)
@@ -1025,22 +1190,27 @@ class Orchestrator:
             try:
                 final = fut.result() if fut is not None else raw
             except Exception:
-                final = raw   # Polisher 本身失败已回退原文；这里再兜一层意外异常
+                final = raw  # Polisher 本身失败已回退原文；这里再兜一层意外异常
             if self.config.punctuation_normalize:
                 final = [normalize_zh(t) if t else t for t in final]
             # 润色回退：final 若比 raw（同样先 normalize_zh，公平比较）多引入新的 lint
             # issue 类型（如剥掉引号/丢了锁定专名），该段保留 raw，发 polish_rejected。
             srcs = [text_segs[start + i].source for i in range(count)]
-            raw_normalized = ([normalize_zh(t) if t else t for t in raw]
-                              if self.config.punctuation_normalize else raw)
+            raw_normalized = (
+                [normalize_zh(t) if t else t for t in raw]
+                if self.config.punctuation_normalize
+                else raw
+            )
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
             raw_types: dict[int, set[str]] = {}
-            for it in lint.lint_targets(srcs, raw_normalized, locked_terms=locked,
-                                        src_lang=self.config.source_lang):
+            for it in lint.lint_targets(
+                srcs, raw_normalized, locked_terms=locked, src_lang=self.config.source_lang
+            ):
                 raw_types.setdefault(it.index, set()).add(it.type)
             final_types: dict[int, set[str]] = {}
-            for it in lint.lint_targets(srcs, final, locked_terms=locked,
-                                        src_lang=self.config.source_lang):
+            for it in lint.lint_targets(
+                srcs, final, locked_terms=locked, src_lang=self.config.source_lang
+            ):
                 final_types.setdefault(it.index, set()).add(it.type)
             for i in range(count):
                 introduced = final_types.get(i, set()) - raw_types.get(i, set())
@@ -1058,7 +1228,8 @@ class Orchestrator:
             for i, t in enumerate(final):
                 text_segs[start + i].target = t
             chapter.meta["pending_polish"] = [
-                e for e in chapter.meta.get("pending_polish", []) if e.get("start") != start]
+                e for e in chapter.meta.get("pending_polish", []) if e.get("start") != start
+            ]
             store.log_event(
                 "batch_polished",
                 chapter=ci,
@@ -1078,18 +1249,21 @@ class Orchestrator:
             return terms
         src_text = "\n".join(s.source for s in text_segs)
         hit = {t.source for t in GlossaryStore.terms_in(terms, src_text)}
-        return [t for t in terms
-                if t.source in hit or (t.type == TYPE_PERSON and t.locked)]
+        return [t for t in terms if t.source in hit or (t.type == TYPE_PERSON and t.locked)]
 
-    def _extract_batch_glossary(self, glossary: GlossaryStore, store: RunStore,
-                                chapter: int, start_index: int, batch,
-                                ) -> tuple[dict[str, int], list]:
+    def _extract_batch_glossary(
+        self,
+        glossary: GlossaryStore,
+        store: RunStore,
+        chapter: int,
+        start_index: int,
+        batch,
+    ) -> tuple[dict[str, int], list]:
         """续跑批跳过时同步抽取术语入库（新译批次的抽取已挪到批循环内联的异步流程），
         供同章后续批次使用。返回 (入库汇总, inserted/updated 词条) 供条件刷新。"""
         src_text = "\n".join(s.source for s in batch)
         tgt_text = "\n".join(s.target or "" for s in batch)
-        summary, changed = self.extractor.extract_and_store(
-            glossary, src_text, tgt_text, chapter)
+        summary, changed = self.extractor.extract_and_store(glossary, src_text, tgt_text, chapter)
         store.log_event(
             "batch_glossary_extracted",
             chapter=chapter,
@@ -1142,10 +1316,18 @@ class Orchestrator:
             chunks.append(cur)
         return chunks
 
-    def _autofix_severe(self, text_segs, issues, terms, style,
-                        book_synopsis: str = "", chapter_digest: str = "", *,
-                        store: RunStore | None = None,
-                        chapter_index: int | None = None) -> None:
+    def _autofix_severe(
+        self,
+        text_segs,
+        issues,
+        terms,
+        style,
+        book_synopsis: str = "",
+        chapter_digest: str = "",
+        *,
+        store: RunStore | None = None,
+        chapter_index: int | None = None,
+    ) -> None:
         """对审校严重项（漏译/误译）带审校意见定向重译，每段最多一次。
 
         采纳条件 = 重译非空且过长度校验：采纳则标点规范化后更新 seg.target 并标 fixed=True；
@@ -1157,17 +1339,23 @@ class Orchestrator:
                 by_seg.setdefault(it["index"], []).append(it)
         for idx, seg_issues in sorted(by_seg.items()):
             seg = text_segs[idx]
-            before = "\n".join(text_segs[j].target or ""
-                               for j in range(max(0, idx - 2), idx))
-            after = "\n".join(text_segs[j].target or ""
-                              for j in range(idx + 1, min(len(text_segs), idx + 3)))
+            before = "\n".join(text_segs[j].target or "" for j in range(max(0, idx - 2), idx))
+            after = "\n".join(
+                text_segs[j].target or "" for j in range(idx + 1, min(len(text_segs), idx + 3))
+            )
             feedback = "；".join(
-                f"{it.get('detail', '')}（建议：{it.get('suggestion', '')}）"
-                for it in seg_issues)
+                f"{it.get('detail', '')}（建议：{it.get('suggestion', '')}）" for it in seg_issues
+            )
             new_t = self.translator.retranslate_with_feedback(
-                seg.source, feedback=feedback, glossary_terms=terms, style=style,
-                context_before=before, context_after=after,
-                book_synopsis=book_synopsis, chapter_digest=chapter_digest)
+                seg.source,
+                feedback=feedback,
+                glossary_terms=terms,
+                style=style,
+                context_before=before,
+                context_after=after,
+                book_synopsis=book_synopsis,
+                chapter_digest=chapter_digest,
+            )
             if new_t and not checks.length_flags([seg.source], [new_t]):
                 if self.config.punctuation_normalize:
                     new_t = normalize_zh(new_t)
@@ -1196,8 +1384,15 @@ class Orchestrator:
                     issues=seg_issues,
                 )
 
-    def _process_batch(self, batch, terms, ctx_text: str, style: str,
-                       book_synopsis: str = "", chapter_digest: str = "") -> list[str]:
+    def _process_batch(
+        self,
+        batch,
+        terms,
+        ctx_text: str,
+        style: str,
+        book_synopsis: str = "",
+        chapter_digest: str = "",
+    ) -> list[str]:
         """单个批次：整批翻译（段数对齐由 Translator 内部重试/兜底保证）。
 
         每段都在自身上下文里翻译，不跨位置复用译文（避免丢失语境信息）。
@@ -1207,19 +1402,30 @@ class Orchestrator:
         """
         sources = [s.source for s in batch]
         return self.translator.translate_batch(
-            sources, glossary_terms=terms, style=style, context=ctx_text,
-            book_synopsis=book_synopsis, chapter_digest=chapter_digest)
+            sources,
+            glossary_terms=terms,
+            style=style,
+            context=ctx_text,
+            book_synopsis=book_synopsis,
+            chapter_digest=chapter_digest,
+        )
 
     # ── 可选步骤 / 连续全流程 ────────────────────────────────────────────────
     ALL_STEPS = ("translate", "qa", "report", "assemble")
 
-    def run_steps(self, input_path: str, steps, *,
-                  progress: Optional[ProgressFn] = None,
-                  out_format: str = "epub", out_path: str | None = None) -> dict[str, Any]:
+    def run_steps(
+        self,
+        input_path: str,
+        steps,
+        *,
+        progress: Optional[ProgressFn] = None,
+        out_format: str = "epub",
+        out_path: str | None = None,
+    ) -> dict[str, Any]:
         """按需执行步骤子集（可单选可全选）。steps ⊆ ALL_STEPS。"""
         from ..agents.consistency import ConsistencyChecker
-        from ..assemble.writer import assemble, bilingual_out_path
         from ..assemble.report import build_report
+        from ..assemble.writer import assemble, bilingual_out_path
 
         steps = set(steps)
         run_steps_input = sorted(steps)
@@ -1289,8 +1495,7 @@ class Orchestrator:
                 )
             store.log_event("assembled", outputs=outputs, out_format=out_format)
 
-        store.log_event("usage_summary", scope="pipeline",
-                        **self.client.usage_summary())
+        store.log_event("usage_summary", scope="pipeline", **self.client.usage_summary())
         store.log_event(
             "run_steps_finished",
             steps=run_steps_input,
@@ -1305,12 +1510,19 @@ class Orchestrator:
             "qa_issues": qa_issues,
         }
 
-    def run_all(self, input_path: str, *, progress: Optional[ProgressFn] = None,
-                out_format: str = "epub", out_path: str | None = None,
-                do_qa: bool | None = None) -> dict[str, Any]:
+    def run_all(
+        self,
+        input_path: str,
+        *,
+        progress: Optional[ProgressFn] = None,
+        out_format: str = "epub",
+        out_path: str | None = None,
+        do_qa: bool | None = None,
+    ) -> dict[str, Any]:
         """翻译 → 一致性 QA → 报告 → 回填 EPUB，返回结果汇总。"""
         steps = {"translate", "report", "assemble"}
         if do_qa if do_qa is not None else self.config.pipeline.consistency_qa:
             steps.add("qa")
-        return self.run_steps(input_path, steps, progress=progress,
-                              out_format=out_format, out_path=out_path)
+        return self.run_steps(
+            input_path, steps, progress=progress, out_format=out_format, out_path=out_path
+        )

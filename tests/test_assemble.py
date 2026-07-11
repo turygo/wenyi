@@ -8,15 +8,15 @@ import tempfile
 import unittest
 import zipfile
 
-from trans_novel.config import Config
-from trans_novel.llm.base import FakeClient
-from trans_novel.pipeline.orchestrator import Orchestrator
-from trans_novel.assemble.writer import assemble
+from tests.fake_llm import routing_handler
+from tests.sample_data import write_sample_epub, write_sample_txt
 from trans_novel.assemble.report import build_report
+from trans_novel.assemble.writer import assemble
+from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.segmenter import load_document
-from tests.sample_data import write_sample_txt, write_sample_epub
-from tests.fake_llm import routing_handler
+from trans_novel.llm.base import FakeClient
+from trans_novel.pipeline.orchestrator import Orchestrator
 
 
 def _write_vertical_epub(path: str) -> None:
@@ -59,13 +59,17 @@ def _write_vertical_epub(path: str) -> None:
 
 
 def _config(state_dir: str):
-    return Config.from_dict({
-        "language": {"source": "ja", "target": "zh"},
-        "llm": {"provider": "fake", "tiers": {
-            "strong": {"model": "p"}, "cheap": {"model": "f"}}},
-        "pipeline": {"review": True, "polish": True, "backtranslate_sample": 0.0},
-        "paths": {"state_dir": state_dir},
-    })
+    return Config.from_dict(
+        {
+            "language": {"source": "ja", "target": "zh"},
+            "llm": {
+                "provider": "fake",
+                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+            },
+            "pipeline": {"review": True, "polish": True, "backtranslate_sample": 0.0},
+            "paths": {"state_dir": state_dir},
+        }
+    )
 
 
 def _run(input_path, state_dir):
@@ -113,7 +117,7 @@ class TestAssembleEpub(unittest.TestCase):
             self.assertTrue(zipfile.is_zipfile(out))
             with zipfile.ZipFile(out) as z:
                 html = z.read("OEBPS/ch1.xhtml").decode("utf-8")
-            self.assertIn("润0", html)            # 译文已替换
+            self.assertIn("润0", html)  # 译文已替换
             self.assertNotIn("data-tn-id", html)  # 占位标记已清除
             self.assertNotIn("綾小路は教室", html)  # 原文已被替换
 
@@ -146,14 +150,16 @@ class TestTitleTranslation(unittest.TestCase):
             out = assemble(store, ep, out_format="epub")
             with zipfile.ZipFile(out) as z:
                 opf = z.read("OEBPS/content.opf").decode("utf-8")
-            self.assertIn("サンプル小説", opf)       # OPF 书名保持原文
+            self.assertIn("サンプル小説", opf)  # OPF 书名保持原文
             self.assertIn("<dc:language>zh-Hans</dc:language>", opf)
             self.assertEqual(os.path.basename(out), "novel.zh.epub")
 
     def test_rewrite_targets_propagates_to_titles(self):
         from trans_novel.agents.glossary_auditor import GlossaryAuditor
+
         with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt"); write_sample_txt(txt)
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
             store, cfg = _run(txt, os.path.join(d, "state"))
             # 手动写入含变体的标题译名
             m = store.load_manifest()
@@ -164,22 +170,26 @@ class TestTitleTranslation(unittest.TestCase):
             GlossaryAuditor._rewrite_targets(store, g, {"佳穂": "佳穗"})
             g.close()
             m2 = store.load_manifest()
-            self.assertNotIn("title_translated", m2)                    # 书名译名字段被清理
+            self.assertNotIn("title_translated", m2)  # 书名译名字段被清理
             self.assertEqual(m2["chapters"][0]["title_translated"], "佳穗登场")  # 章名已规范
 
     def test_rewrite_nav_and_ncx_labels(self):
         from trans_novel.assemble.writer import _rewrite_toc
 
-        nav = (b'<html xmlns:epub="http://www.idpf.org/2007/ops"><body>'
-               b'<nav epub:type="toc"><ol>'
-               b'<li><a href="ch1.xhtml">\xe7\xac\xac\xe4\xb8\x80\xe7\xab\xa0</a></li>'
-               b'</ol></nav></body></html>')
+        nav = (
+            b'<html xmlns:epub="http://www.idpf.org/2007/ops"><body>'
+            b'<nav epub:type="toc"><ol>'
+            b'<li><a href="ch1.xhtml">\xe7\xac\xac\xe4\xb8\x80\xe7\xab\xa0</a></li>'
+            b"</ol></nav></body></html>"
+        )
         out = _rewrite_toc(nav, {"ch1.xhtml": "第一章译名"}, is_ncx=False)
         self.assertIn("第一章译名", out.decode("utf-8"))
 
-        ncx = (b'<?xml version="1.0"?><ncx><navMap><navPoint>'
-               b'<navLabel><text>old</text></navLabel>'
-               b'<content src="text/ch1.xhtml#x"/></navPoint></navMap></ncx>')
+        ncx = (
+            b'<?xml version="1.0"?><ncx><navMap><navPoint>'
+            b"<navLabel><text>old</text></navLabel>"
+            b'<content src="text/ch1.xhtml#x"/></navPoint></navMap></ncx>'
+        )
         out2 = _rewrite_toc(ncx, {"ch1.xhtml": "第一章译名"}, is_ncx=True)
         dec = out2.decode("utf-8")
         self.assertIn("第一章译名", dec)
@@ -218,6 +228,7 @@ class TestHeadingNumberInWriter(unittest.TestCase):
 
             out_path = os.path.join(d, "novel.zh.txt")
             from trans_novel.assemble.writer import _assemble_text
+
             _assemble_text(store, out_path)
             with open(out_path, encoding="utf-8") as f:
                 text = f.read()
@@ -232,7 +243,7 @@ class TestHeadingNumberInWriter(unittest.TestCase):
                 zf.writestr(
                     "OEBPS/nav.xhtml",
                     '<html xmlns:epub="http://www.idpf.org/2007/ops">'
-                    "<body><nav epub:type=\"toc\"><ol>"
+                    '<body><nav epub:type="toc"><ol>'
                     '<li><a href="ch2.xhtml">old</a></li>'
                     "</ol></nav></body></html>",
                 )
@@ -275,9 +286,14 @@ class TestConsistency(unittest.TestCase):
 
             def handler(messages, tier, json_mode):
                 if "一致性审查员" in messages[0]["content"]:
-                    return json.dumps({"issues": [
-                        {"type": "terminology", "detail": "X 译法不一致", "where": "第1章"}
-                    ]}, ensure_ascii=False)
+                    return json.dumps(
+                        {
+                            "issues": [
+                                {"type": "terminology", "detail": "X 译法不一致", "where": "第1章"}
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
                 return "{}"
 
             g = GlossaryStore(store.glossary_path)

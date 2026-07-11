@@ -170,12 +170,14 @@ class TestCliConfig(unittest.TestCase):
 
             with patch("trans_novel.cli._load_config", return_value=cfg):
                 result = CliRunner().invoke(
-                    app, ["tools", "naturalize", src, "--chapters", "1,x,3"])
+                    app, ["tools", "naturalize", src, "--chapters", "1,x,3"]
+                )
 
             self.assertNotEqual(result.exit_code, 0, result.output)
             self.assertFalse(
                 isinstance(result.exception, ValueError),
-                "非法 --chapters 不应以未捕获的 ValueError 泄漏")
+                "非法 --chapters 不应以未捕获的 ValueError 泄漏",
+            )
             self.assertIn("--chapters", result.output)
 
     def test_status_does_not_create_state_directory(self):

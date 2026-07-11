@@ -8,24 +8,28 @@ import tempfile
 import unittest
 import zipfile
 
+from tests.fake_llm import routing_handler
+from tests.sample_data import write_sample_txt
 from trans_novel.config import Config
-from trans_novel.postprocess.punct import normalize_zh, normalize_heading_numbering
+from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
 from trans_novel.llm.base import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator
-from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
-from tests.sample_data import write_sample_txt
-from tests.fake_llm import routing_handler
+from trans_novel.postprocess.punct import normalize_heading_numbering, normalize_zh
 
 
 class TestModelLanguageDetection(unittest.TestCase):
     def _cfg(self, state: str) -> Config:
-        return Config.from_dict({
-            "language": {"source": "auto", "target": "zh"},
-            "llm": {"provider": "fake", "tiers": {
-                "strong": {"model": "p"}, "cheap": {"model": "f"}}},
-            "pipeline": {"book_understanding": False},
-            "paths": {"state_dir": state},
-        })
+        return Config.from_dict(
+            {
+                "language": {"source": "auto", "target": "zh"},
+                "llm": {
+                    "provider": "fake",
+                    "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+                },
+                "pipeline": {"book_understanding": False},
+                "paths": {"state_dir": state},
+            }
+        )
 
     def test_auto_uses_model_detection(self):
         with tempfile.TemporaryDirectory() as d:
@@ -72,7 +76,6 @@ class TestPunct(unittest.TestCase):
         self.assertEqual(normalize_zh("等等...走了--他笑了"), "等等……走了——他笑了")
 
 
-
 class TestHeadingNumbering(unittest.TestCase):
     def test_boundary_numbers(self):
         self.assertEqual(normalize_heading_numbering("第5章 迫击炮"), "第五章 迫击炮")
@@ -115,6 +118,7 @@ class TestHeadingNumbering(unittest.TestCase):
     def test_empty_and_none_like(self):
         self.assertEqual(normalize_heading_numbering(""), "")
 
+
 class TestGlossaryAudit(unittest.TestCase):
     def test_unify_variants_and_rewrite_targets(self):
         from trans_novel.agents.glossary_auditor import GlossaryAuditor
@@ -123,14 +127,22 @@ class TestGlossaryAudit(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             state = os.path.join(d, "state")
-            cfg = Config.from_dict({
-                "language": {"source": "ja", "target": "zh"},
-                "llm": {"provider": "fake", "tiers": {
-                    "strong": {"model": "p"}, "cheap": {"model": "f"}}},
-                "pipeline": {"review": False, "polish": False,
-                             "backtranslate_sample": 0.0, "consistency_qa": False},
-                "paths": {"state_dir": state},
-            })
+            cfg = Config.from_dict(
+                {
+                    "language": {"source": "ja", "target": "zh"},
+                    "llm": {
+                        "provider": "fake",
+                        "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+                    },
+                    "pipeline": {
+                        "review": False,
+                        "polish": False,
+                        "backtranslate_sample": 0.0,
+                        "consistency_qa": False,
+                    },
+                    "paths": {"state_dir": state},
+                }
+            )
             orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
             store = orch.run(txt)
 
@@ -144,10 +156,19 @@ class TestGlossaryAudit(unittest.TestCase):
 
             def handler(messages, tier, json_mode):
                 if "术语一致性审计员" in messages[0]["content"]:
-                    return json.dumps({"unifications": [
-                        {"source": "カホ", "canonical": "佳穂子",
-                         "variants": ["佳穗子"], "reason": "统一为佳穂子"}
-                    ]}, ensure_ascii=False)
+                    return json.dumps(
+                        {
+                            "unifications": [
+                                {
+                                    "source": "カホ",
+                                    "canonical": "佳穂子",
+                                    "variants": ["佳穗子"],
+                                    "reason": "统一为佳穂子",
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
                 return "{}"
 
             g = GlossaryStore(store.glossary_path)
@@ -169,18 +190,27 @@ class TestRunAll(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             state = os.path.join(d, "state")
-            cfg = Config.from_dict({
-                "language": {"source": "auto", "target": "zh"},
-                "llm": {"provider": "fake", "tiers": {
-                    "strong": {"model": "p"}, "cheap": {"model": "f"}}},
-                "pipeline": {"review": True, "polish": True,
-                             "backtranslate_sample": 0.0, "consistency_qa": True},
-                "paths": {"state_dir": state},
-            })
+            cfg = Config.from_dict(
+                {
+                    "language": {"source": "auto", "target": "zh"},
+                    "llm": {
+                        "provider": "fake",
+                        "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+                    },
+                    "pipeline": {
+                        "review": True,
+                        "polish": True,
+                        "backtranslate_sample": 0.0,
+                        "consistency_qa": True,
+                    },
+                    "paths": {"state_dir": state},
+                }
+            )
             seen = []
             orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
             result = orch.run_all(
-                txt, progress=lambda done, total, label: seen.append((done, total)),
+                txt,
+                progress=lambda done, total, label: seen.append((done, total)),
                 out_format="epub",
             )
             self.assertTrue(result["output"].endswith(".epub"))

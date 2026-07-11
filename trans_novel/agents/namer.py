@@ -31,11 +31,16 @@ def _render_candidates(candidates: list[Candidate]) -> str:
 
 
 class CastNamer(Agent):
-    def name_terms(self, candidates: list[Candidate], analysis_brief: str,
-                    digests: list[str], existing: list[GlossaryTerm] | None = None,
-                    *, concurrency: int = 1,
-                    on_progress: Callable[[int, int], None] | None = None,
-                    ) -> list[GlossaryTerm]:
+    def name_terms(
+        self,
+        candidates: list[Candidate],
+        analysis_brief: str,
+        digests: list[str],
+        existing: list[GlossaryTerm] | None = None,
+        *,
+        concurrency: int = 1,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> list[GlossaryTerm]:
         """给候选定唯一中文译名 + type/gender/note；候选按字符预算分组，每组一次强档
         调用，组间独立无 reduce（候选已按 surface 去重，组间不会互相冲突）。
 
@@ -87,13 +92,19 @@ class CastNamer(Agent):
             groups.append(cur)
         return groups
 
-    def _name_group(self, group: list[Candidate], analysis_brief: str,
-                    digest_text: str, glossary_text: str) -> list[GlossaryTerm]:
+    def _name_group(
+        self, group: list[Candidate], analysis_brief: str, digest_text: str, glossary_text: str
+    ) -> list[GlossaryTerm]:
         system = prompts.render("cast_naming_system", src=self.src, tgt=self.tgt)
         user = prompts.render(
-            "cast_naming_user", src=self.src, tgt=self.tgt,
-            glossary=glossary_text, brief=analysis_brief or "（无）",
-            digests=digest_text or "（无）", candidates=_render_candidates(group))
+            "cast_naming_user",
+            src=self.src,
+            tgt=self.tgt,
+            glossary=glossary_text,
+            brief=analysis_brief or "（无）",
+            digests=digest_text or "（无）",
+            candidates=_render_candidates(group),
+        )
         # 不设 default：一次强档失败若被兜成空列表，term_mining_done 会静默永久落盘，
         # 续跑再也不重试——异常整体冒泡，交由 orchestrator 捕获并放弃本次落标记。
         raw = self._ask_json(system, user, tier="strong", key="terms")
@@ -109,14 +120,17 @@ class CastNamer(Agent):
             if not source or not target:
                 continue
             term_type = d.get("type", "术语")
-            out.append(GlossaryTerm(
-                source=source, target=target,
-                reading=str(d.get("reading", "")).strip(),
-                type=term_type,
-                gender=d.get("gender", "") if d.get("gender") not in ("未知", None) else "",
-                note=d.get("note", ""),
-                confidence="high",
-                locked=term_type == TYPE_PERSON,
-                first_chapter=0,
-            ))
+            out.append(
+                GlossaryTerm(
+                    source=source,
+                    target=target,
+                    reading=str(d.get("reading", "")).strip(),
+                    type=term_type,
+                    gender=d.get("gender", "") if d.get("gender") not in ("未知", None) else "",
+                    note=d.get("note", ""),
+                    confidence="high",
+                    locked=term_type == TYPE_PERSON,
+                    first_chapter=0,
+                )
+            )
         return out

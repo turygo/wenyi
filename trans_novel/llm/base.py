@@ -77,8 +77,12 @@ def parse_json_loose(text: str) -> Any:
 
 # ── Token 用量统计 ────────────────────────────────────────────────────────
 _USAGE_FIELDS = (
-    "calls", "prompt_tokens", "completion_tokens", "total_tokens",
-    "cache_hit_tokens", "cache_miss_tokens",
+    "calls",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cache_hit_tokens",
+    "cache_miss_tokens",
 )
 
 
@@ -136,8 +140,7 @@ class UsageTracker:
             for f in _USAGE_FIELDS:
                 totals[f] += v[f]
         for slot in (*by_tier.values(), totals):
-            slot["cache_hit_rate"] = _hit_rate(
-                slot["cache_hit_tokens"], slot["cache_miss_tokens"])
+            slot["cache_hit_rate"] = _hit_rate(slot["cache_hit_tokens"], slot["cache_miss_tokens"])
         return {"totals": totals, "by_tier": by_tier}
 
 
@@ -200,9 +203,7 @@ class DeepSeekClient(LLMClient):
                 ) from e
             api_key = self.cfg.api_key
             if not api_key:
-                raise RuntimeError(
-                    f"未设置环境变量 {self.cfg.api_key_env}（DeepSeek API key）"
-                )
+                raise RuntimeError(f"未设置环境变量 {self.cfg.api_key_env}（DeepSeek API key）")
             self._client = OpenAI(
                 api_key=api_key,
                 base_url=self.cfg.base_url,
@@ -272,8 +273,9 @@ class FakeClient(LLMClient):
         json_mode: bool = False,
         max_tokens: Optional[int] = None,
     ) -> str:
-        self.calls.append({"messages": messages, "tier": tier,
-                           "json_mode": json_mode, "max_tokens": max_tokens})
+        self.calls.append(
+            {"messages": messages, "tier": tier, "json_mode": json_mode, "max_tokens": max_tokens}
+        )
         if self.handler is not None:
             return self.handler(messages, tier, json_mode)
         return "[]" if json_mode else ""

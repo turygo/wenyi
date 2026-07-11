@@ -23,7 +23,7 @@ class RollingContext:
     def add_targets(self, targets: list[str]) -> None:
         self.recent_targets.extend(t for t in targets if t and t.strip())
         if len(self.recent_targets) > self.max_recent_keep:
-            self.recent_targets = self.recent_targets[-self.max_recent_keep:]
+            self.recent_targets = self.recent_targets[-self.max_recent_keep :]
 
     def to_dict(self) -> dict:
         return {"recent_targets": self.recent_targets}

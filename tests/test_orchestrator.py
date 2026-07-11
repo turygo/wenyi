@@ -8,14 +8,14 @@ import re
 import tempfile
 import unittest
 
+from tests.fake_llm import routing_handler
+from tests.sample_data import write_sample_txt
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.llm.base import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator, _normalize_lang
 from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING
 from trans_novel.postprocess.punct import normalize_zh
-from tests.sample_data import write_sample_txt
-from tests.fake_llm import routing_handler
 
 
 def _translated_para_count(calls) -> int:
@@ -28,15 +28,23 @@ def _translated_para_count(calls) -> int:
 
 
 def _config(state_dir: str):
-    return Config.from_dict({
-        "language": {"source": "ja", "target": "zh"},
-        "llm": {"provider": "fake", "tiers": {
-            "strong": {"model": "p"}, "cheap": {"model": "f"}}},
-        "segment": {"max_chars_per_batch": 1800},
-        "pipeline": {"review": True, "polish": True,
-                     "backtranslate_sample": 0.0, "consistency_qa": True},
-        "paths": {"state_dir": state_dir},
-    })
+    return Config.from_dict(
+        {
+            "language": {"source": "ja", "target": "zh"},
+            "llm": {
+                "provider": "fake",
+                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+            },
+            "segment": {"max_chars_per_batch": 1800},
+            "pipeline": {
+                "review": True,
+                "polish": True,
+                "backtranslate_sample": 0.0,
+                "consistency_qa": True,
+            },
+            "paths": {"state_dir": state_dir},
+        }
+    )
 
 
 class TestOrchestrator(unittest.TestCase):
@@ -64,14 +72,17 @@ class TestOrchestrator(unittest.TestCase):
             # （fake 全书定名路由把候选原样定名，type=人物）；分析器种入了「绫小路」；
             # 全程不应向 FakeClient 发出旧版"抽取器" system 请求。
             from trans_novel.glossary.store import GlossaryStore
+
             g = GlossaryStore(store.glossary_path)
             self.assertIsNotNone(g.get_term("綾小路"))
             self.assertIsNotNone(g.get_term("堀北"))
             self.assertGreater(g.stats()["tm_entries"], 0)  # 翻译记忆库已写入
             g.close()
-            extractor_calls = [c for c in client.calls
-                               if "术语" in c["messages"][0]["content"]
-                               and "抽取器" in c["messages"][0]["content"]]
+            extractor_calls = [
+                c
+                for c in client.calls
+                if "术语" in c["messages"][0]["content"] and "抽取器" in c["messages"][0]["content"]
+            ]
             self.assertEqual(len(extractor_calls), 0, "默认路径不得调用旧版抽取器")
             analysis = store.load_analysis() or {}
             self.assertTrue(analysis.get("term_mining_done"))
@@ -80,11 +91,11 @@ class TestOrchestrator(unittest.TestCase):
             client2 = FakeClient(handler=routing_handler)
             orch2 = Orchestrator(cfg, client=client2)
             orch2.run(txt)  # resume 语义
-            translate_calls = [c for c in client2.calls
-                               if "文学翻译" in c["messages"][0]["content"]]
+            translate_calls = [
+                c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
+            ]
             self.assertEqual(len(translate_calls), 0)
-            naming_calls = [c for c in client2.calls
-                            if "全书定名" in c["messages"][0]["content"]]
+            naming_calls = [c for c in client2.calls if "全书定名" in c["messages"][0]["content"]]
             self.assertEqual(len(naming_calls), 0, "续跑不应重复定名")
 
     def test_resume_after_partial(self):
@@ -115,6 +126,7 @@ class TestSegmentLevelResume(unittest.TestCase):
         """返回带标记的翻译 handler（译文形如 {tag}译{i}），其余走默认路由。
         用原文长度补齐译文（填充字符），避免触发新增确定性 lint 的 too_short
         判定——本类只测续跑/段级幂等，不是 lint 的测试范围。"""
+
         def handler(messages, tier, json_mode):
             if "文学翻译" in messages[0]["content"]:
                 user = messages[-1]["content"]
@@ -125,6 +137,7 @@ class TestSegmentLevelResume(unittest.TestCase):
                     out.append(base + "文" * max(0, len(src) - len(base)))
                 return json.dumps({"translations": out}, ensure_ascii=False)
             return routing_handler(messages, tier, json_mode)
+
         return handler
 
     def test_resume_skips_done_segments_keeps_their_text(self):
@@ -133,8 +146,8 @@ class TestSegmentLevelResume(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
-            cfg.segment.max_chars_per_batch = 8     # 每段≈独立批，便于精确续跑
-            cfg.pipeline.polish = False             # 保留翻译标记，便于断言（与续跑无关）
+            cfg.segment.max_chars_per_batch = 8  # 每段≈独立批，便于精确续跑
+            cfg.pipeline.polish = False  # 保留翻译标记，便于断言（与续跑无关）
 
             # 第一次：用 R1 译完第 0 章
             c1 = FakeClient(handler=self._tr_handler("R1"))
@@ -150,7 +163,7 @@ class TestSegmentLevelResume(unittest.TestCase):
             # 第二次：用 R2 续跑——只应补译被清空的那 1 段
             c2 = FakeClient(handler=self._tr_handler("R2"))
             Orchestrator(cfg, client=c2).run(txt, only_chapter=0)
-            self.assertEqual(_translated_para_count(c2.calls), 1)   # 仅 1 段被重翻
+            self.assertEqual(_translated_para_count(c2.calls), 1)  # 仅 1 段被重翻
 
             ch2 = store.load_chapter(0)
             # 之前已译的段仍是 R1（未被跨位置复用、也未重翻），补译段是 R2
@@ -185,8 +198,8 @@ class TestBookUnderstanding(unittest.TestCase):
             user = self._translate_user(client.calls)
             self.assertIn("【全书概览】", user)
             self.assertIn("【本章梗概】", user)
-            self.assertIn("全书概览", user)   # fake 概览正文
-            self.assertIn("本章梗概", user)   # fake 逐章梗概正文
+            self.assertIn("全书概览", user)  # fake 概览正文
+            self.assertIn("本章梗概", user)  # fake 逐章梗概正文
 
     def test_prescan_parallel(self):
         """并行预扫：多线程 digest 后各章梗概按章序落盘，翻译注入正常。"""
@@ -216,9 +229,12 @@ class TestBookUnderstanding(unittest.TestCase):
 
             c2 = FakeClient(handler=routing_handler)
             Orchestrator(cfg, client=c2).run(txt)
-            prepass = [c for c in c2.calls
-                       if "梗概员" in c["messages"][0]["content"]
-                       or "概览员" in c["messages"][0]["content"]]
+            prepass = [
+                c
+                for c in c2.calls
+                if "梗概员" in c["messages"][0]["content"]
+                or "概览员" in c["messages"][0]["content"]
+            ]
             self.assertEqual(len(prepass), 0)
 
     def test_toggle_off(self):
@@ -234,9 +250,12 @@ class TestBookUnderstanding(unittest.TestCase):
 
             self.assertFalse(store.load_chapter(0).meta.get("source_digest"))
             self.assertFalse((store.load_analysis() or {}).get("book_synopsis"))
-            prepass = [c for c in client.calls
-                       if "梗概员" in c["messages"][0]["content"]
-                       or "概览员" in c["messages"][0]["content"]]
+            prepass = [
+                c
+                for c in client.calls
+                if "梗概员" in c["messages"][0]["content"]
+                or "概览员" in c["messages"][0]["content"]
+            ]
             self.assertEqual(len(prepass), 0)
 
 
@@ -251,6 +270,7 @@ class TestTermMiningRobustness(unittest.TestCase):
 
     def test_naming_failure_does_not_set_flag_and_retries_on_resume(self):
         """一次强档定名异常：term_mining_done 不落盘，不静默永久跳过；续跑重试并成功。"""
+
         def failing_handler(messages, tier, json_mode):
             if "全书定名" in messages[0]["content"]:
                 raise RuntimeError("strong tier timeout")
@@ -265,8 +285,9 @@ class TestTermMiningRobustness(unittest.TestCase):
             store = Orchestrator(cfg, client=client).run(txt)
 
             analysis = store.load_analysis() or {}
-            self.assertFalse(analysis.get("term_mining_done"),
-                             "定名异常时不得落盘 term_mining_done")
+            self.assertFalse(
+                analysis.get("term_mining_done"), "定名异常时不得落盘 term_mining_done"
+            )
             g = GlossaryStore(store.glossary_path)
             self.assertIsNone(g.get_term("堀北"))
             g.close()
@@ -284,7 +305,7 @@ class TestTermMiningRobustness(unittest.TestCase):
 
     def test_namer_confirmed_person_gets_locked(self):
         """seed_glossary 先种入的未锁定人物，被 namer 确认沿用译法后应升级为 locked+高置信度。"""
-        from trans_novel.glossary.store import GlossaryTerm, TYPE_PERSON
+        from trans_novel.glossary.store import TYPE_PERSON, GlossaryTerm
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -296,8 +317,16 @@ class TestTermMiningRobustness(unittest.TestCase):
             g = GlossaryStore(store.glossary_path)
             # 模拟 seed_glossary 种入的未锁定人物：source 与 mining 固定候选「堀北」同名，
             # target 与 fake 全书定名路由的原样定名结果一致，用于验证确认升级逻辑。
-            g.upsert_term(GlossaryTerm(source="堀北", target="堀北", type=TYPE_PERSON,
-                                       confidence="medium", locked=False), chapter=1)
+            g.upsert_term(
+                GlossaryTerm(
+                    source="堀北",
+                    target="堀北",
+                    type=TYPE_PERSON,
+                    confidence="medium",
+                    locked=False,
+                ),
+                chapter=1,
+            )
             g.close()
 
             Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(txt)
@@ -327,12 +356,16 @@ class TestTermMiningRobustness(unittest.TestCase):
             client = FakeClient(handler=routing_handler)
             Orchestrator(cfg, client=client).run(txt)
 
-            mining_calls = [c for c in client.calls
-                            if "术语候选挖掘" in c["messages"][0]["content"]]
+            mining_calls = [
+                c for c in client.calls if "术语候选挖掘" in c["messages"][0]["content"]
+            ]
             self.assertTrue(mining_calls, "应产生挖掘调用（正文章）")
             for c in mining_calls:
-                self.assertNotIn(marker, c["messages"][-1]["content"],
-                                 "back_matter=full 时 Notes 章不得进入挖掘候选输入")
+                self.assertNotIn(
+                    marker,
+                    c["messages"][-1]["content"],
+                    "back_matter=full 时 Notes 章不得进入挖掘候选输入",
+                )
 
 
 class TestTitleReuse(unittest.TestCase):
@@ -405,7 +438,8 @@ class TestRunSteps(unittest.TestCase):
     def test_subset_only_assemble(self):
         """run_steps 步骤子集：仅回填时不应再产生翻译调用（幂等）。"""
         with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt"); write_sample_txt(txt)
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
             orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
             orch.run_steps(txt, {"translate"})
@@ -414,8 +448,9 @@ class TestRunSteps(unittest.TestCase):
             res = Orchestrator(cfg, client=client2).run_steps(txt, {"assemble"})
             self.assertTrue(res["output"].endswith(".epub"))
             self.assertTrue(os.path.isfile(res["output"]))
-            translate_calls = [c for c in client2.calls
-                               if "文学翻译" in c["messages"][0]["content"]]
+            translate_calls = [
+                c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
+            ]
             self.assertEqual(len(translate_calls), 0)
 
 
@@ -423,24 +458,37 @@ class TestReviewReporting(unittest.TestCase):
     """章末审校 + 严重项自动重译（autofix_severe）。"""
 
     # 样例首段「第一章　出会い」7 字；fix 需在 3-21 字间（比值 0.3-3.0）方可通过长度校验
-    FIX_TEXT = "第一章 邂逅"   # 7 字，比值 1.0
+    FIX_TEXT = "第一章 邂逅"  # 7 字，比值 1.0
 
     def _handler(self, fix_text):
         """审校每块报 index 0 漏译；带【审校意见】的翻译调用返回定向重译文。"""
+
         def handler(messages, tier, json_mode):
             sys = messages[0]["content"]
             user = messages[-1]["content"]
             if "译文审校" in sys:
-                return json.dumps({"issues": [
-                    {"index": 0, "type": "missing", "detail": "漏了一句", "suggestion": "补上"}
-                ]}, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "issues": [
+                            {
+                                "index": 0,
+                                "type": "missing",
+                                "detail": "漏了一句",
+                                "suggestion": "补上",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
             if "文学翻译" in sys and "【审校意见】" in user:
                 return json.dumps({"translations": [fix_text]}, ensure_ascii=False)
             return routing_handler(messages, tier, json_mode)
+
         return handler
 
     def _run(self, d, *, autofix, fix_text=None):
-        txt = os.path.join(d, "novel.txt"); write_sample_txt(txt)
+        txt = os.path.join(d, "novel.txt")
+        write_sample_txt(txt)
         cfg = _config(os.path.join(d, "state"))
         cfg.pipeline.autofix_severe = autofix
         handler = self._handler(fix_text or self.FIX_TEXT)
@@ -487,22 +535,26 @@ class TestReviewReporting(unittest.TestCase):
 
     def test_review_index_mapping(self):
         """整章多块审校时，块内 index 正确映射回章内段号。"""
+
         def handler(messages, tier, json_mode):
             if "译文审校" in messages[0]["content"]:
-                return json.dumps({"issues": [
-                    {"index": 0, "type": "missing", "detail": "x", "suggestion": ""}
-                ]}, ensure_ascii=False)
+                return json.dumps(
+                    {"issues": [{"index": 0, "type": "missing", "detail": "x", "suggestion": ""}]},
+                    ensure_ascii=False,
+                )
             return routing_handler(messages, tier, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt"); write_sample_txt(txt)
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
-            cfg.segment.max_chars_per_batch = 8   # 审校块预算=24 → 每段自成一块
+            cfg.segment.max_chars_per_batch = 8  # 审校块预算=24 → 每段自成一块
             cfg.pipeline.autofix_severe = False
             store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
             ch = store.load_chapter(0)
-            idxs = sorted(i["index"] for i in ch.meta["review_issues"]
-                          if i.get("type") == "missing")
+            idxs = sorted(
+                i["index"] for i in ch.meta["review_issues"] if i.get("type") == "missing"
+            )
             # 每块报 index 0 → 映射后应为各块首段的章内段号（0,1,2,...互不相同）
             self.assertEqual(idxs, list(range(len(ch.text_segments))))
 
@@ -510,6 +562,7 @@ class TestReviewReporting(unittest.TestCase):
 class TestStyleAnalysis(unittest.TestCase):
     def _long_doc(self, d):
         from trans_novel.ingest.segmenter import load_document
+
         txt = os.path.join(d, "long.txt")
         chapters = []
         for i in range(3):
@@ -535,6 +588,7 @@ class TestStyleAnalysis(unittest.TestCase):
         """单章书：三个采样点重合，只取一次、不重复。"""
         with tempfile.TemporaryDirectory() as d:
             from trans_novel.ingest.segmenter import load_document
+
             txt = os.path.join(d, "short.txt")
             with open(txt, "w", encoding="utf-8") as f:
                 f.write("# 唯一章\n\n" + "长段落。" + "あ" * 300)
@@ -551,10 +605,15 @@ class TestStyleAnalysis(unittest.TestCase):
 
         cfg = _config("state")
         ana = Analyzer(FC(), cfg)
-        brief = ana.style_brief({
-            "genre": "校园", "pacing": "短句为主", "register": "口语",
-            "dialogue_style": "语气词丰富", "narration": "第一人称",
-        })
+        brief = ana.style_brief(
+            {
+                "genre": "校园",
+                "pacing": "短句为主",
+                "register": "口语",
+                "dialogue_style": "语气词丰富",
+                "narration": "第一人称",
+            }
+        )
         self.assertIn("句式节奏：短句为主", brief)
         self.assertIn("语域：口语", brief)
         self.assertIn("对话风格：语气词丰富", brief)
@@ -581,18 +640,20 @@ class TestGlossaryScope(unittest.TestCase):
         store = orch.prepare(txt)
         g = GlossaryStore(store.glossary_path)
         # ①锁定人物（source 不在正文）②无关术语（source/alias 均不在正文）③alias 在正文出现
-        g.upsert_term(GlossaryTerm(source="外部人物X", target="外部译名",
-                                   type="人物", locked=True))
+        g.upsert_term(GlossaryTerm(source="外部人物X", target="外部译名", type="人物", locked=True))
         g.upsert_term(GlossaryTerm(source="無関係用語", target="无关术语", type="术语"))
-        g.upsert_term(GlossaryTerm(source="ホリキタ", target="堀北译名",
-                                   aliases=["堀北"], type="术语"))
+        g.upsert_term(
+            GlossaryTerm(source="ホリキタ", target="堀北译名", aliases=["堀北"], type="术语")
+        )
         g.close()
 
         client = FakeClient(handler=routing_handler)
         Orchestrator(cfg, client=client).run(txt)
-        return ["\n".join(m["content"] for m in c["messages"])
-                for c in client.calls
-                if "文学翻译" in c["messages"][0]["content"]]
+        return [
+            "\n".join(m["content"] for m in c["messages"])
+            for c in client.calls
+            if "文学翻译" in c["messages"][0]["content"]
+        ]
 
     def test_chapter_scope_prunes(self):
         """chapter：锁定人物保留、无关术语剔除、alias 命中保留。"""
@@ -600,9 +661,9 @@ class TestGlossaryScope(unittest.TestCase):
             translate_prompts = self._run_with_terms(d, "chapter")
             self.assertTrue(translate_prompts)
             for p in translate_prompts:
-                self.assertIn("外部人物X", p)     # 锁定人物：始终保留
+                self.assertIn("外部人物X", p)  # 锁定人物：始终保留
                 self.assertNotIn("無関係用語", p)  # 本章未出现：剔除
-                self.assertIn("ホリキタ", p)      # 别名「堀北」在正文：保留
+                self.assertIn("ホリキタ", p)  # 别名「堀北」在正文：保留
 
     def test_full_scope_keeps_all(self):
         with tempfile.TemporaryDirectory() as d:
@@ -615,27 +676,42 @@ class TestGlossaryScope(unittest.TestCase):
 
     def test_batch_glossary_refreshes_following_prompts(self):
         """批次翻译后实时抽取术语，后续批次 prompt 立即带上新称谓。"""
+
         def handler(messages, tier, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
             if "文学翻译" in system:
                 n = len(re.findall(r"^\[(\d+)\]", user, re.M))
-                return json.dumps({"translations": ["小夏帆" for _ in range(n)]},
-                                  ensure_ascii=False)
-            if "术语" in system and "抽取器" in system and "夏帆ちゃん" in user and "小夏帆" in user:
-                return json.dumps({"terms": [
-                    {"source": "夏帆ちゃん", "target": "小夏帆",
-                     "type": "称谓", "aliases": ["夏帆"], "note": "亲昵称呼"}
-                ]}, ensure_ascii=False)
+                return json.dumps(
+                    {"translations": ["小夏帆" for _ in range(n)]}, ensure_ascii=False
+                )
+            if (
+                "术语" in system
+                and "抽取器" in system
+                and "夏帆ちゃん" in user
+                and "小夏帆" in user
+            ):
+                return json.dumps(
+                    {
+                        "terms": [
+                            {
+                                "source": "夏帆ちゃん",
+                                "target": "小夏帆",
+                                "type": "称谓",
+                                "aliases": ["夏帆"],
+                                "note": "亲昵称呼",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
             return routing_handler(messages, tier, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             with open(txt, "w", encoding="utf-8") as f:
                 f.write(
-                    "# 第一章\n\n"
-                    "「夏帆ちゃん」と母親が言った。\n\n"
-                    "夏帆ちゃんは窓の外を見た。\n"
+                    "# 第一章\n\n「夏帆ちゃん」と母親が言った。\n\n夏帆ちゃんは窓の外を見た。\n"
                 )
             cfg = _config(os.path.join(d, "state"))
             cfg.pipeline.polish = False
@@ -658,18 +734,30 @@ class TestGlossaryScope(unittest.TestCase):
 
     def test_chapter_glossary_refreshes_review_prompt(self):
         """全章兜底术语抽取在 review 前执行，章末审校能看到新称谓。"""
+
         def handler(messages, tier, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
             if "文学翻译" in system:
                 n = len(re.findall(r"^\[(\d+)\]", user, re.M))
-                return json.dumps({"translations": ["小夏帆" for _ in range(n)]},
-                                  ensure_ascii=False)
+                return json.dumps(
+                    {"translations": ["小夏帆" for _ in range(n)]}, ensure_ascii=False
+                )
             if "术语" in system and "抽取器" in system and "夏帆ちゃん" in user:
-                return json.dumps({"terms": [
-                    {"source": "夏帆ちゃん", "target": "小夏帆",
-                     "type": "称谓", "aliases": ["夏帆"], "note": "亲昵称呼"}
-                ]}, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "terms": [
+                            {
+                                "source": "夏帆ちゃん",
+                                "target": "小夏帆",
+                                "type": "称谓",
+                                "aliases": ["夏帆"],
+                                "note": "亲昵称呼",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
             if "译文审校" in system:
                 self.assertIn("夏帆ちゃん → 小夏帆", user)
                 return json.dumps({"issues": []}, ensure_ascii=False)
@@ -702,9 +790,11 @@ class TestInflightGlossary(unittest.TestCase):
             client = FakeClient(handler=routing_handler)
             store = Orchestrator(cfg, client=client).run(txt)
 
-            extractor_calls = [c for c in client.calls
-                               if "术语" in c["messages"][0]["content"]
-                               and "抽取器" in c["messages"][0]["content"]]
+            extractor_calls = [
+                c
+                for c in client.calls
+                if "术语" in c["messages"][0]["content"] and "抽取器" in c["messages"][0]["content"]
+            ]
             self.assertTrue(extractor_calls, "inflight_glossary=True 时应调用旧版抽取器")
 
             with open(store.event_log_path, encoding="utf-8") as f:
@@ -713,6 +803,7 @@ class TestInflightGlossary(unittest.TestCase):
             self.assertTrue(any(e["event"] == "chapter_glossary_extracted" for e in events))
 
             from trans_novel.glossary.store import GlossaryStore
+
             g = GlossaryStore(store.glossary_path)
             self.assertIsNotNone(g.get_term("堀北"))
             g.close()
@@ -729,8 +820,8 @@ class TestNaturalizePipeline(unittest.TestCase):
         user = messages[-1]["content"]
         if "书稿的母语审读编辑" in system:
             return json.dumps(
-                {"issues": [{"index": 0, "quote": "别扭", "reason": "翻译腔"}]},
-                ensure_ascii=False)
+                {"issues": [{"index": 0, "quote": "别扭", "reason": "翻译腔"}]}, ensure_ascii=False
+            )
         if "改写编辑" in system:
             return json.dumps({"rewritten": "这是更自然的表达"}, ensure_ascii=False)
         if "双语翻译审核员" in system:
@@ -742,8 +833,11 @@ class TestNaturalizePipeline(unittest.TestCase):
         return routing_handler(messages, tier, json_mode)
 
     def _naturalize_calls(self, calls):
-        return [c for c in calls if any(
-            marker in c["messages"][0]["content"] for marker in self.NATURALIZE_MARKERS)]
+        return [
+            c
+            for c in calls
+            if any(marker in c["messages"][0]["content"] for marker in self.NATURALIZE_MARKERS)
+        ]
 
     def test_naturalize_applied_and_meta_flag_set(self):
         with tempfile.TemporaryDirectory() as d:
@@ -757,8 +851,10 @@ class TestNaturalizePipeline(unittest.TestCase):
             m = store.load_manifest()
             for ci in range(len(m["chapters"])):
                 ch = store.load_chapter(ci)
-                self.assertTrue(ch.meta.get("naturalized"),
-                                 f"第 {ci} 章 naturalize 后应标记 meta['naturalized']")
+                self.assertTrue(
+                    ch.meta.get("naturalized"),
+                    f"第 {ci} 章 naturalize 后应标记 meta['naturalized']",
+                )
 
             with open(store.event_log_path, encoding="utf-8") as f:
                 events = [json.loads(line) for line in f if line.strip()]
@@ -775,8 +871,11 @@ class TestNaturalizePipeline(unittest.TestCase):
             client = FakeClient(handler=self._naturalize_handler)
             store = Orchestrator(cfg, client=client).run(txt)
 
-            self.assertEqual(self._naturalize_calls(client.calls), [],
-                              "naturalize=False 时不应发生任何 naturalize 相关调用")
+            self.assertEqual(
+                self._naturalize_calls(client.calls),
+                [],
+                "naturalize=False 时不应发生任何 naturalize 相关调用",
+            )
             m = store.load_manifest()
             for ci in range(len(m["chapters"])):
                 self.assertFalse(store.load_chapter(ci).meta.get("naturalized"))
@@ -787,8 +886,7 @@ class TestNaturalizePipeline(unittest.TestCase):
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
 
-            store = Orchestrator(
-                cfg, client=FakeClient(handler=self._naturalize_handler)).run(txt)
+            store = Orchestrator(cfg, client=FakeClient(handler=self._naturalize_handler)).run(txt)
             self.assertTrue(store.load_chapter(0).meta.get("naturalized"))
 
             # 模拟"naturalize 已完成、meta 已落盘，但章末 DONE 标记前中断"续跑：
@@ -798,9 +896,11 @@ class TestNaturalizePipeline(unittest.TestCase):
             client2 = FakeClient(handler=self._naturalize_handler)
             Orchestrator(cfg, client=client2).run(txt, only_chapter=0)
 
-            self.assertEqual(self._naturalize_calls(client2.calls), [],
-                              "meta 标记已置位，续跑不应重复 naturalize")
-
+            self.assertEqual(
+                self._naturalize_calls(client2.calls),
+                [],
+                "meta 标记已置位，续跑不应重复 naturalize",
+            )
 
 
 class TestTierRouting(unittest.TestCase):
@@ -816,9 +916,13 @@ class TestTierRouting(unittest.TestCase):
             Orchestrator(cfg, client=client).run(txt)
 
             expect = {
-                "章节梗概员": "fast", "全书概览员": "fast",
-                "术语候选挖掘": "fast", "全书定名": "strong", "回译译者": "fast",
-                "译文审校": "cheap", "保真度": "cheap",
+                "章节梗概员": "fast",
+                "全书概览员": "fast",
+                "术语候选挖掘": "fast",
+                "全书定名": "strong",
+                "回译译者": "fast",
+                "译文审校": "cheap",
+                "保真度": "cheap",
                 "文学翻译": "strong",
             }
             seen = set()
@@ -859,14 +963,15 @@ class TestPolishAsync(unittest.TestCase):
             cfg.pipeline.book_understanding = False
 
             store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(
-                txt, only_chapter=0)
+                txt, only_chapter=0
+            )
 
             with open(store.event_log_path, encoding="utf-8") as f:
                 events = [json.loads(line) for line in f if line.strip()]
-            translated = [e for e in events
-                         if e["event"] == "batch_translated" and e["chapter"] == 0]
-            polished = [e for e in events
-                       if e["event"] == "batch_polished" and e["chapter"] == 0]
+            translated = [
+                e for e in events if e["event"] == "batch_translated" and e["chapter"] == 0
+            ]
+            polished = [e for e in events if e["event"] == "batch_polished" and e["chapter"] == 0]
             self.assertTrue(translated)
             self.assertTrue(polished)
             # batch_translated 触发时尚未润色：polished=False，segments 记 raw 译文
@@ -897,7 +1002,8 @@ class TestPendingPolishResume(unittest.TestCase):
             cfg.pipeline.book_understanding = False
 
             store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(
-                txt, only_chapter=0)
+                txt, only_chapter=0
+            )
             ch = store.load_chapter(0)
             self.assertTrue(all(s.target and s.target.startswith("润") for s in ch.text_segments))
             self.assertFalse(ch.meta.get("pending_polish"))
@@ -912,9 +1018,10 @@ class TestPendingPolishResume(unittest.TestCase):
 
             client2 = FakeClient(handler=routing_handler)
             Orchestrator(cfg, client=client2).run(txt, only_chapter=0)
-            translate_calls = [c for c in client2.calls
-                               if "文学翻译" in c["messages"][0]["content"]]
-            self.assertEqual(len(translate_calls), 0)   # 已有译文，批跳过，未重翻
+            translate_calls = [
+                c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
+            ]
+            self.assertEqual(len(translate_calls), 0)  # 已有译文，批跳过，未重翻
 
             ch2 = store.load_chapter(0)
             # routing_handler 的润色输出按"本次调用内"的局部下标编号：该批只含 1 段
@@ -924,9 +1031,14 @@ class TestPendingPolishResume(unittest.TestCase):
 
             with open(store.event_log_path, encoding="utf-8") as f:
                 events = [json.loads(line) for line in f if line.strip()]
-            self.assertTrue(any(
-                e["event"] == "batch_polished" and e["chapter"] == 0
-                and e["start_index"] == last_idx for e in events))
+            self.assertTrue(
+                any(
+                    e["event"] == "batch_polished"
+                    and e["chapter"] == 0
+                    and e["start_index"] == last_idx
+                    for e in events
+                )
+            )
 
 
 class TestReviewAsync(unittest.TestCase):
@@ -938,10 +1050,19 @@ class TestReviewAsync(unittest.TestCase):
     def _issue_handler(messages, tier, json_mode):
         # 无共享可变状态：每次调用构造新 dict，可被线程池并发调用
         if "译文审校" in messages[0]["content"]:
-            return json.dumps({"issues": [
-                {"index": 0, "type": "terminology", "detail": "术语不一致",
-                 "suggestion": "改用对照表"}
-            ]}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "issues": [
+                        {
+                            "index": 0,
+                            "type": "terminology",
+                            "detail": "术语不一致",
+                            "suggestion": "改用对照表",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
         return routing_handler(messages, tier, json_mode)
 
     def test_async_review_issues_persisted_before_run_returns(self):
@@ -951,15 +1072,15 @@ class TestReviewAsync(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
             cfg.pipeline.autofix_severe = False
 
-            store = Orchestrator(
-                cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
+            store = Orchestrator(cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
 
             m = store.load_manifest()
             self.assertTrue(all(c["status"] == STATUS_DONE for c in m["chapters"]))
             for ci in range(len(m["chapters"])):
                 ch = store.load_chapter(ci)
-                found = [i for i in ch.meta.get("review_issues", [])
-                         if i.get("type") == "terminology"]
+                found = [
+                    i for i in ch.meta.get("review_issues", []) if i.get("type") == "terminology"
+                ]
                 self.assertTrue(found, f"第 {ci} 章异步审校结果未写回 meta")
                 for it in found:
                     self.assertEqual(it.get("chapter"), ci)
@@ -968,10 +1089,10 @@ class TestReviewAsync(unittest.TestCase):
 
             with open(store.event_log_path, encoding="utf-8") as f:
                 events = [json.loads(line) for line in f if line.strip()]
-            reviewed = {e["chapter"] for e in events
-                        if e["event"] == "chapter_reviewed"}
-            self.assertEqual(reviewed, set(range(len(m["chapters"]))),
-                             "每章都应发 chapter_reviewed 事件")
+            reviewed = {e["chapter"] for e in events if e["event"] == "chapter_reviewed"}
+            self.assertEqual(
+                reviewed, set(range(len(m["chapters"]))), "每章都应发 chapter_reviewed 事件"
+            )
 
     def test_review_worker_failure_does_not_break_run(self):
         # review 未来（_review_chapter）本身抛异常 → 触发 _drain_ready_reviews 的
@@ -990,6 +1111,7 @@ class TestReviewAsync(unittest.TestCase):
 
             def _boom(*_a, **_k):
                 raise RuntimeError("审校崩")
+
             orch._review_chapter = _boom  # 遮蔽类方法：future 执行即抛
 
             store = orch.run(txt)
@@ -998,35 +1120,36 @@ class TestReviewAsync(unittest.TestCase):
             chapters = set(range(len(m["chapters"])))
 
             # (a) 审校 future 全崩，run 仍走完，每章保持 DONE（未被异常中断）
-            self.assertTrue(all(c["status"] == STATUS_DONE for c in m["chapters"]),
-                            "审校 worker 抛异常不得阻断整章完成")
+            self.assertTrue(
+                all(c["status"] == STATUS_DONE for c in m["chapters"]),
+                "审校 worker 抛异常不得阻断整章完成",
+            )
 
             with open(store.event_log_path, encoding="utf-8") as f:
                 events = [json.loads(line) for line in f if line.strip()]
-            failed = {e["chapter"] for e in events
-                      if e["event"] == "chapter_review_failed"}
-            reviewed = {e["chapter"] for e in events
-                        if e["event"] == "chapter_reviewed"}
+            failed = {e["chapter"] for e in events if e["event"] == "chapter_review_failed"}
+            reviewed = {e["chapter"] for e in events if e["event"] == "chapter_reviewed"}
 
             # (b) 载荷断言：每个审校崩溃的章都记了 chapter_review_failed——这是唯一能
             # 证明 except→chapter_review_failed 分支真的执行过的证据。若删掉该错误处理
             # （让异常穿透），异常会在机会性/收尾 drain 里抛出，run() 直接崩、拿不到
             # store，本断言必失败。
-            self.assertEqual(failed, chapters,
-                             "每个审校崩溃的章都必须记 chapter_review_failed")
+            self.assertEqual(failed, chapters, "每个审校崩溃的章都必须记 chapter_review_failed")
             # (c) 崩溃章不得发 chapter_reviewed，且 review 通道的 review_issues 未被
             # 写回（保持空）；lint 层独立于异步审校常开，可能另行写入 stage="lint" 的
             # 条目，不属于本用例断言范围。
-            self.assertEqual(reviewed, set(),
-                             "审校失败的章不得发 chapter_reviewed")
+            self.assertEqual(reviewed, set(), "审校失败的章不得发 chapter_reviewed")
             for ci in chapters:
                 review_stage_issues = [
-                    i for i in store.load_chapter(ci).meta.get("review_issues", [])
+                    i
+                    for i in store.load_chapter(ci).meta.get("review_issues", [])
                     if i.get("stage") == "review"
                 ]
                 self.assertEqual(
-                    review_stage_issues, [],
-                    f"第 {ci} 章审校失败，review 阶段的 review_issues 不得被写入")
+                    review_stage_issues,
+                    [],
+                    f"第 {ci} 章审校失败，review 阶段的 review_issues 不得被写入",
+                )
 
     def test_crash_resume_reruns_pending_review(self):
         # review 断点续跑不变量（异步审校版）：章已标 DONE 但异步审校结果还没写回
@@ -1040,18 +1163,19 @@ class TestReviewAsync(unittest.TestCase):
             cfg.pipeline.autofix_severe = False
 
             # (1) 正常跑一遍：审校结果写回、标记清空（前置条件）
-            store = Orchestrator(
-                cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
-            self.assertEqual(store.review_pending_chapters(), [],
-                             "正常收尾后不应残留任何 review_pending 标记")
+            store = Orchestrator(cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
+            self.assertEqual(
+                store.review_pending_chapters(), [], "正常收尾后不应残留任何 review_pending 标记"
+            )
 
             # (2) 模拟崩溃窗口：章 0 已 DONE，但标记残留且审校结果被抹掉
             store.set_review_pending(0, True)
             ch = store.load_chapter(0)
             ch.meta["review_issues"] = []
             store.save_chapter(ch)
-            self.assertIn(0, store.review_pending_chapters(),
-                          "崩溃模拟：章 0 应带 review_pending 标记")
+            self.assertIn(
+                0, store.review_pending_chapters(), "崩溃模拟：章 0 应带 review_pending 标记"
+            )
 
             with open(store.event_log_path, encoding="utf-8") as f:
                 events_before = sum(1 for line in f if line.strip())
@@ -1070,20 +1194,21 @@ class TestReviewAsync(unittest.TestCase):
                 self.assertIs(it.get("fixed"), False)
 
             # (4b) 补跑成功后标记被清空
-            self.assertEqual(store.review_pending_chapters(), [],
-                             "续跑写回后 review_pending 标记必须清空")
+            self.assertEqual(
+                store.review_pending_chapters(), [], "续跑写回后 review_pending 标记必须清空"
+            )
 
             # (4c) 第二次 run 的事件里有章 0 的 chapter_reviewed
             with open(store.event_log_path, encoding="utf-8") as f:
                 all_events = [json.loads(line) for line in f if line.strip()]
             second_run = all_events[events_before:]
-            reviewed = {e["chapter"] for e in second_run
-                        if e["event"] == "chapter_reviewed"}
+            reviewed = {e["chapter"] for e in second_run if e["event"] == "chapter_reviewed"}
             self.assertIn(0, reviewed, "续跑应为章 0 补发 chapter_reviewed 事件")
 
             # (4d) 续跑只补审校，绝不重译（无 '文学翻译' 调用）
-            translate_calls = [c for c in client2.calls
-                               if "文学翻译" in c["messages"][0]["content"]]
+            translate_calls = [
+                c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
+            ]
             self.assertEqual(len(translate_calls), 0, "续跑只补审校，绝不重译")
 
 
@@ -1091,6 +1216,7 @@ class TestPolishFailureFallback(unittest.TestCase):
     def test_polish_failure_falls_back_to_raw_translation(self):
         """润色调用失败（handler 抛异常）：该批最终 target 回退为未润色译文
         （经标点规范化），run() 正常完成，无 pending_polish 残留。"""
+
         def handler(messages, tier, json_mode):
             if "中文润色编辑" in messages[0]["content"]:
                 raise RuntimeError("润色模型宕机")
@@ -1104,18 +1230,17 @@ class TestPolishFailureFallback(unittest.TestCase):
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(
-                txt, only_chapter=0)
+            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
 
             m = store.load_manifest()
-            self.assertEqual(m["chapters"][0]["status"], STATUS_DONE,
-                             "润色失败不得阻断整章完成")
+            self.assertEqual(m["chapters"][0]["status"], STATUS_DONE, "润色失败不得阻断整章完成")
             ch = store.load_chapter(0)
             # 单批：routing_handler 译文按批内下标编号 → 段 i 的 raw 译文为 "译{i}"
             expected = [normalize_zh(f"译{i}") for i in range(len(ch.text_segments))]
             self.assertEqual([s.target for s in ch.text_segments], expected)
-            self.assertFalse(ch.meta.get("pending_polish"),
-                             "润色失败的批次也必须清掉 pending_polish 标记")
+            self.assertFalse(
+                ch.meta.get("pending_polish"), "润色失败的批次也必须清掉 pending_polish 标记"
+            )
 
 
 class TestLintQuoteRefix(unittest.TestCase):
@@ -1156,8 +1281,9 @@ class TestLintQuoteRefix(unittest.TestCase):
             ch = store.load_chapter(0)
             target = ch.text_segments[1].target
             # 最终译文带引号（定向重译采纳，替换了丢引号的首译）
-            self.assertTrue(any(q in target for q in "“”「」『』"),
-                            f"最终译文应保留引号：{target!r}")
+            self.assertTrue(
+                any(q in target for q in "“”「」『』"), f"最终译文应保留引号：{target!r}"
+            )
 
             with open(store.event_log_path, encoding="utf-8") as f:
                 events = [json.loads(line) for line in f if line.strip()]
@@ -1166,7 +1292,8 @@ class TestLintQuoteRefix(unittest.TestCase):
             self.assertTrue(linted, "丢引号首译应触发 batch_linted")
             self.assertTrue(
                 any(i["type"] == "quote_loss" for e in linted for i in e["issues"]),
-                "batch_linted 摘要应含 quote_loss")
+                "batch_linted 摘要应含 quote_loss",
+            )
             self.assertTrue(refixed, "重译修复后应发 lint_refixed")
             self.assertEqual(refixed[0]["index"], 1)
             self.assertNotIn("“", refixed[0]["before"])
@@ -1189,14 +1316,15 @@ class TestPolishQuoteRejection(unittest.TestCase):
         if "文学翻译" in sys:
             n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
             return json.dumps(
-                {"translations": ["“早上好”他轻声说道" for _ in range(n)]},
-                ensure_ascii=False)
+                {"translations": ["“早上好”他轻声说道" for _ in range(n)]}, ensure_ascii=False
+            )
         if "中文润色编辑" in sys:
             target_block = user.split("【待润色中文译文】", 1)[-1]
             n = len(re.findall(r"^\[(\d+)\] ", target_block, re.M))
             # 润色把引号剥掉了——引入新的 quote_loss，应被回退拒绝
             return json.dumps(
-                {"polished": ["早上好他轻声说道" for _ in range(n)]}, ensure_ascii=False)
+                {"polished": ["早上好他轻声说道" for _ in range(n)]}, ensure_ascii=False
+            )
         return routing_handler(messages, tier, json_mode)
 
     def test_polish_stripping_quotes_is_rejected(self):
@@ -1213,8 +1341,9 @@ class TestPolishQuoteRejection(unittest.TestCase):
             ch = store.load_chapter(0)
             target = ch.text_segments[1].target
             # 润色剥引号被拒：保留润色前（带引号）译文，而非润色后的无引号文本
-            self.assertTrue(any(q in target for q in "“”「」『』"),
-                            f"应保留润色前带引号的译文：{target!r}")
+            self.assertTrue(
+                any(q in target for q in "“”「」『』"), f"应保留润色前带引号的译文：{target!r}"
+            )
             self.assertIn("早上好", target)
 
             with open(store.event_log_path, encoding="utf-8") as f:
@@ -1230,9 +1359,11 @@ class TestPolishQuoteRejection(unittest.TestCase):
 class TestLintTooShortReportOnly(unittest.TestCase):
     """too_short/too_long 降为 report-only：批循环 lint 发现但不触发定向重译。"""
 
-    SRC = ("This is a sufficiently long English source sentence, padded with "
-          "extra descriptive words, written specifically so its character "
-          "count comfortably clears the one-twenty threshold for this test.")
+    SRC = (
+        "This is a sufficiently long English source sentence, padded with "
+        "extra descriptive words, written specifically so its character "
+        "count comfortably clears the one-twenty threshold for this test."
+    )
 
     def _write(self, path):
         with open(path, "w", encoding="utf-8") as f:
@@ -1244,31 +1375,38 @@ class TestLintTooShortReportOnly(unittest.TestCase):
         user = messages[-1]["content"]
         if "文学翻译" in sys:
             n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
-            return json.dumps({"translations": ["short" for _ in range(n)]},
-                              ensure_ascii=False)
+            return json.dumps({"translations": ["short" for _ in range(n)]}, ensure_ascii=False)
         return routing_handler(messages, tier, json_mode)
 
     def test_too_short_reported_but_not_retranslated(self):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             self._write(txt)
-            cfg = Config.from_dict({
-                "language": {"source": "en", "target": "zh"},
-                "llm": {"provider": "fake", "tiers": {
-                    "strong": {"model": "p"}, "cheap": {"model": "f"}}},
-                "segment": {"max_chars_per_batch": 1800},
-                "pipeline": {"review": False, "polish": False,
-                             "backtranslate_sample": 0.0, "consistency_qa": False,
-                             "book_understanding": False},
-                "paths": {"state_dir": os.path.join(d, "state")},
-            })
+            cfg = Config.from_dict(
+                {
+                    "language": {"source": "en", "target": "zh"},
+                    "llm": {
+                        "provider": "fake",
+                        "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+                    },
+                    "segment": {"max_chars_per_batch": 1800},
+                    "pipeline": {
+                        "review": False,
+                        "polish": False,
+                        "backtranslate_sample": 0.0,
+                        "consistency_qa": False,
+                        "book_understanding": False,
+                    },
+                    "paths": {"state_dir": os.path.join(d, "state")},
+                }
+            )
             client = FakeClient(handler=self._handler)
             store = Orchestrator(cfg, client=client).run(txt)
 
-            translate_calls = [c for c in client.calls
-                               if "文学翻译" in c["messages"][0]["content"]]
-            self.assertEqual(len(translate_calls), 1,
-                             "too_short 不属于可重译类型，不该触发定向重译")
+            translate_calls = [c for c in client.calls if "文学翻译" in c["messages"][0]["content"]]
+            self.assertEqual(
+                len(translate_calls), 1, "too_short 不属于可重译类型，不该触发定向重译"
+            )
 
             with open(store.event_log_path, encoding="utf-8") as f:
                 events = [json.loads(line) for line in f if line.strip()]
@@ -1276,11 +1414,15 @@ class TestLintTooShortReportOnly(unittest.TestCase):
             linted = [e for e in events if e["event"] == "batch_linted"]
             self.assertTrue(
                 any(i["type"] == "too_short" for e in linted for i in e["issues"]),
-                "过短译文应被 lint 发现并记入 batch_linted")
+                "过短译文应被 lint 发现并记入 batch_linted",
+            )
 
             ch = store.load_chapter(0)
-            recorded = [i for i in ch.meta["review_issues"]
-                       if i.get("type") == "too_short" and i.get("stage") == "lint"]
+            recorded = [
+                i
+                for i in ch.meta["review_issues"]
+                if i.get("type") == "too_short" and i.get("stage") == "lint"
+            ]
             self.assertTrue(recorded, "too_short 应作为 report-only 记入 review_issues")
             self.assertTrue(all(i.get("fixed") is False for i in recorded))
 
@@ -1301,8 +1443,9 @@ class TestLintSkipBranchRecordsIssue(unittest.TestCase):
         if "文学翻译" in sys:
             n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
             # 首译、定向重译都返回丢引号译文（模拟修复失败，issue 保持未解决）
-            return json.dumps({"translations": ["早上好他说道" for _ in range(n)]},
-                              ensure_ascii=False)
+            return json.dumps(
+                {"translations": ["早上好他说道" for _ in range(n)]}, ensure_ascii=False
+            )
         return routing_handler(messages, tier, json_mode)
 
     def test_skip_branch_relints_without_retranslating(self):
@@ -1317,8 +1460,11 @@ class TestLintSkipBranchRecordsIssue(unittest.TestCase):
 
             store = Orchestrator(cfg, client=FakeClient(handler=self._handler)).run(txt)
             ch = store.load_chapter(0)
-            unresolved = [i for i in ch.meta["review_issues"]
-                         if i.get("type") == "quote_loss" and i.get("stage") == "lint"]
+            unresolved = [
+                i
+                for i in ch.meta["review_issues"]
+                if i.get("type") == "quote_loss" and i.get("stage") == "lint"
+            ]
             self.assertTrue(unresolved, "首译丢引号且重译未修复，应作为未解决 lint issue 记录")
 
             # 模拟崩溃窗口：章已 DONE 但 review_issues 被清空、状态改回 pending，
@@ -1330,15 +1476,18 @@ class TestLintSkipBranchRecordsIssue(unittest.TestCase):
             client2 = FakeClient(handler=self._handler)
             store2 = Orchestrator(cfg, client=client2).run(txt)
 
-            translate_calls = [c for c in client2.calls
-                               if "文学翻译" in c["messages"][0]["content"]]
+            translate_calls = [
+                c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
+            ]
             self.assertEqual(len(translate_calls), 0, "跳过分支不得重译")
 
             ch2 = store2.load_chapter(0)
-            recovered = [i for i in ch2.meta["review_issues"]
-                        if i.get("type") == "quote_loss" and i.get("stage") == "lint"]
+            recovered = [
+                i
+                for i in ch2.meta["review_issues"]
+                if i.get("type") == "quote_loss" and i.get("stage") == "lint"
+            ]
             self.assertTrue(recovered, "跳过分支应重新记录未修复的 lint issue，不静默丢失")
-
 
 
 class TestProgressLabels(unittest.TestCase):
@@ -1346,19 +1495,31 @@ class TestProgressLabels(unittest.TestCase):
 
     def test_stage_labels_appear_in_order(self):
         with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt"); write_sample_txt(txt)
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
             labels: list[str] = []
             orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
-            orch.run_steps(txt, {"translate", "qa", "report", "assemble"},
-                           progress=lambda done, total, label: labels.append(label))
-            expected = ["读取原书…", "分析全书风格…", "通读全书章节…", "查找专有名词…",
-                        "统一译名…", "生成全书概览…", "翻译完成",
-                        "检查全书一致性…", "生成报告…", "生成译文文件…"]
+            orch.run_steps(
+                txt,
+                {"translate", "qa", "report", "assemble"},
+                progress=lambda done, total, label: labels.append(label),
+            )
+            expected = [
+                "读取原书…",
+                "分析全书风格…",
+                "通读全书章节…",
+                "查找专有名词…",
+                "统一译名…",
+                "生成全书概览…",
+                "翻译完成",
+                "检查全书一致性…",
+                "生成报告…",
+                "生成译文文件…",
+            ]
             it = iter(labels)
             missing = [e for e in expected if e not in it]
-            self.assertEqual(missing, [],
-                             f"缺失或乱序的阶段标签：{missing}；实际序列={labels}")
+            self.assertEqual(missing, [], f"缺失或乱序的阶段标签：{missing}；实际序列={labels}")
 
 
 if __name__ == "__main__":

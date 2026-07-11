@@ -22,24 +22,33 @@ from trans_novel.postprocess.punct import normalize_zh
 
 
 def _config(state_dir: str = "state") -> Config:
-    return Config.from_dict({
-        "language": {"source": "en", "target": "zh"},
-        "llm": {"provider": "fake", "tiers": {
-            "strong": {"model": "p"}, "cheap": {"model": "f"}}},
-        "paths": {"state_dir": state_dir},
-    })
+    return Config.from_dict(
+        {
+            "language": {"source": "en", "target": "zh"},
+            "llm": {
+                "provider": "fake",
+                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+            },
+            "paths": {"state_dir": state_dir},
+        }
+    )
 
 
-def _seg(i: int, source: str, target: str | None, *,
-         kind: str = KIND_TEXT, cont: bool = False) -> Segment:
+def _seg(
+    i: int, source: str, target: str | None, *, kind: str = KIND_TEXT, cont: bool = False
+) -> Segment:
     return Segment(index=i, source=source, target=target, kind=kind, cont=cont)
 
 
 def _make_store(d: str, chapters: list[Chapter]) -> RunStore:
     store = RunStore(os.path.join(d, "state"))
     manifest = {
-        "title": "T", "fmt": "text", "source_path": "", "meta": {},
-        "source_lang": "en", "target_lang": "zh",
+        "title": "T",
+        "fmt": "text",
+        "source_path": "",
+        "meta": {},
+        "source_lang": "en",
+        "target_lang": "zh",
         "chapters": [
             {"index": c.index, "title": c.title, "href": None, "status": "pending"}
             for c in chapters
@@ -68,10 +77,15 @@ def _combined_handler(messages, tier, json_mode):
     system = messages[0]["content"]
     user = messages[-1]["content"]
     if "书稿的母语审读编辑" in system:
-        return json.dumps({"issues": [
-            {"index": 0, "quote": "400名工程师", "reason": "数字堆叠翻译腔"},
-            {"index": 1, "quote": "读起来别扭", "reason": "欧化句式"},
-        ]}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "issues": [
+                    {"index": 0, "quote": "400名工程师", "reason": "数字堆叠翻译腔"},
+                    {"index": 1, "quote": "读起来别扭", "reason": "欧化句式"},
+                ]
+            },
+            ensure_ascii=False,
+        )
     if "改写编辑" in system:
         if ORIG1 in user:
             return json.dumps({"rewritten": REWRITE1_DROPS_NUMBER}, ensure_ascii=False)
@@ -90,14 +104,18 @@ class TestCandidateSegments(unittest.TestCase):
     """段候选规则：heading / cont 跨段落 / 空 target / 非中文段 全部排除。"""
 
     def test_filters(self):
-        chapter = Chapter(index=0, title="第一章", segments=[
-            _seg(0, "Chapter One", "第一章", kind=KIND_HEADING),
-            _seg(1, "A long paragraph split.", "被拆分的段落前半", cont=False),
-            _seg(2, "continuation.", "续段部分", cont=True),
-            _seg(3, "", None),  # 空 target
-            _seg(4, "OK.", "OK"),  # 汉字占比 0
-            _seg(5, "Awkward literal sentence.", ORIG5),
-        ])
+        chapter = Chapter(
+            index=0,
+            title="第一章",
+            segments=[
+                _seg(0, "Chapter One", "第一章", kind=KIND_HEADING),
+                _seg(1, "A long paragraph split.", "被拆分的段落前半", cont=False),
+                _seg(2, "continuation.", "续段部分", cont=True),
+                _seg(3, "", None),  # 空 target
+                _seg(4, "OK.", "OK"),  # 汉字占比 0
+                _seg(5, "Awkward literal sentence.", ORIG5),
+            ],
+        )
         cands = candidate_segments(chapter)
         self.assertEqual([s.index for s in cands], [5])
 
@@ -137,14 +155,22 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
     """完整闭环：审读→改写→关卡①拒绝(丢数字)→关卡②接受→写回，事件含 before/after。"""
 
     def _build(self, d: str) -> tuple[RunStore, Chapter]:
-        chapter = Chapter(index=0, title="第一章", segments=[
-            _seg(0, "Chapter One", "第一章", kind=KIND_HEADING),
-            _seg(1, "400 engineers built this bridge.", ORIG1),
-            _seg(5, "Awkward literal sentence.", ORIG5),
-        ])
-        back_matter = Chapter(index=1, title="Notes", segments=[
-            _seg(0, "Some awkward literal note text here.", ORIG5),
-        ])
+        chapter = Chapter(
+            index=0,
+            title="第一章",
+            segments=[
+                _seg(0, "Chapter One", "第一章", kind=KIND_HEADING),
+                _seg(1, "400 engineers built this bridge.", ORIG1),
+                _seg(5, "Awkward literal sentence.", ORIG5),
+            ],
+        )
+        back_matter = Chapter(
+            index=1,
+            title="Notes",
+            segments=[
+                _seg(0, "Some awkward literal note text here.", ORIG5),
+            ],
+        )
         store = _make_store(d, [chapter, back_matter])
         return store, chapter
 
@@ -170,7 +196,8 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
             self.assertTrue(
                 reloaded.meta.get("naturalized"),
                 "非 dry_run 后应由 naturalize_chapter 自行落盘 naturalized 标记，"
-                "不依赖 caller 二次保存")
+                "不依赖 caller 二次保存",
+            )
 
             events = _events(store)
             applied = [e for e in events if e["event"] == "naturalize_applied"]
@@ -192,8 +219,7 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
             store, _ = self._build(d)
             config = _config(os.path.join(d, "state"))
             agent = Naturalizer(FakeClient(handler=_combined_handler), config)
-            stats = run_naturalize(
-                agent, store, _FakeGlossary(), config, dry_run=True)
+            stats = run_naturalize(agent, store, _FakeGlossary(), config, dry_run=True)
 
             self.assertEqual(stats["applied"], 1)  # 仍统计"将采纳"用于打印
             reloaded = store.load_chapter(0)
@@ -201,8 +227,7 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
             seg1 = next(s for s in reloaded.segments if s.index == 1)
             self.assertEqual(seg5.target, ORIG5, "dry-run 不落盘")
             self.assertEqual(seg1.target, ORIG1)
-            self.assertFalse(
-                reloaded.meta.get("naturalized"), "dry_run 不置 naturalized 标记")
+            self.assertFalse(reloaded.meta.get("naturalized"), "dry_run 不置 naturalized 标记")
             events = _events(store)
             self.assertFalse(any(e["event"] == "naturalize_applied" for e in events))
             self.assertFalse(any(e["event"] == "naturalize_rejected" for e in events))
@@ -217,17 +242,21 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
                 system = messages[0]["content"]
                 user = messages[-1]["content"]
                 if "书稿的母语审读编辑" in system:
-                    return json.dumps({"issues": [
-                        {"index": 0, "quote": "别扭1", "reason": "翻译腔"},
-                        {"index": 1, "quote": "别扭2", "reason": "翻译腔"},
-                    ]}, ensure_ascii=False)
+                    return json.dumps(
+                        {
+                            "issues": [
+                                {"index": 0, "quote": "别扭1", "reason": "翻译腔"},
+                                {"index": 1, "quote": "别扭2", "reason": "翻译腔"},
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
                 if "改写编辑" in system:
                     if "第一段翻译腔原文" in user:
                         return json.dumps({"rewritten": "第一段改写后文字"}, ensure_ascii=False)
                     return json.dumps({"rewritten": "第二段改写后文字"}, ensure_ascii=False)
                 if "两个版本" in system:
-                    m = re.search(
-                        r"【版本 A】\n(.*?)\n\n【版本 B】\n(.*?)\n\n请判断", user, re.S)
+                    m = re.search(r"【版本 A】\n(.*?)\n\n【版本 B】\n(.*?)\n\n请判断", user, re.S)
                     a = m.group(1)
                     winner = "B" if "原文" in a else "A"
                     return json.dumps({"winner": winner}, ensure_ascii=False)
@@ -235,10 +264,14 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
                     return json.dumps({"faithful": True}, ensure_ascii=False)
                 return "{}"
 
-            chapter = Chapter(index=0, title="第一章", segments=[
-                _seg(0, "src a", "第一段翻译腔原文，读起来很别扭。"),
-                _seg(1, "src b", "第二段翻译腔原文，同样很别扭。"),
-            ])
+            chapter = Chapter(
+                index=0,
+                title="第一章",
+                segments=[
+                    _seg(0, "src a", "第一段翻译腔原文，读起来很别扭。"),
+                    _seg(1, "src b", "第二段翻译腔原文，同样很别扭。"),
+                ],
+            )
             store = _make_store(d, [chapter])
             config = _config(os.path.join(d, "state"))
             agent = Naturalizer(FakeClient(handler=handler), config)
@@ -252,8 +285,12 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
             seg0 = next(s for s in reloaded.segments if s.index == 0)
             seg1 = next(s for s in reloaded.segments if s.index == 1)
             # 只有一段被采纳写回，另一段保留原译
-            changed = [s for s in (seg0, seg1) if s.target not in
-                       ("第一段翻译腔原文，读起来很别扭。", "第二段翻译腔原文，同样很别扭。")]
+            changed = [
+                s
+                for s in (seg0, seg1)
+                if s.target
+                not in ("第一段翻译腔原文，读起来很别扭。", "第二段翻译腔原文，同样很别扭。")
+            ]
             self.assertEqual(len(changed), 1)
 
 
@@ -261,18 +298,27 @@ class TestFidelityGate(unittest.TestCase):
     """关卡③忠实度判断：不通过→拒(gate=fidelity)且不再跑成对判断；解析失败/缺字段按拒处理。"""
 
     def _chapter(self) -> Chapter:
-        return Chapter(index=0, title="第一章", segments=[
-            _seg(0, "Only every witness saw it happen.", ORIG5),
-        ])
+        return Chapter(
+            index=0,
+            title="第一章",
+            segments=[
+                _seg(0, "Only every witness saw it happen.", ORIG5),
+            ],
+        )
 
     def _handler(self, fidelity_response: str):
         def handler(messages, tier, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
             if "书稿的母语审读编辑" in system:
-                return json.dumps({"issues": [
-                    {"index": 0, "quote": "别扭", "reason": "翻译腔"},
-                ]}, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "issues": [
+                            {"index": 0, "quote": "别扭", "reason": "翻译腔"},
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
             if "改写编辑" in system:
                 return json.dumps({"rewritten": REWRITE5}, ensure_ascii=False)
             if "双语翻译审核员" in system:
@@ -283,6 +329,7 @@ class TestFidelityGate(unittest.TestCase):
                 winner = "B" if a == ORIG5 else "A"
                 return json.dumps({"winner": winner}, ensure_ascii=False)
             return "{}"
+
         return handler
 
     def test_unfaithful_rejects_and_skips_pairwise(self):
@@ -290,24 +337,31 @@ class TestFidelityGate(unittest.TestCase):
             chapter = self._chapter()
             store = _make_store(d, [chapter])
             config = _config(os.path.join(d, "state"))
-            client = FakeClient(handler=self._handler(
-                json.dumps({"faithful": False, "detail": "丢失了 every 的全称限定"},
-                           ensure_ascii=False)))
+            client = FakeClient(
+                handler=self._handler(
+                    json.dumps(
+                        {"faithful": False, "detail": "丢失了 every 的全称限定"}, ensure_ascii=False
+                    )
+                )
+            )
             agent = Naturalizer(client, config)
             stats = naturalize_chapter(
-                agent, chapter, 0, 1, [], config, store, dry_run=False, remaining=None)
+                agent, chapter, 0, 1, [], config, store, dry_run=False, remaining=None
+            )
 
             self.assertEqual(stats["fidelity_rejected"], 1)
             self.assertEqual(stats["applied"], 0)
             self.assertFalse(
                 any("两个版本" in c["messages"][0]["content"] for c in client.calls),
-                "忠实度不通过时不应发生成对判断调用")
+                "忠实度不通过时不应发生成对判断调用",
+            )
 
             reloaded = store.load_chapter(0)
             self.assertEqual(reloaded.segments[0].target, ORIG5, "拒绝后原译必须保留")
             self.assertTrue(
                 reloaded.meta.get("naturalized"),
-                "即使无改写被采纳，非 dry_run 也应置 naturalized 标记并落盘")
+                "即使无改写被采纳，非 dry_run 也应置 naturalized 标记并落盘",
+            )
             events = _events(store)
             rejected = [e for e in events if e["event"] == "naturalize_rejected"]
             self.assertEqual(len(rejected), 1)
@@ -318,16 +372,21 @@ class TestFidelityGate(unittest.TestCase):
             chapter = self._chapter()
             store = _make_store(d, [chapter])
             config = _config(os.path.join(d, "state"))
-            client = FakeClient(handler=self._handler(
-                json.dumps({"faithful": True, "detail": ""}, ensure_ascii=False)))
+            client = FakeClient(
+                handler=self._handler(
+                    json.dumps({"faithful": True, "detail": ""}, ensure_ascii=False)
+                )
+            )
             agent = Naturalizer(client, config)
             stats = naturalize_chapter(
-                agent, chapter, 0, 1, [], config, store, dry_run=False, remaining=None)
+                agent, chapter, 0, 1, [], config, store, dry_run=False, remaining=None
+            )
 
             self.assertEqual(stats["fidelity_rejected"], 0)
             self.assertTrue(
                 any("两个版本" in c["messages"][0]["content"] for c in client.calls),
-                "忠实度通过后应发生成对判断调用")
+                "忠实度通过后应发生成对判断调用",
+            )
             self.assertEqual(stats["applied"], 1)
 
     def test_malformed_json_rejects(self):
@@ -338,7 +397,8 @@ class TestFidelityGate(unittest.TestCase):
             client = FakeClient(handler=self._handler("不是合法 JSON"))
             agent = Naturalizer(client, config)
             stats = naturalize_chapter(
-                agent, chapter, 0, 1, [], config, store, dry_run=False, remaining=None)
+                agent, chapter, 0, 1, [], config, store, dry_run=False, remaining=None
+            )
 
             self.assertEqual(stats["fidelity_rejected"], 1)
             self.assertEqual(stats["applied"], 0)
@@ -349,11 +409,15 @@ class TestFidelityGate(unittest.TestCase):
             chapter = self._chapter()
             store = _make_store(d, [chapter])
             config = _config(os.path.join(d, "state"))
-            client = FakeClient(handler=self._handler(
-                json.dumps({"detail": "缺少 faithful 字段"}, ensure_ascii=False)))
+            client = FakeClient(
+                handler=self._handler(
+                    json.dumps({"detail": "缺少 faithful 字段"}, ensure_ascii=False)
+                )
+            )
             agent = Naturalizer(client, config)
             stats = naturalize_chapter(
-                agent, chapter, 0, 1, [], config, store, dry_run=False, remaining=None)
+                agent, chapter, 0, 1, [], config, store, dry_run=False, remaining=None
+            )
 
             self.assertEqual(stats["fidelity_rejected"], 1)
             self.assertEqual(stats["applied"], 0)

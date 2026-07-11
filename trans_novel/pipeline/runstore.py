@@ -94,8 +94,7 @@ class RunStore:
             "target_lang": doc.target_lang,
             "meta": doc.meta,
             "chapters": [
-                {"index": c.index, "title": c.title,
-                 "href": c.href, "status": STATUS_PENDING}
+                {"index": c.index, "title": c.title, "href": c.href, "status": STATUS_PENDING}
                 for c in doc.chapters
             ],
         }

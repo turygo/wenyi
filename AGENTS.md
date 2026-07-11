@@ -8,6 +8,8 @@
 ## Commands
 - 安装依赖：`uv sync`
 - 跑测试：`uv run python -m unittest discover -s tests`（uv 缓存不可写时前置 `UV_CACHE_DIR=/tmp/uv-cache`）
+- 格式化 + lint：`uv run ruff format .` 与 `uv run ruff check --fix .`（配置见 pyproject.toml `[tool.ruff]`）
+- 提交前钩子（一次性启用）：`uv run pre-commit install`，之后每次 commit 自动跑 ruff 修复+格式化
 - 本地跑：`uv run trans-novel translate book.epub`（需 `export DEEPSEEK_API_KEY=...`）
 
 ## Constraints

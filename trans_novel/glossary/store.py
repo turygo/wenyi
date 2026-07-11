@@ -119,9 +119,7 @@ class GlossaryStore:
 
     # ── 术语 ──────────────────────────────────────────────────────────────
     def get_term(self, source: str) -> Optional[GlossaryTerm]:
-        row = self.conn.execute(
-            "SELECT * FROM glossary WHERE source = ?", (source,)
-        ).fetchone()
+        row = self.conn.execute("SELECT * FROM glossary WHERE source = ?", (source,)).fetchone()
         return GlossaryTerm.from_row(row) if row else None
 
     def upsert_term(self, term: GlossaryTerm, chapter: Optional[int] = None) -> str:
@@ -140,10 +138,18 @@ class GlossaryStore:
                     confidence,locked,status,updated_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    term.source, term.target, term.reading, term.type, term.gender,
+                    term.source,
+                    term.target,
+                    term.reading,
+                    term.type,
+                    term.gender,
                     json.dumps(term.aliases, ensure_ascii=False),
                     term.first_chapter if term.first_chapter is not None else chapter,
-                    term.note, term.confidence, int(term.locked), term.status, now,
+                    term.note,
+                    term.confidence,
+                    int(term.locked),
+                    term.status,
+                    now,
                 ),
             )
             self.conn.commit()
@@ -156,8 +162,14 @@ class GlossaryStore:
                 """UPDATE glossary SET reading=COALESCE(NULLIF(?,''),reading),
                    gender=COALESCE(NULLIF(?,''),gender), aliases=?, note=COALESCE(NULLIF(?,''),note),
                    updated_at=? WHERE source=?""",
-                (term.reading, term.gender, json.dumps(merged_aliases, ensure_ascii=False),
-                 term.note, now, term.source),
+                (
+                    term.reading,
+                    term.gender,
+                    json.dumps(merged_aliases, ensure_ascii=False),
+                    term.note,
+                    now,
+                    term.source,
+                ),
             )
             self.conn.commit()
             return "unchanged"
@@ -231,9 +243,7 @@ class GlossaryStore:
         return True
 
     def all_terms(self) -> list[GlossaryTerm]:
-        rows = self.conn.execute(
-            "SELECT * FROM glossary ORDER BY type, source"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM glossary ORDER BY type, source").fetchall()
         return [GlossaryTerm.from_row(r) for r in rows]
 
     @staticmethod
@@ -247,9 +257,7 @@ class GlossaryStore:
             # 称谓/口癖/固定表达是带语气或场景的派生写法，不能因为 alias
             # 命中裸名就把派生译法注入到普通称呼处。
             keys = (
-                [term.source]
-                if term.type in _SOURCE_ONLY_TYPES
-                else [term.source] + term.aliases
+                [term.source] if term.type in _SOURCE_ONLY_TYPES else [term.source] + term.aliases
             )
             if any(k and k in text for k in keys):
                 out.append(term)
@@ -260,9 +268,7 @@ class GlossaryStore:
         return self.terms_in(self.all_terms(), text)
 
     def mark_conflicts_resolved(self, source: str) -> None:
-        self.conn.execute(
-            "UPDATE term_conflicts SET resolved=1 WHERE source=?", (source,)
-        )
+        self.conn.execute("UPDATE term_conflicts SET resolved=1 WHERE source=?", (source,))
         self.conn.commit()
 
     def open_conflicts(self) -> list[dict[str, Any]]:

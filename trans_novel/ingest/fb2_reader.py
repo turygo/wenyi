@@ -66,18 +66,17 @@ def _direct_segments(section: ET.Element, chapter_index: int) -> tuple[str, list
         text = text.strip()
         if text:
             segments.append(
-                Segment(index=idx, source=text, kind=kind,
-                        anchor=f"tn{chapter_index}_{idx}")
+                Segment(index=idx, source=text, kind=kind, anchor=f"tn{chapter_index}_{idx}")
             )
             idx += 1
 
     def emit_block(el: ET.Element) -> None:
         tag = _local(el)
         if tag == "subtitle":
-            add(_strip_markup(el), KIND_HEADING)   # 节内小标题
-        elif tag in ("p", "v", "text-author"):     # 段落 / 诗行 / 署名
+            add(_strip_markup(el), KIND_HEADING)  # 节内小标题
+        elif tag in ("p", "v", "text-author"):  # 段落 / 诗行 / 署名
             add(_strip_markup(el), KIND_TEXT)
-        elif tag in _CONTAINER_BLOCKS:             # 容器：下钻
+        elif tag in _CONTAINER_BLOCKS:  # 容器：下钻
             for sub in el:
                 emit_block(sub)
         # empty-line / image / 其它 → 跳过

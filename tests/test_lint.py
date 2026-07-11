@@ -18,18 +18,19 @@ def _types(issues, index=None):
 class TestQuoteLoss(unittest.TestCase):
     def test_flags_when_quotes_dropped(self):
         issues = lint_targets(
-            ["「おはよう」と堀北が言った。"], ["早上好，堀北说道。"], src_lang="ja")
+            ["「おはよう」と堀北が言った。"], ["早上好，堀北说道。"], src_lang="ja"
+        )
         self.assertIn("quote_loss", _types(issues, 0))
 
     def test_passes_when_smart_quotes_kept(self):
-        issues = lint_targets(
-            ["“Good morning,” she said."], ["“早上好，”她说道。"], src_lang="en")
+        issues = lint_targets(["“Good morning,” she said."], ["“早上好，”她说道。"], src_lang="en")
         self.assertNotIn("quote_loss", _types(issues, 0))
 
     def test_passes_when_target_uses_cjk_corner_quotes(self):
         """译文用「」也算保留（不强制要求弯引号）。"""
         issues = lint_targets(
-            ["「おはよう」と堀北が言った。"], ["「早上好」堀北说道。"], src_lang="ja")
+            ["「おはよう」と堀北が言った。"], ["「早上好」堀北说道。"], src_lang="ja"
+        )
         self.assertNotIn("quote_loss", _types(issues, 0))
 
     def test_no_flag_when_source_has_no_quotes(self):
@@ -62,8 +63,9 @@ class TestNumberMismatchBenchmarks(unittest.TestCase):
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
     def test_forty_steps_must_pass(self):
-        issues = lint_targets(["He climbed the Forty Steps."], ["他爬上了四十级台阶。"],
-                              src_lang="en")
+        issues = lint_targets(
+            ["He climbed the Forty Steps."], ["他爬上了四十级台阶。"], src_lang="en"
+        )
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
 
@@ -75,8 +77,9 @@ class TestNumberMismatchExtra(unittest.TestCase):
 
     def test_target_extra_numbers_not_flagged(self):
         # 译文多出数值（意译增补）不 flag
-        issues = lint_targets(["He is forty years old."], ["他四十岁了，看起来像三十岁。"],
-                              src_lang="en")
+        issues = lint_targets(
+            ["He is forty years old."], ["他四十岁了，看起来像三十岁。"], src_lang="en"
+        )
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
     def test_ordinal_words_not_parsed(self):
@@ -92,27 +95,34 @@ class TestNumberMismatchExtra(unittest.TestCase):
 class TestTermMiss(unittest.TestCase):
     def test_locked_term_missing_in_target_flags(self):
         term = GlossaryTerm(source="堀北", target="堀北", type="人物", locked=True)
-        issues = lint_targets(["堀北が振り返った。"], ["她转过身来。"],
-                              locked_terms=[term], src_lang="ja")
+        issues = lint_targets(
+            ["堀北が振り返った。"], ["她转过身来。"], locked_terms=[term], src_lang="ja"
+        )
         self.assertIn("term_miss", _types(issues, 0))
 
     def test_locked_term_present_in_target_passes(self):
         term = GlossaryTerm(source="堀北", target="堀北", type="人物", locked=True)
-        issues = lint_targets(["堀北が振り返った。"], ["堀北转过身来。"],
-                              locked_terms=[term], src_lang="ja")
+        issues = lint_targets(
+            ["堀北が振り返った。"], ["堀北转过身来。"], locked_terms=[term], src_lang="ja"
+        )
         self.assertNotIn("term_miss", _types(issues, 0))
 
     def test_word_boundary_prevents_false_positive(self):
         """latin 词边界：source 含 "Chang" 不应命中 "Changing"。"""
         term = GlossaryTerm(source="Chang", target="常先生", type="人物", locked=True)
-        issues = lint_targets(["Changing his mind was hard."], ["他很难改变主意。"],
-                              locked_terms=[term], src_lang="en")
+        issues = lint_targets(
+            ["Changing his mind was hard."],
+            ["他很难改变主意。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
         self.assertNotIn("term_miss", _types(issues, 0))
 
     def test_word_boundary_matches_whole_word(self):
         term = GlossaryTerm(source="Chang", target="常先生", type="人物", locked=True)
-        issues = lint_targets(["Chang walked in."], ["他走了进来。"],
-                              locked_terms=[term], src_lang="en")
+        issues = lint_targets(
+            ["Chang walked in."], ["他走了进来。"], locked_terms=[term], src_lang="en"
+        )
         self.assertIn("term_miss", _types(issues, 0))
 
     def test_unlocked_term_ignored(self):
@@ -122,8 +132,9 @@ class TestTermMiss(unittest.TestCase):
 
     def test_empty_target_term_not_flagged(self):
         term = GlossaryTerm(source="堀北", target="", type="人物", locked=True)
-        issues = lint_targets(["堀北が振り返った。"], ["她转过身来。"],
-                              locked_terms=[term], src_lang="ja")
+        issues = lint_targets(
+            ["堀北が振り返った。"], ["她转过身来。"], locked_terms=[term], src_lang="ja"
+        )
         self.assertNotIn("term_miss", _types(issues, 0))
 
 
@@ -161,13 +172,15 @@ class TestLengthFlagsReuse(unittest.TestCase):
         self.assertIn("empty", _types(issues, 0))
 
     def test_too_short_target_flags(self):
-        issues = lint_targets(["这是一段有一定长度的原文，用来测试过短判定阈值。"], ["短"],
-                              src_lang="zh")
+        issues = lint_targets(
+            ["这是一段有一定长度的原文，用来测试过短判定阈值。"], ["短"], src_lang="zh"
+        )
         self.assertIn("too_short", _types(issues, 0))
 
     def test_too_long_target_flags(self):
-        issues = lint_targets(["短句。"], ["这是一段被大幅增译、明显超出原文长度比例的过长译文内容。"],
-                              src_lang="zh")
+        issues = lint_targets(
+            ["短句。"], ["这是一段被大幅增译、明显超出原文长度比例的过长译文内容。"], src_lang="zh"
+        )
         self.assertIn("too_long", _types(issues, 0))
 
 
@@ -192,13 +205,16 @@ class TestQuoteLossFixPass(unittest.TestCase):
         # 句段切分产生的孤立后半句，行首是闭引号残段，不构成"含直接引语"的证据
         issues = lint_targets(
             ["」なんて言わないでください、と彼女は静かに言った。"],
-            ["别这么说，她轻声说道。"], src_lang="ja")
+            ["别这么说，她轻声说道。"],
+            src_lang="ja",
+        )
         self.assertNotIn("quote_loss", _types(issues, 0))
 
     def test_book_title_bracket_counts_as_kept(self):
         # 引题名转书名号《》是正确译法，不算丢引号
         issues = lint_targets(
-            ["「戦争と平和」を読んだ。"], ["他读了《战争与和平》。"], src_lang="ja")
+            ["「戦争と平和」を読んだ。"], ["他读了《战争与和平》。"], src_lang="ja"
+        )
         self.assertNotIn("quote_loss", _types(issues, 0))
 
 
@@ -208,59 +224,70 @@ class TestNumberMismatchFixPass(unittest.TestCase):
     def test_hundred_and_combo(self):
         issues = lint_targets(
             ["The village had eight hundred and thirty-six residents in total."],
-            ["这个村子总共有836名居民。"], src_lang="en")
+            ["这个村子总共有836名居民。"],
+            src_lang="en",
+        )
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
     def test_decimal_billion_combo(self):
         issues = lint_targets(
             ["The company raised 11.8 billion dollars in the round."],
-            ["该公司在这轮融资中筹集了118亿美元。"], src_lang="en")
+            ["该公司在这轮融资中筹集了118亿美元。"],
+            src_lang="en",
+        )
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
     def test_cn_digit_literal_reading(self):
         issues = lint_targets(
             ["It happened in 1922, during the war."],
-            ["这件事发生在一九二二年，正值战争期间。"], src_lang="en")
+            ["这件事发生在一九二二年，正值战争期间。"],
+            src_lang="en",
+        )
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
     def test_decade_equivalence(self):
         issues = lint_targets(
             ["This song was popular in the 1980s across the country."],
-            ["这首歌在20世纪80年代红遍全国。"], src_lang="en")
+            ["这首歌在20世纪80年代红遍全国。"],
+            src_lang="en",
+        )
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
     def test_century_equivalence(self):
         issues = lint_targets(
             ["The castle was built in the 1600s by a local lord."],
-            ["这座城堡建于十七世纪，由当地领主所建。"], src_lang="en")
+            ["这座城堡建于十七世纪，由当地领主所建。"],
+            src_lang="en",
+        )
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
     def test_wildcard_year_prefix_match(self):
         issues = lint_targets(
-            ["It happened around 1943 or so."],
-            ["大概是一九四几年发生的事。"], src_lang="en")
+            ["It happened around 1943 or so."], ["大概是一九四几年发生的事。"], src_lang="en"
+        )
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
 
 class TestUntranslatedFixPass(unittest.TestCase):
     def test_url_token_exempted(self):
         issues = lint_targets(
-            ["https://example.com/page?id=123"],
-            ["https://example.com/page?id=123"], src_lang="en")
+            ["https://example.com/page?id=123"], ["https://example.com/page?id=123"], src_lang="en"
+        )
         self.assertNotIn("untranslated", _types(issues, 0))
 
     def test_isbn_token_exempted(self):
-        issues = lint_targets(["ISBN-978-0-13-468599-1"], ["ISBN-978-0-13-468599-1"],
-                              src_lang="en")
+        issues = lint_targets(["ISBN-978-0-13-468599-1"], ["ISBN-978-0-13-468599-1"], src_lang="en")
         self.assertNotIn("untranslated", _types(issues, 0))
 
 
 class TestTooShortEnHardGate(unittest.TestCase):
     """en 源 too_short 硬门槛：ratio<0.15 且 len(src)>=120 才 flag。"""
 
-    SRC = ("This is a fairly long English sentence deliberately padded out with "
-          "many extra filler words so its character count clears the threshold "
-          "easily for this particular test case here now.")
+    SRC = (
+        "This is a fairly long English sentence deliberately padded out with "
+        "many extra filler words so its character count clears the threshold "
+        "easily for this particular test case here now."
+    )
 
     def test_moderate_ratio_not_flagged(self):
         target = "y" * int(len(self.SRC) * 0.2)
@@ -287,8 +314,10 @@ class TestNumberMismatchProductionFixtures(unittest.TestCase):
     def test_ch11_year_excluded_from_range_multiplier(self):
         # "...$500,000 in 1958 to $21 million..." 曾把 1958 误套進 "to $21 million"
         # 的乘数回填，产出幻影值 1958000000；年份现在永不参与组合。
-        src = ("Sales ballooned from $500,000 in 1958 to $21 million two years later, "
-              "helped by one thousand new employees.")
+        src = (
+            "Sales ballooned from $500,000 in 1958 to $21 million two years later, "
+            "helped by one thousand new employees."
+        )
         tgt = "销售额从1958年的50万美元飙升至两年后的2100万美元，得益于千名新员工。"
         issues = lint_targets([src], [tgt], src_lang="en")
         self.assertNotIn("number_mismatch", _types(issues, 0))

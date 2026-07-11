@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..glossary.store import GlossaryStore, GlossaryTerm, TYPE_PERSON
+from ..glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
 from ..pipeline.runstore import RunStore
 from . import prompts
 from .base import Agent
@@ -74,14 +74,23 @@ class GlossaryAuditor(Agent):
                 continue
             if variants:
                 cand[t.source] = {
-                    "source": t.source, "current": t.target,
-                    "type": t.type, "variants": sorted(variants),
+                    "source": t.source,
+                    "current": t.target,
+                    "type": t.type,
+                    "variants": sorted(variants),
                 }
         # 已记录的译法冲突也并入候选
         for c in glossary.open_conflicts():
             src = c["source"]
-            entry = cand.setdefault(src, {"source": src, "current": c.get("existing_target", ""),
-                                          "type": "", "variants": []})
+            entry = cand.setdefault(
+                src,
+                {
+                    "source": src,
+                    "current": c.get("existing_target", ""),
+                    "type": "",
+                    "variants": [],
+                },
+            )
             for v in (c.get("existing_target"), c.get("proposed_target")):
                 if v and v != entry["current"] and v not in entry["variants"]:
                     entry["variants"].append(v)
@@ -103,15 +112,16 @@ class GlossaryAuditor(Agent):
         lines = []
         for c in candidates.values():
             allv = [c["current"]] + [v for v in c["variants"] if v != c["current"]]
-            lines.append(f"- {c['source']}（{c['type'] or '?'}）: 现有译法/变体 = {', '.join(allv)}")
+            lines.append(
+                f"- {c['source']}（{c['type'] or '?'}）: 现有译法/变体 = {', '.join(allv)}"
+            )
         user = (
             "下列原文词在术语表或正文里出现了多种译法/形近变体，请为每个裁定唯一规范译法：\n"
             + "\n".join(lines)
             + '\n\n输出 JSON：{"unifications":[{"source":"...","canonical":"...","variants":["..."],"reason":"..."}]}'
         )
         system = prompts.render("glossary_audit_system", src=self.src, tgt=self.tgt)
-        uni = self._ask_json(system, user, tier="strong",
-                             key="unifications", default=[])
+        uni = self._ask_json(system, user, tier="strong", key="unifications", default=[])
         result: list[dict[str, Any]] = []
         for u in self.dict_items(uni):
             if not u.get("source") or not u.get("canonical"):
@@ -142,15 +152,26 @@ class GlossaryAuditor(Agent):
             glossary.lock_term(src, canonical)
             if variants:
                 glossary.upsert_term(
-                    GlossaryTerm(source=src, target=canonical, aliases=variants,
-                                 confidence="high", locked=True),
+                    GlossaryTerm(
+                        source=src,
+                        target=canonical,
+                        aliases=variants,
+                        confidence="high",
+                        locked=True,
+                    ),
                 )
             glossary.mark_conflicts_resolved(src)
             for v in variants:
-                if _is_cjk(v):           # 仅对汉字变体做正文替换，安全
+                if _is_cjk(v):  # 仅对汉字变体做正文替换，安全
                     replace_map[v] = canonical
-            applied.append({"source": src, "canonical": canonical,
-                            "variants": variants, "reason": u.get("reason", "")})
+            applied.append(
+                {
+                    "source": src,
+                    "canonical": canonical,
+                    "variants": variants,
+                    "reason": u.get("reason", ""),
+                }
+            )
 
         if replace_map:
             self._rewrite_targets(store, glossary, replace_map)
@@ -159,8 +180,9 @@ class GlossaryAuditor(Agent):
         return applied
 
     @staticmethod
-    def _rewrite_targets(store: RunStore, glossary: GlossaryStore,
-                         replace_map: dict[str, str]) -> int:
+    def _rewrite_targets(
+        store: RunStore, glossary: GlossaryStore, replace_map: dict[str, str]
+    ) -> int:
         """把各章 target 里的变体替换为规范译法，并同步 TM。返回改动段数。"""
         # 长变体优先替换，避免短串先替导致嵌套问题
         variants_sorted = sorted(replace_map, key=len, reverse=True)
@@ -262,11 +284,11 @@ class GlossaryAuditor(Agent):
                     last = 0
                     replaced = False
                     for mo in matches:
-                        left = text[max(0, mo.start() - 12):mo.start()]
-                        right = text[mo.end():mo.end() + 12]
+                        left = text[max(0, mo.start() - 12) : mo.start()]
+                        right = text[mo.end() : mo.end() + 12]
                         if not (_has_cjk(left) or _has_cjk(right)):
                             continue
-                        parts.append(text[last:mo.start()])
+                        parts.append(text[last : mo.start()])
                         parts.append(t.target)
                         last = mo.end()
                         replaced = True
@@ -293,8 +315,12 @@ class GlossaryAuditor(Agent):
                 if dirty:
                     store.save_chapter(ch)
             if touched:
-                applied.append({
-                    "source": t.source, "canonical": t.target,
-                    "variants": [t.source], "reason": "锁定术语拉丁残留替换",
-                })
+                applied.append(
+                    {
+                        "source": t.source,
+                        "canonical": t.target,
+                        "variants": [t.source],
+                        "reason": "锁定术语拉丁残留替换",
+                    }
+                )
         return applied

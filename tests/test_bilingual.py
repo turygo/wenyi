@@ -11,18 +11,18 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 from typer.testing import CliRunner
 
-from trans_novel.cli import app
-from trans_novel.config import Config
-from trans_novel.llm.base import FakeClient
-from trans_novel.pipeline.orchestrator import Orchestrator
+from tests.fake_llm import routing_handler
+from tests.sample_data import write_sample_epub, write_sample_txt
 from trans_novel.assemble.writer import (
     _default_out,
     _render_chapter_html,
     assemble,
 )
+from trans_novel.cli import app
+from trans_novel.config import Config
 from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
-from tests.sample_data import write_sample_epub, write_sample_txt
-from tests.fake_llm import routing_handler
+from trans_novel.llm.base import FakeClient
+from trans_novel.pipeline.orchestrator import Orchestrator
 
 
 def _chapter_with_template() -> Chapter:
@@ -36,16 +36,12 @@ def _chapter_with_template() -> Chapter:
         "</body></html>"
     )
     segments = [
-        Segment(
-            index=0, source="原标题", kind=KIND_HEADING, target="译标题", anchor="h0"
-        ),
+        Segment(index=0, source="原标题", kind=KIND_HEADING, target="译标题", anchor="h0"),
         Segment(index=1, source="原文一", kind=KIND_TEXT, target="译文一", anchor="p1"),
         Segment(index=2, source="原文二", kind=KIND_TEXT, target=None, anchor="p2"),
         Segment(index=3, source="原文三", kind=KIND_TEXT, target="原文三", anchor="p3"),
     ]
-    return Chapter(
-        index=0, title="标题", segments=segments, template=template, href="ch1.xhtml"
-    )
+    return Chapter(index=0, title="标题", segments=segments, template=template, href="ch1.xhtml")
 
 
 class TestRenderChapterHtmlBilingual(unittest.TestCase):
@@ -64,13 +60,9 @@ class TestRenderChapterHtmlBilingual(unittest.TestCase):
         self.assertNotIn("tn-source", nxt.get("class", []))
 
         ps = soup.find_all("p")
-        self.assertEqual(
-            [p.get_text() for p in ps], ["译文一", "原文一", "原文二", "原文三"]
-        )
+        self.assertEqual([p.get_text() for p in ps], ["译文一", "原文一", "原文二", "原文三"])
         self.assertEqual(ps[0].get("class"), None)
-        self.assertEqual(
-            ps[1]["class"], ["tn-source", "ibooks-dark-theme-use-custom-text-color"]
-        )
+        self.assertEqual(ps[1]["class"], ["tn-source", "ibooks-dark-theme-use-custom-text-color"])
         # p2（译文缺失回退原文）、p3（译文等于原文）都不应插入 tn-source 段
         self.assertEqual(ps[2].get("class"), None)
         self.assertEqual(ps[3].get("class"), None)
@@ -80,12 +72,8 @@ class TestRenderChapterHtmlBilingual(unittest.TestCase):
         html = _render_chapter_html(ch, bilingual=True, order="source_first")
         soup = BeautifulSoup(html, "html.parser")
         ps = soup.find_all("p")
-        self.assertEqual(
-            [p.get_text() for p in ps], ["原文一", "译文一", "原文二", "原文三"]
-        )
-        self.assertEqual(
-            ps[0]["class"], ["tn-source", "ibooks-dark-theme-use-custom-text-color"]
-        )
+        self.assertEqual([p.get_text() for p in ps], ["原文一", "译文一", "原文二", "原文三"])
+        self.assertEqual(ps[0]["class"], ["tn-source", "ibooks-dark-theme-use-custom-text-color"])
         self.assertEqual(ps[1].get("class"), None)
 
     def test_mono_render_has_no_source_paragraphs(self):
@@ -131,9 +119,7 @@ class TestBuildEpubFromChaptersBilingual(unittest.TestCase):
             self.assertTrue(zipfile.is_zipfile(out))
             with zipfile.ZipFile(out) as z:
                 xhtml_names = [
-                    n
-                    for n in z.namelist()
-                    if n.endswith(".xhtml") and n.startswith("EPUB/")
+                    n for n in z.namelist() if n.endswith(".xhtml") and n.startswith("EPUB/")
                 ]
                 self.assertTrue(xhtml_names)
                 bodies = {n: z.read(n).decode("utf-8") for n in xhtml_names}
@@ -155,9 +141,7 @@ class TestAssembleTextBilingual(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             store, _ = _run(txt, os.path.join(d, "state"))
-            out = assemble(
-                store, txt, out_format="txt", bilingual=True, order="target_first"
-            )
+            out = assemble(store, txt, out_format="txt", bilingual=True, order="target_first")
             with open(out, encoding="utf-8") as f:
                 content = f.read()
             self.assertIn("译1", content)  # 译文（段落1，段落0是标题）
@@ -171,9 +155,7 @@ class TestAssembleTextBilingual(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             store, _ = _run(txt, os.path.join(d, "state"))
-            out = assemble(
-                store, txt, out_format="txt", bilingual=True, order="source_first"
-            )
+            out = assemble(store, txt, out_format="txt", bilingual=True, order="source_first")
             with open(out, encoding="utf-8") as f:
                 content = f.read()
             tgt_pos = content.index("译1")
@@ -219,9 +201,7 @@ class TestOrchestratorMultiOutput(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
-            cfg = _config(
-                os.path.join(d, "state")
-            )  # 不传 output -> 默认 mono+bilingual 都开
+            cfg = _config(os.path.join(d, "state"))  # 不传 output -> 默认 mono+bilingual 都开
             orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
             result = orch.run_all(txt, out_format="epub")
             outputs = result["outputs"]
@@ -276,9 +256,7 @@ class TestCliBilingualFlags(unittest.TestCase):
 
             def run_all(self, input_path, **kwargs):
                 return {
-                    "report": {
-                        "summary": {"chapters_done": 1, "chapters_total": 1, "terms": 0}
-                    },
+                    "report": {"summary": {"chapters_done": 1, "chapters_total": 1, "terms": 0}},
                     "qa_issues": [],
                     "output": "novel.zh.epub",
                     "outputs": ["novel.zh.epub", "novel.zh-bi.epub"],
@@ -289,9 +267,7 @@ class TestCliBilingualFlags(unittest.TestCase):
             patch("trans_novel.pipeline.orchestrator.Orchestrator", FakeOrchestrator),
             patch("trans_novel.cli.os.path.isfile", return_value=True),
         ):
-            result = CliRunner().invoke(
-                app, ["translate", "input.txt", "--no-mono", "--bilingual"]
-            )
+            result = CliRunner().invoke(app, ["translate", "input.txt", "--no-mono", "--bilingual"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         flat = result.output.replace("\n", "")

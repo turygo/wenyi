@@ -51,7 +51,7 @@ class TestMineCandidatesEn(unittest.TestCase):
         )
         result = mine_candidates_en([(1, text)])
         by_surface = {c.surface: c for c in result}
-        self.assertNotIn("The", by_surface)   # 句首孤词，从未在句中位置出现
+        self.assertNotIn("The", by_surface)  # 句首孤词，从未在句中位置出现
         self.assertNotIn("DARPA", by_surface)  # 全大写缩写但只出现 1 次
 
     def test_count_and_chapter_tracking_across_chapters(self):
@@ -76,18 +76,20 @@ class TestMineCandidatesEn(unittest.TestCase):
 
     def test_unicode_letters_in_names_not_truncated(self):
         """带附加符号的姓名（Brontë/García Márquez）不得被 ASCII 分词拦腰截断。"""
-        text1 = ("Scholars praised Charlotte Brontë widely. "
-                "Charlotte Brontë wrote Jane Eyre in solitude.\n")
+        text1 = (
+            "Scholars praised Charlotte Brontë widely. "
+            "Charlotte Brontë wrote Jane Eyre in solitude.\n"
+        )
         text2 = "The award committee honored García Márquez for lifetime achievement.\n"
         r1 = {c.surface: c for c in mine_candidates_en([(1, text1)])}
         r2 = {c.surface: c for c in mine_candidates_en([(2, text2)])}
 
         self.assertIn("Charlotte Brontë", r1)
         self.assertEqual(r1["Charlotte Brontë"].count, 2)
-        self.assertNotIn("Bront", r1)   # 不得被截断成 ASCII 前缀
+        self.assertNotIn("Bront", r1)  # 不得被截断成 ASCII 前缀
 
         self.assertIn("García Márquez", r2)
-        self.assertEqual(r2["García Márquez"].count, 1)   # 多词序列单次出现也保留
+        self.assertEqual(r2["García Márquez"].count, 1)  # 多词序列单次出现也保留
 
     def test_dialogue_quote_boundary_drops_stopwords_after_close_quote(self):
         """句末标点+闭引号才是句子边界：闭引号后紧跟的 Do/She/But 不得被误判成句中大写。
@@ -107,7 +109,8 @@ class TestMineCandidatesEn(unittest.TestCase):
         surfaces = {c.surface for c in result}
         self.assertTrue(
             any(s in ("Cornwall Inn", "The Cornwall Inn") for s in surfaces),
-            f"应产出 Cornwall Inn（剥离或保留首部 The 均可），实际={surfaces}")
+            f"应产出 Cornwall Inn（剥离或保留首部 The 均可），实际={surfaces}",
+        )
 
     def test_sentence_initial_repeated_names_known_limitation(self):
         """已知限制：句首过滤是全局判据（该词从未在句中位置大写出现则丢弃），纯人名罗列
@@ -121,11 +124,13 @@ class TestMineCandidatesEn(unittest.TestCase):
     def test_question_words_never_enter_candidates(self):
         """疑问词（What/How/Why/Who/Where）即使句中位置多次出现（满足其它两条过滤的放行
         条件），也永不入候选——Wedding People 全书复测暴露的 Top40 残留项。"""
-        text = ("What do you want? She wondered What he meant. "
-                "\"How are you?\" How odd, she thought. "
-                "Why now? I wonder Why this happened. "
-                "Who is he? They asked Who could help. "
-                "Where are we? Nobody knew Where to go.\n")
+        text = (
+            "What do you want? She wondered What he meant. "
+            '"How are you?" How odd, she thought. '
+            "Why now? I wonder Why this happened. "
+            "Who is he? They asked Who could help. "
+            "Where are we? Nobody knew Where to go.\n"
+        )
         result = mine_candidates_en([(1, text)])
         surfaces = {c.surface for c in result}
         for word in ("What", "How", "Why", "Who", "Where"):
@@ -143,6 +148,7 @@ class TestMineCandidatesDualChannel(unittest.TestCase):
     class _FakeMinerAgent:
         """最小 stub：满足 mine_candidates_llm 所需接口（.src/.tgt + _ask_json），
         固定返回同一份候选列表（每章调用一次），不发真实网络请求。"""
+
         def __init__(self, src: str, candidates: list[str]):
             self.src = src
             self.tgt = "zh"
@@ -155,8 +161,10 @@ class TestMineCandidatesDualChannel(unittest.TestCase):
         """大写通道抓不到反复出现的小写领域术语（lithography）——完全没有大写形式出现
         过，靠 LLM 通道补上；两通道都命中的专名（Morris Chang）合并成一条，保留大写
         通道的原样 surface，count 取两通道较大者。"""
-        text = ("Morris Chang met engineers twice. Morris Chang discussed lithography today.\n"
-                "The lithography process improved. Lithography remains critical.\n")
+        text = (
+            "Morris Chang met engineers twice. Morris Chang discussed lithography today.\n"
+            "The lithography process improved. Lithography remains critical.\n"
+        )
         agent = self._FakeMinerAgent("en", ["lithography", "Morris Chang"])
         result = mine_candidates("en", [(1, text)], agent)
         by_lower = {c.surface.lower(): c for c in result}
@@ -185,12 +193,14 @@ class TestMineCandidatesLlmConcurrency(unittest.TestCase):
 
     class _PerChapterAgent:
         """按 user prompt 里的章号返回该章候选；值为异常实例时抛出（模拟单章失败）。"""
+
         def __init__(self, per_chapter: dict):
             self.src, self.tgt = "ja", "zh"
             self._per = per_chapter
 
         def _ask_json(self, system, user, *, tier, key=None, default=None, max_tokens=None):
             import re
+
             ci = int(re.search(r"第(\d+)章", user).group(1))
             val = self._per[ci]
             if isinstance(val, Exception):
@@ -202,14 +212,19 @@ class TestMineCandidatesLlmConcurrency(unittest.TestCase):
 
     def _mine(self, concurrency: int, on_progress=None):
         from trans_novel.glossary.miner import mine_candidates_llm
+
         agent = self._PerChapterAgent(self._PER)
-        return mine_candidates_llm(self._CHAPTERS, agent,
-                                   concurrency=concurrency, on_progress=on_progress)
+        return mine_candidates_llm(
+            self._CHAPTERS, agent, concurrency=concurrency, on_progress=on_progress
+        )
 
     def test_concurrent_output_identical_to_serial(self):
         serial = self._mine(1)
         parallel = self._mine(3)
-        key = lambda cands: [(c.surface, c.count, c.chapters) for c in cands]
+
+        def key(cands):
+            return [(c.surface, c.count, c.chapters) for c in cands]
+
         self.assertEqual(key(parallel), key(serial))
         by_surface = {c.surface: c for c in parallel}
         self.assertEqual(by_surface["堀北"].count, 3)
@@ -223,6 +238,7 @@ class TestMineCandidatesLlmConcurrency(unittest.TestCase):
 
     def test_single_chapter_failure_propagates(self):
         from trans_novel.glossary.miner import mine_candidates_llm
+
         per = {**self._PER, 2: ValueError("boom")}
         agent = self._PerChapterAgent(per)
         with self.assertRaises(ValueError):

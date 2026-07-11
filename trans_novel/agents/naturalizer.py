@@ -15,14 +15,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from . import prompts
-from .base import Agent
 from ..glossary.store import GlossaryStore, GlossaryTerm
 from ..ingest.models import KIND_TEXT, Chapter, Segment
 from ..pipeline import lint
 from ..pipeline.backmatter import is_back_matter
 from ..pipeline.runstore import RunStore
 from ..postprocess.punct import normalize_zh
+from . import prompts
+from .base import Agent
 
 _SCREEN_BATCH_SIZE = 20
 _HAN_RATIO_MIN = 0.2  # 汉字占比阈值：≤ 视为非中文段，跳过
@@ -66,15 +66,14 @@ class Naturalizer(Agent):
             return []
         system = prompts.render("naturalize_screen_system")
         user = prompts.render(
-            "naturalize_screen_user", n=len(texts), numbered=prompts.numbered(texts))
-        return self.dict_items(
-            self._ask_json(system, user, tier="cheap", key="issues", default=[]))
+            "naturalize_screen_user", n=len(texts), numbered=prompts.numbered(texts)
+        )
+        return self.dict_items(self._ask_json(system, user, tier="cheap", key="issues", default=[]))
 
     def rewrite(self, text: str, quote: str, reason: str) -> str:
         """单语改写整段（strong 档）；失败或空结果回退原文。"""
         system = prompts.render("naturalize_rewrite_system")
-        user = prompts.render(
-            "naturalize_rewrite_user", text=text, quote=quote, reason=reason)
+        user = prompts.render("naturalize_rewrite_user", text=text, quote=quote, reason=reason)
         data = self._ask_json(system, user, tier="strong", default={})
         rewritten = data.get("rewritten") if isinstance(data, dict) else None
         return rewritten.strip() if isinstance(rewritten, str) and rewritten.strip() else text
@@ -89,39 +88,51 @@ class Naturalizer(Agent):
 
     def pairwise_accept(self, orig: str, rewritten: str) -> bool:
         """正反两序各判一次；改写版两序皆胜才采纳，tie/负任一次即拒。"""
-        order1 = self.judge_pair(orig, rewritten)       # A=原译 B=改写
-        order2 = self.judge_pair(rewritten, orig)        # A=改写 B=原译
+        order1 = self.judge_pair(orig, rewritten)  # A=原译 B=改写
+        order2 = self.judge_pair(rewritten, orig)  # A=改写 B=原译
         return order1 == "B" and order2 == "A"
 
     def fidelity_check(self, source: str, orig: str, rewritten: str) -> bool:
         """关卡③：双语忠实度判断，解析失败/字段缺失按不通过处理（保守）。"""
         system = prompts.render("naturalize_fidelity_system")
         user = prompts.render(
-            "naturalize_fidelity_user", source=source, orig=orig, rewritten=rewritten)
-        return bool(self._ask_json(
-            system, user, tier="cheap", key="faithful", default=False))
+            "naturalize_fidelity_user", source=source, orig=orig, rewritten=rewritten
+        )
+        return bool(self._ask_json(system, user, tier="cheap", key="faithful", default=False))
 
 
 def _lint_introduces_new_issue(
-    source: str, orig: str, rewritten: str,
-    locked_terms: list[GlossaryTerm], src_lang: str,
+    source: str,
+    orig: str,
+    rewritten: str,
+    locked_terms: list[GlossaryTerm],
+    src_lang: str,
 ) -> bool:
     """关卡①：与 orchestrator L1013-1020 的 polish 回退用的是相同逻辑——按 issue 类型集合比较。"""
     orig_types = {
-        it.type for it in lint.lint_targets(
-            [source], [orig], locked_terms=locked_terms, src_lang=src_lang)
+        it.type
+        for it in lint.lint_targets([source], [orig], locked_terms=locked_terms, src_lang=src_lang)
     }
     new_types = {
-        it.type for it in lint.lint_targets(
-            [source], [rewritten], locked_terms=locked_terms, src_lang=src_lang)
+        it.type
+        for it in lint.lint_targets(
+            [source], [rewritten], locked_terms=locked_terms, src_lang=src_lang
+        )
     }
     return bool(new_types - orig_types)
 
 
 def naturalize_chapter(
-    agent: Naturalizer, chapter: Chapter, ci: int, total: int,
-    locked_terms: list[GlossaryTerm], config, store: RunStore, *,
-    dry_run: bool, remaining: int | None,
+    agent: Naturalizer,
+    chapter: Chapter,
+    ci: int,
+    total: int,
+    locked_terms: list[GlossaryTerm],
+    config,
+    store: RunStore,
+    *,
+    dry_run: bool,
+    remaining: int | None,
 ) -> dict[str, Any]:
     """处理单章，返回统计并按需写回（save_chapter + log_event）。
 
@@ -132,9 +143,14 @@ def naturalize_chapter(
     崩溃窗口（改写已落盘但标记未写，续跑重复审读）。dry_run 不置标记、不落盘。
     """
     stats = {
-        "screened": 0, "suspects": 0, "rewritten": 0,
-        "lint_rejected": 0, "fidelity_rejected": 0, "pairwise_rejected": 0,
-        "applied": 0, "applied_entries": [],
+        "screened": 0,
+        "suspects": 0,
+        "rewritten": 0,
+        "lint_rejected": 0,
+        "fidelity_rejected": 0,
+        "pairwise_rejected": 0,
+        "applied": 0,
+        "applied_entries": [],
     }
     cands: list[Segment] = []
     if not is_back_matter(chapter.title, index=ci, total=total):
@@ -143,7 +159,7 @@ def naturalize_chapter(
     for start in range(0, len(cands), _SCREEN_BATCH_SIZE):
         if remaining is not None and remaining <= 0:
             break
-        batch = cands[start:start + _SCREEN_BATCH_SIZE]
+        batch = cands[start : start + _SCREEN_BATCH_SIZE]
         texts = [s.target or "" for s in batch]
         stats["screened"] += len(texts)
         issues = agent.screen(texts)
@@ -164,31 +180,41 @@ def naturalize_chapter(
             stats["rewritten"] += 1
 
             if _lint_introduces_new_issue(
-                    seg.source, before, rewritten, locked_terms, config.source_lang):
+                seg.source, before, rewritten, locked_terms, config.source_lang
+            ):
                 stats["lint_rejected"] += 1
                 if not dry_run:
                     store.log_event(
-                        "naturalize_rejected", chapter=ci, index=seg.index,
-                        gate="lint", detail={"quote": quote, "reason": reason,
-                                              "rewritten": rewritten})
+                        "naturalize_rejected",
+                        chapter=ci,
+                        index=seg.index,
+                        gate="lint",
+                        detail={"quote": quote, "reason": reason, "rewritten": rewritten},
+                    )
                 continue
 
             if not agent.fidelity_check(seg.source, before, rewritten):
                 stats["fidelity_rejected"] += 1
                 if not dry_run:
                     store.log_event(
-                        "naturalize_rejected", chapter=ci, index=seg.index,
-                        gate="fidelity", detail={"quote": quote, "reason": reason,
-                                                  "rewritten": rewritten})
+                        "naturalize_rejected",
+                        chapter=ci,
+                        index=seg.index,
+                        gate="fidelity",
+                        detail={"quote": quote, "reason": reason, "rewritten": rewritten},
+                    )
                 continue
 
             if not agent.pairwise_accept(before, rewritten):
                 stats["pairwise_rejected"] += 1
                 if not dry_run:
                     store.log_event(
-                        "naturalize_rejected", chapter=ci, index=seg.index,
-                        gate="pairwise", detail={"quote": quote, "reason": reason,
-                                                  "rewritten": rewritten})
+                        "naturalize_rejected",
+                        chapter=ci,
+                        index=seg.index,
+                        gate="pairwise",
+                        detail={"quote": quote, "reason": reason, "rewritten": rewritten},
+                    )
                 continue
 
             final = rewritten
@@ -196,14 +222,21 @@ def naturalize_chapter(
                 final = normalize_zh(final)
             stats["applied"] += 1
             stats["applied_entries"].append(
-                {"chapter": ci, "index": seg.index, "before": before, "after": final})
+                {"chapter": ci, "index": seg.index, "before": before, "after": final}
+            )
             if remaining is not None:
                 remaining -= 1
             if not dry_run:
                 seg.target = final
                 store.log_event(
-                    "naturalize_applied", chapter=ci, index=seg.index,
-                    before=before, after=final, quote=quote, reason=reason)
+                    "naturalize_applied",
+                    chapter=ci,
+                    index=seg.index,
+                    before=before,
+                    after=final,
+                    quote=quote,
+                    reason=reason,
+                )
 
     if not dry_run:
         chapter.meta["naturalized"] = True
@@ -211,13 +244,26 @@ def naturalize_chapter(
     return stats
 
 
-_STAT_KEYS = ("screened", "suspects", "rewritten", "lint_rejected",
-              "fidelity_rejected", "pairwise_rejected", "applied")
+_STAT_KEYS = (
+    "screened",
+    "suspects",
+    "rewritten",
+    "lint_rejected",
+    "fidelity_rejected",
+    "pairwise_rejected",
+    "applied",
+)
 
 
 def run_naturalize(
-    agent: Naturalizer, store: RunStore, glossary: GlossaryStore, config, *,
-    chapters: list[int] | None = None, dry_run: bool = False, limit: int | None = None,
+    agent: Naturalizer,
+    store: RunStore,
+    glossary: GlossaryStore,
+    config,
+    *,
+    chapters: list[int] | None = None,
+    dry_run: bool = False,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """跑指定（或全部正文）章节的去翻译腔闭环，返回汇总统计。"""
     manifest = store.load_manifest()
@@ -234,8 +280,16 @@ def run_naturalize(
             break
         chapter = store.load_chapter(ci)
         stats = naturalize_chapter(
-            agent, chapter, ci, total, locked_terms, config, store,
-            dry_run=dry_run, remaining=remaining)
+            agent,
+            chapter,
+            ci,
+            total,
+            locked_terms,
+            config,
+            store,
+            dry_run=dry_run,
+            remaining=remaining,
+        )
         for k in _STAT_KEYS:
             totals[k] += stats[k]
         totals["applied_entries"].extend(stats["applied_entries"])

@@ -21,8 +21,22 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 # 大写词序列中允许夹在中间的小写连接词（如 "University of Tokyo"）。
-_CONNECTORS = {"of", "the", "and", "de", "von", "van", "der", "du",
-               "la", "le", "for", "in", "at", "&"}
+_CONNECTORS = {
+    "of",
+    "the",
+    "and",
+    "de",
+    "von",
+    "van",
+    "der",
+    "du",
+    "la",
+    "le",
+    "for",
+    "in",
+    "at",
+    "&",
+}
 # 句子边界：句末标点（含省略号）后跟任意闭引号再跟空白，或换行，才是句子边界——
 # 对话体 `…?" Do you…` 里 Do 紧跟闭引号，若不认闭引号会被误判成句中大写，
 # 让"句首孤词过滤"对对话体完全失效。
@@ -38,49 +52,208 @@ _ROMAN = re.compile(r"^[IVXLCDM]+$")
 # （对话体尤甚：She/Do/But 等紧跟闭引号，句首过滤对其失效）。
 # 拿不准的开放类词（look/wait/okay/hey 等动词感叹）刻意不收录——可能撞人名，
 # 交给下游 CastNamer 定名层去丢弃，不在这里一刀切。
-_EN_STOP = frozenset({
-    # 冠词/指示词
-    "a", "an", "the", "this", "that", "these", "those",
-    # 人称代词
-    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
-    # 物主代词/形容词
-    "my", "your", "his", "its", "our", "their", "mine", "yours", "hers", "ours", "theirs",
-    # 反身代词
-    "myself", "yourself", "himself", "herself", "itself",
-    "ourselves", "yourselves", "themselves",
-    # 并列/从属连词
-    "and", "but", "or", "nor", "for", "yet", "so",
-    "because", "although", "though", "while", "if", "unless", "since", "until",
-    "before", "after", "when", "whenever", "whereas", "wherever",
-    # 疑问词（对话体高频："What(193)/How/Why/Who/Where" 类，Wedding People 全书
-    # 复测暴露的漏项——疑问句首/引号后极易被误判成句中大写）
-    "what", "which", "who", "whom", "whose", "why", "how", "where",
-    # 常用介词
-    "in", "on", "at", "by", "with", "about", "against", "between", "into",
-    "through", "during", "without", "above", "below", "to", "from", "up",
-    "down", "over", "under", "again", "further", "once", "of", "off", "out",
-    # be/do/have/情态助动词
-    "am", "is", "are", "was", "were", "be", "been", "being",
-    "do", "does", "did", "have", "has", "had", "having",
-    "will", "would", "shall", "should", "may", "might", "must", "can", "could",
-    # 否定词
-    "not", "no", "never", "none", "nothing", "nobody", "nowhere", "neither",
-    # 缩写分词碎片：源文用弯引号（’）时 _TOKEN 不认其为续接字符，"Don't"/"Doesn't"
-    # 会被切成 "Don"+"t" 两个独立 token，前半截首字母大写、高频出现，若不拦会当作
-    # 人名候选反复入表（Wedding People 复测里 Don(26) 即此）。作为独立人名的 "Don"
-    # 极罕见，且真出现在多词序列（如 "Don Draper"）时不受这里的单词停用规则影响
-    # （多词序列首尾剥离只剥停用词本身，"Don Draper" 剥不掉中间/唯一的专名部分）。
-    "don", "didn", "doesn", "isn", "aren", "wasn", "weren", "won", "wouldn",
-    "couldn", "shouldn", "ain", "hasn", "haven", "hadn", "mustn", "needn",
-    "ll", "ve", "re", "em",
-    # 常见句副词
-    "there", "here", "now", "then", "just", "even", "also", "too", "very",
-    "still", "only", "already", "soon", "always", "often", "sometimes",
-    "usually", "perhaps", "maybe", "actually", "really", "quite", "rather",
-    "almost", "indeed",
-    # 常见感叹
-    "oh", "ah", "well", "yes", "hey", "wow", "huh", "hmm", "um", "uh",
-})
+_EN_STOP = frozenset(
+    {
+        # 冠词/指示词
+        "a",
+        "an",
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        # 人称代词
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        # 物主代词/形容词
+        "my",
+        "your",
+        "his",
+        "its",
+        "our",
+        "their",
+        "mine",
+        "yours",
+        "hers",
+        "ours",
+        "theirs",
+        # 反身代词
+        "myself",
+        "yourself",
+        "himself",
+        "herself",
+        "itself",
+        "ourselves",
+        "yourselves",
+        "themselves",
+        # 并列/从属连词
+        "and",
+        "but",
+        "or",
+        "nor",
+        "for",
+        "yet",
+        "so",
+        "because",
+        "although",
+        "though",
+        "while",
+        "if",
+        "unless",
+        "since",
+        "until",
+        "before",
+        "after",
+        "when",
+        "whenever",
+        "whereas",
+        "wherever",
+        # 疑问词（对话体高频："What(193)/How/Why/Who/Where" 类，Wedding People 全书
+        # 复测暴露的漏项——疑问句首/引号后极易被误判成句中大写）
+        "what",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "why",
+        "how",
+        "where",
+        # 常用介词
+        "in",
+        "on",
+        "at",
+        "by",
+        "with",
+        "about",
+        "against",
+        "between",
+        "into",
+        "through",
+        "during",
+        "without",
+        "above",
+        "below",
+        "to",
+        "from",
+        "up",
+        "down",
+        "over",
+        "under",
+        "again",
+        "further",
+        "once",
+        "of",
+        "off",
+        "out",
+        # be/do/have/情态助动词
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "have",
+        "has",
+        "had",
+        "having",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "may",
+        "might",
+        "must",
+        "can",
+        "could",
+        # 否定词
+        "not",
+        "no",
+        "never",
+        "none",
+        "nothing",
+        "nobody",
+        "nowhere",
+        "neither",
+        # 缩写分词碎片：源文用弯引号（’）时 _TOKEN 不认其为续接字符，"Don't"/"Doesn't"
+        # 会被切成 "Don"+"t" 两个独立 token，前半截首字母大写、高频出现，若不拦会当作
+        # 人名候选反复入表（Wedding People 复测里 Don(26) 即此）。作为独立人名的 "Don"
+        # 极罕见，且真出现在多词序列（如 "Don Draper"）时不受这里的单词停用规则影响
+        # （多词序列首尾剥离只剥停用词本身，"Don Draper" 剥不掉中间/唯一的专名部分）。
+        "don",
+        "didn",
+        "doesn",
+        "isn",
+        "aren",
+        "wasn",
+        "weren",
+        "won",
+        "wouldn",
+        "couldn",
+        "shouldn",
+        "ain",
+        "hasn",
+        "haven",
+        "hadn",
+        "mustn",
+        "needn",
+        "ll",
+        "ve",
+        "re",
+        "em",
+        # 常见句副词
+        "there",
+        "here",
+        "now",
+        "then",
+        "just",
+        "even",
+        "also",
+        "too",
+        "very",
+        "still",
+        "only",
+        "already",
+        "soon",
+        "always",
+        "often",
+        "sometimes",
+        "usually",
+        "perhaps",
+        "maybe",
+        "actually",
+        "really",
+        "quite",
+        "rather",
+        "almost",
+        "indeed",
+        # 常见感叹
+        "oh",
+        "ah",
+        "well",
+        "yes",
+        "hey",
+        "wow",
+        "huh",
+        "hmm",
+        "um",
+        "uh",
+    }
+)
 
 
 def _is_titlecase(tok: str) -> bool:
@@ -166,8 +339,9 @@ def mine_candidates_en(chapters: list[tuple[int, str]]) -> list[Candidate]:
                         if _is_titlecase(nxt):
                             run.append(nxt)
                             j += 1
-                        elif (nxt.lower() in _CONNECTORS and j + 1 < n
-                              and _is_titlecase(toks[j + 1])):
+                        elif (
+                            nxt.lower() in _CONNECTORS and j + 1 < n and _is_titlecase(toks[j + 1])
+                        ):
                             run.append(nxt)
                             j += 1
                         else:
@@ -196,10 +370,13 @@ def mine_candidates_en(chapters: list[tuple[int, str]]) -> list[Candidate]:
     return out
 
 
-def mine_candidates_llm(chapters: list[tuple[int, str]], agent: Any, *,
-                        concurrency: int = 1,
-                        on_progress: Callable[[int, int], None] | None = None,
-                        ) -> list[Candidate]:
+def mine_candidates_llm(
+    chapters: list[tuple[int, str]],
+    agent: Any,
+    *,
+    concurrency: int = 1,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[Candidate]:
     """非英文源退路：fast 档逐章挖掘（只看源文，不给译名），本函数负责跨章合并计数。
 
     各章调用相互独立 → 按 concurrency 并行（LLM 调用进线程池；合并计数在主线程，
@@ -212,13 +389,13 @@ def mine_candidates_llm(chapters: list[tuple[int, str]], agent: Any, *,
 
     def _mine_one(ci: int, text: str) -> list[str]:
         system = prompts.render("term_miner_system", src=agent.src, tgt=agent.tgt)
-        user = prompts.render("term_miner_user", src=agent.src, tgt=agent.tgt,
-                              chapter=ci, source=text[:8000])
+        user = prompts.render(
+            "term_miner_user", src=agent.src, tgt=agent.tgt, chapter=ci, source=text[:8000]
+        )
         # 不设 default：某章挖掘失败若被兜成空列表，会让 term_mining_done 静默永久
         # 落盘——异常整体冒泡，交由调用方（orchestrator）捕获并放弃本次落标记、下次续跑重试。
         raw = agent._ask_json(system, user, tier="fast", key="candidates")
-        return [s.strip() for s in raw or []
-                if isinstance(s, str) and s.strip()]
+        return [s.strip() for s in raw or [] if isinstance(s, str) and s.strip()]
 
     results: dict[int, list[str]] = {}
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
@@ -242,18 +419,22 @@ def mine_candidates_llm(chapters: list[tuple[int, str]], agent: Any, *,
     return out
 
 
-def mine_candidates(src_lang: str, chapters: list[tuple[int, str]],
-                    agent: Any, *, concurrency: int = 1,
-                    on_progress: Callable[[int, int], None] | None = None,
-                    ) -> list[Candidate]:
+def mine_candidates(
+    src_lang: str,
+    chapters: list[tuple[int, str]],
+    agent: Any,
+    *,
+    concurrency: int = 1,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[Candidate]:
     """入口：en 走"确定性大写通道 ∪ fast 档 LLM 通道"双通道合并；其它语言只走 LLM 通道。"""
     if not (src_lang or "").strip().lower().startswith("en"):
-        return mine_candidates_llm(chapters, agent, concurrency=concurrency,
-                                   on_progress=on_progress)
+        return mine_candidates_llm(
+            chapters, agent, concurrency=concurrency, on_progress=on_progress
+        )
 
     det = mine_candidates_en(chapters)
-    llm = mine_candidates_llm(chapters, agent, concurrency=concurrency,
-                              on_progress=on_progress)
+    llm = mine_candidates_llm(chapters, agent, concurrency=concurrency, on_progress=on_progress)
     return _merge_candidates(det, llm)
 
 
@@ -268,8 +449,12 @@ def _merge_candidates(*channels: list[Candidate]) -> list[Candidate]:
             key = c.surface.lower()
             existing = merged.get(key)
             if existing is None:
-                merged[key] = Candidate(surface=c.surface, count=c.count,
-                                        chapters=list(c.chapters), contexts=list(c.contexts))
+                merged[key] = Candidate(
+                    surface=c.surface,
+                    count=c.count,
+                    chapters=list(c.chapters),
+                    contexts=list(c.contexts),
+                )
                 continue
             existing.count = max(existing.count, c.count)
             existing.chapters = sorted(set(existing.chapters) | set(c.chapters))

@@ -6,13 +6,13 @@ import os
 import tempfile
 import unittest
 
+from trans_novel.glossary.resolver import resolve
 from trans_novel.glossary.store import (
-    GlossaryStore,
-    GlossaryTerm,
     TYPE_APPELLATION,
     TYPE_PERSON,
+    GlossaryStore,
+    GlossaryTerm,
 )
-from trans_novel.glossary.resolver import resolve
 
 
 class TestGlossary(unittest.TestCase):
@@ -26,8 +26,14 @@ class TestGlossary(unittest.TestCase):
 
     def test_insert_and_lookup(self):
         r = self.store.upsert_term(
-            GlossaryTerm(source="綾小路", target="绫小路", type=TYPE_PERSON,
-                         gender="男", aliases=["綾小路くん"], reading="あやのこうじ"),
+            GlossaryTerm(
+                source="綾小路",
+                target="绫小路",
+                type=TYPE_PERSON,
+                gender="男",
+                aliases=["綾小路くん"],
+                reading="あやのこうじ",
+            ),
             chapter=0,
         )
         self.assertEqual(r, "inserted")
@@ -74,9 +80,7 @@ class TestGlossary(unittest.TestCase):
         self.assertEqual(len(self.store.open_conflicts()), 1)
 
     def test_conflict_overrides_low_confidence(self):
-        self.store.upsert_term(
-            GlossaryTerm(source="X", target="旧译", confidence="low"), chapter=0
-        )
+        self.store.upsert_term(GlossaryTerm(source="X", target="旧译", confidence="low"), chapter=0)
         r = self.store.upsert_term(
             GlossaryTerm(source="X", target="新译", confidence="high"), chapter=1
         )
@@ -96,6 +100,7 @@ class TestGlossary(unittest.TestCase):
         s = self.store.stats()
         self.assertEqual(s["terms"], 1)
         self.assertEqual(s["tm_entries"], 1)
+
 
 class TestResolve(unittest.TestCase):
     def setUp(self):
@@ -124,7 +129,9 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(t.target, "利亚")
 
     def test_resolve_clears_conflict_flags(self):
-        self.store.upsert_term(GlossaryTerm(source="Liya", target="莉雅", locked=True, confidence="high"))
+        self.store.upsert_term(
+            GlossaryTerm(source="Liya", target="莉雅", locked=True, confidence="high")
+        )
         self.store.upsert_term(GlossaryTerm(source="Liya", target="丽雅"))  # 触发冲突记录
         self.assertEqual(len(self.store.open_conflicts()), 1)
         resolve(self.store, "Liya", "利亚")

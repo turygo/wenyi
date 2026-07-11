@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..glossary.store import GlossaryStore
-from ..pipeline.runstore import RunStore, STATUS_DONE
+from ..pipeline.runstore import STATUS_DONE, RunStore
 
 
 def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
@@ -31,17 +31,24 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
         if bm_mode:
             # 旁路章（skip=原文直通 / light=fast 粗翻）列给人工复核：
             # 若有正文章被误伤，调高 pipeline.back_matter 重跑即可自动重译。
-            back_matter.append({"chapter": c["index"],
-                                "title": c.get("title", ""), "mode": bm_mode})
+            back_matter.append(
+                {"chapter": c["index"], "title": c.get("title", ""), "mode": bm_mode}
+            )
         for s in ch.text_segments:
             if not (s.target and s.target.strip()):
-                empty_targets.append({"chapter": c["index"], "index": s.index,
-                                      "source": s.source[:60]})
+                empty_targets.append(
+                    {"chapter": c["index"], "index": s.index, "source": s.source[:60]}
+                )
 
     conflicts = glossary.open_conflicts()
     low_conf = [
-        {"source": t.source, "target": t.target, "type": t.type,
-         "confidence": t.confidence, "status": t.status}
+        {
+            "source": t.source,
+            "target": t.target,
+            "type": t.type,
+            "confidence": t.confidence,
+            "status": t.status,
+        }
         for t in glossary.low_confidence_terms()
     ]
     gstats = glossary.stats()

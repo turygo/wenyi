@@ -133,9 +133,7 @@ def _print_back_matter(report: dict) -> None:
         "为节省成本只做了简化处理：[/]"
     )
     for b in bm:
-        console.print(
-            f"  第{b['chapter']}章 {b['title']} —— {mode_desc.get(b['mode'], b['mode'])}"
-        )
+        console.print(f"  第{b['chapter']}章 {b['title']} —— {mode_desc.get(b['mode'], b['mode'])}")
     console.print(
         "如果这里混进了需要完整翻译的正文章节，请打开 config.yaml，"
         "把 pipeline.back_matter 一行改成 full，再重新运行一次，程序会自动重译这些章节。"
@@ -165,11 +163,11 @@ def _print_usage(report: dict) -> None:
 @app.command()
 def translate(
     input: str = typer.Argument(..., help="输入文件（.epub / .txt / .md）"),
-    chapter: Optional[int] = typer.Option(
-        None, "--chapter", help="只翻指定章（调试用，不做收尾）"
-    ),
+    chapter: Optional[int] = typer.Option(None, "--chapter", help="只翻指定章（调试用，不做收尾）"),
     fmt: str = typer.Option("epub", "--format", help="输出格式：epub | txt"),
-    out: Optional[str] = typer.Option(None, "--out", help="输出路径（默认 <源文件名>.zh.<ext>，落在源文件目录）"),
+    out: Optional[str] = typer.Option(
+        None, "--out", help="输出路径（默认 <源文件名>.zh.<ext>，落在源文件目录）"
+    ),
     polish: Optional[bool] = typer.Option(
         None,
         "--polish/--no-polish",
@@ -225,9 +223,7 @@ def status(input: str = typer.Argument(..., help="输入文件")):
         console.print("[yellow]尚无进度。先运行 translate。[/]")
         raise typer.Exit(1)
     m = store.load_manifest()
-    console.print(
-        f"《{m['title']}》（{m['fmt']}）  {m['source_lang']}→{m['target_lang']}"
-    )
+    console.print(f"《{m['title']}》（{m['fmt']}）  {m['source_lang']}→{m['target_lang']}")
     table = Table("", "#", "章节", "状态")
     for c in m["chapters"]:
         mark = "✓" if c["status"] == STATUS_DONE else "·"
@@ -241,9 +237,7 @@ def status(input: str = typer.Argument(..., help="输入文件")):
 @tools_app.command()
 def glossary(
     input: str = typer.Argument(..., help="输入文件"),
-    action: str = typer.Argument(
-        "list", help="list | conflicts | audit | lock | resolve"
-    ),
+    action: str = typer.Argument("list", help="list | conflicts | audit | lock | resolve"),
     arg1: Optional[str] = typer.Argument(None),
     arg2: Optional[str] = typer.Argument(None),
 ):
@@ -340,9 +334,7 @@ def assemble(
         do_mono = True  # 兜底：至少产一个单语产物
     paths: list[str] = []
     if do_mono:
-        paths.append(
-            do_assemble(store, input, out_path=out, out_format=fmt, bilingual=False)
-        )
+        paths.append(do_assemble(store, input, out_path=out, out_format=fmt, bilingual=False))
     if do_bilingual:
         bi_out = bilingual_out_path(out) if out else None
         paths.append(
@@ -376,9 +368,7 @@ def qa(input: str = typer.Argument(..., help="输入文件")):
     g.close()
     console.print(f"一致性问题 {len(issues)} 项：")
     for it in issues:
-        console.print(
-            f"  [{it.get('type')}] {it.get('detail')}  ({it.get('where', '')})"
-        )
+        console.print(f"  [{it.get('type')}] {it.get('detail')}  ({it.get('where', '')})")
 
 
 @tools_app.command()
@@ -410,11 +400,12 @@ def report(input: str = typer.Argument(..., help="输入文件")):
 def naturalize(
     input: str = typer.Argument(..., help="输入文件"),
     chapters: Optional[str] = typer.Option(
-        None, "--chapters", help="逗号分隔章 index，缺省=全部正文章"),
+        None, "--chapters", help="逗号分隔章 index，缺省=全部正文章"
+    ),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="只跑审读+改写+三道关卡，打印结果但不落盘、不写事件"),
-    limit: Optional[int] = typer.Option(
-        None, "--limit", help="最多采纳写回 N 段（缺省无限）"),
+        False, "--dry-run", help="只跑审读+改写+三道关卡，打印结果但不落盘、不写事件"
+    ),
+    limit: Optional[int] = typer.Option(None, "--limit", help="最多采纳写回 N 段（缺省无限）"),
 ):
     """去翻译腔：单语审读 → 单语改写 → 三道关卡（lint/忠实度/成对）→ 写回。
 
@@ -435,12 +426,13 @@ def naturalize(
             chapter_indices = [int(x) for x in chapters.split(",") if x.strip()]
         except ValueError as e:
             raise typer.BadParameter(
-                f"--chapters 含非法片段：{chapters!r}（须为逗号分隔整数）") from e
+                f"--chapters 含非法片段：{chapters!r}（须为逗号分隔整数）"
+            ) from e
     g = GlossaryStore(store.glossary_path)
     agent = Naturalizer(build_client(config), config)
     stats = run_naturalize(
-        agent, store, g, config,
-        chapters=chapter_indices, dry_run=dry_run, limit=limit)
+        agent, store, g, config, chapters=chapter_indices, dry_run=dry_run, limit=limit
+    )
     g.close()
     console.print(
         f"审读 {stats['screened']} 段  嫌疑 {stats['suspects']}  改写 {stats['rewritten']}  "
@@ -453,7 +445,6 @@ def naturalize(
             console.print(f"[dim]第{e['chapter']}章 #{e['index']}[/]")
             console.print(f"  before: {e['before']}")
             console.print(f"  after:  {e['after']}")
-
 
 
 app.add_typer(tools_app, name="tools")

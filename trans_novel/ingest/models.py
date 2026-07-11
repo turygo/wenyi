@@ -22,12 +22,12 @@ KIND_HEADING = "heading"
 class Segment(BaseModel):
     """一个可翻译单元。"""
 
-    index: int                              # 章内序号（从 0 起）
-    source: str                             # 原文
-    kind: str = KIND_TEXT                   # text | heading
-    target: Optional[str] = None            # 译文（翻译/润色后填入）
-    anchor: Optional[str] = None            # 回填定位标记（EPUB 用占位符 id）
-    cont: bool = False                      # 超长段被拆分后的续段：回填时并回上一段，不另起段落
+    index: int  # 章内序号（从 0 起）
+    source: str  # 原文
+    kind: str = KIND_TEXT  # text | heading
+    target: Optional[str] = None  # 译文（翻译/润色后填入）
+    anchor: Optional[str] = None  # 回填定位标记（EPUB 用占位符 id）
+    cont: bool = False  # 超长段被拆分后的续段：回填时并回上一段，不另起段落
     meta: dict[str, Any] = Field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -41,11 +41,11 @@ class Segment(BaseModel):
 class Chapter(BaseModel):
     """一章：有序的 Segment 列表 + 回填所需的结构信息。"""
 
-    index: int                              # 全书章序号（从 0 起）
+    index: int  # 全书章序号（从 0 起）
     title: str = ""
     segments: list[Segment] = Field(default_factory=list)
-    href: Optional[str] = None              # EPUB spine item 内部路径
-    template: Optional[str] = None          # EPUB: 带占位符的 HTML，用于回填
+    href: Optional[str] = None  # EPUB spine item 内部路径
+    template: Optional[str] = None  # EPUB: 带占位符的 HTML，用于回填
     meta: dict[str, Any] = Field(default_factory=dict)
 
     @property
@@ -67,7 +67,7 @@ class Document(BaseModel):
     title: str = ""
     source_lang: str
     target_lang: str
-    fmt: str                                # epub | text
+    fmt: str  # epub | text
     source_path: str = ""
     chapters: list[Chapter] = Field(default_factory=list)
     meta: dict[str, Any] = Field(default_factory=dict)

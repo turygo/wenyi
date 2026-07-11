@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import re
 
-from .models import Chapter, Document, Segment, KIND_HEADING, KIND_TEXT
+from .models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
 
 # Markdown 标题
 _MD_HEADING = re.compile(r"^(#{1,3})\s+(.*\S)\s*$")

@@ -54,8 +54,7 @@ _FRONT_ZONE = 0.15
 _BACK_ZONE = 0.65
 
 
-def is_back_matter(title: str, *, index: int | None = None,
-                   total: int | None = None) -> bool:
+def is_back_matter(title: str, *, index: int | None = None, total: int | None = None) -> bool:
     """标题是否像附属章节（注释/索引/致谢等）。空串返回 False。
 
     给出 index/total（全书章序、总章数）时启用位置门控：仅当该章位于

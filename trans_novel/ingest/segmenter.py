@@ -47,7 +47,7 @@ def _split_text(text: str, max_chars: int) -> list[str]:
     for p in _SENT_SPLIT.split(text):
         if not p:
             continue
-        if len(p) > max_chars:                      # 单句本身超长 → 兜底拆
+        if len(p) > max_chars:  # 单句本身超长 → 兜底拆
             if cur:
                 chunks.append(cur)
                 cur = ""
@@ -77,17 +77,20 @@ def split_long_segments(chapters: list[Chapter], max_chars: int) -> None:
                 continue
             for k, piece in enumerate(_split_text(s.source, max_chars)):
                 if k == 0:
-                    new_segs.append(Segment(index=idx, source=piece, kind=s.kind,
-                                            anchor=s.anchor, cont=False))
+                    new_segs.append(
+                        Segment(index=idx, source=piece, kind=s.kind, anchor=s.anchor, cont=False)
+                    )
                 else:  # 续段：并回首段，无独立 anchor
-                    new_segs.append(Segment(index=idx, source=piece, kind=KIND_TEXT,
-                                            anchor=None, cont=True))
+                    new_segs.append(
+                        Segment(index=idx, source=piece, kind=KIND_TEXT, anchor=None, cont=True)
+                    )
                 idx += 1
         ch.segments = new_segs
 
 
-def load_document(path: str, source_lang: str, target_lang: str,
-                  split_segments: int = 0) -> Document:
+def load_document(
+    path: str, source_lang: str, target_lang: str, split_segments: int = 0
+) -> Document:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".epub":
         doc = read_epub(path, source_lang, target_lang)

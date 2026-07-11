@@ -15,9 +15,9 @@ from __future__ import annotations
 import re
 
 _CJK = (
-    "一-鿿"      # CJK 统一汉字
-    "぀-ヿ"      # 假名（保险）
-    "＀-￯"      # 全角符号
+    "一-鿿"  # CJK 统一汉字
+    "぀-ヿ"  # 假名（保险）
+    "＀-￯"  # 全角符号
     "“”‘’（）《》【】、，。！？：；…—"
 )
 _CJK_RE = f"[{_CJK}]"
@@ -44,6 +44,7 @@ def _convert_quotes(text: str) -> str:
     # 直单引号：仅当成对出现于引用语境时转弯引号；撇号（被字母包夹）保留为 ’
     def _single(m: re.Match) -> str:
         return "’"  # 英文撇号统一为右单引号字形
+
     text = re.sub(r"(?<=[A-Za-z])'(?=[A-Za-z])", _single, text)
     # 其余成对单引号交替配对
     out, open_sq = [], True
@@ -60,22 +61,21 @@ def _convert_ellipsis_dash(text: str) -> str:
     text = re.sub(r"。{3,}", "……", text)
     text = re.sub(r"・{2,}", "……", text)
     text = re.sub(r"\.{3,}", "……", text)
-    text = re.sub(r"…+", "……", text)          # 单个/多个 … → ……
+    text = re.sub(r"…+", "……", text)  # 单个/多个 … → ……
     text = re.sub(r"-{2,}", "——", text)
-    text = re.sub(r"—{1,}", "——", text)        # — / —— 归一为 ——
+    text = re.sub(r"—{1,}", "——", text)  # — / —— 归一为 ——
     text = re.sub(r"——(——)+", "——", text)
     return text
 
 
 def _convert_halfwidth(text: str) -> str:
     """半角 ,.!?:; 紧邻 CJK 时转全角。"""
+
     def repl(m: re.Match) -> str:
         return _HALF_TO_FULL[m.group(0)]
 
     # 标点左侧或右侧是 CJK 即转（避免误伤英文/数字内部）
-    pattern = re.compile(
-        rf"(?<={_CJK_RE})[,.!?:;]|[,.!?:;](?={_CJK_RE})"
-    )
+    pattern = re.compile(rf"(?<={_CJK_RE})[,.!?:;]|[,.!?:;](?={_CJK_RE})")
     return pattern.sub(repl, text)
 
 
@@ -144,5 +144,5 @@ def normalize_heading_numbering(text: str) -> str:
     if not (1 <= n <= 9999):
         return text
     quant = m.group(2)
-    rest = lstripped[m.end():]
+    rest = lstripped[m.end() :]
     return f"{prefix}第{_int_to_cn(n)}{quant}{rest}"
