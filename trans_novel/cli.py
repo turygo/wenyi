@@ -406,6 +406,56 @@ def report(input: str = typer.Argument(..., help="输入文件")):
     _print_back_matter(rep)
 
 
+@tools_app.command()
+def naturalize(
+    input: str = typer.Argument(..., help="输入文件"),
+    chapters: Optional[str] = typer.Option(
+        None, "--chapters", help="逗号分隔章 index，缺省=全部正文章"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="只跑审读+改写+三道关卡，打印结果但不落盘、不写事件"),
+    limit: Optional[int] = typer.Option(
+        None, "--limit", help="最多采纳写回 N 段（缺省无限）"),
+):
+    """去翻译腔：单语审读 → 单语改写 → 三道关卡（lint/忠实度/成对）→ 写回。
+
+    主流水线已内置同名环节（pipeline.naturalize）；本命令用于对存量已译书手动补跑。
+    """
+    from .agents.naturalizer import Naturalizer, run_naturalize
+    from .glossary.store import GlossaryStore
+    from .llm.base import build_client
+
+    config = _load_config()
+    store = _runstore_for(config, input)
+    if not store.exists():
+        console.print("[yellow]尚无进度。先运行 translate。[/]")
+        raise typer.Exit(1)
+    chapter_indices: Optional[list[int]] = None
+    if chapters:
+        try:
+            chapter_indices = [int(x) for x in chapters.split(",") if x.strip()]
+        except ValueError as e:
+            raise typer.BadParameter(
+                f"--chapters 含非法片段：{chapters!r}（须为逗号分隔整数）") from e
+    g = GlossaryStore(store.glossary_path)
+    agent = Naturalizer(build_client(config), config)
+    stats = run_naturalize(
+        agent, store, g, config,
+        chapters=chapter_indices, dry_run=dry_run, limit=limit)
+    g.close()
+    console.print(
+        f"审读 {stats['screened']} 段  嫌疑 {stats['suspects']}  改写 {stats['rewritten']}  "
+        f"lint拒 {stats['lint_rejected']}  忠实拒 {stats['fidelity_rejected']}  "
+        f"成对拒 {stats['pairwise_rejected']}  采纳 {stats['applied']}"
+        + ("（dry-run，未落盘）" if dry_run else "")
+    )
+    if dry_run:
+        for e in stats["applied_entries"]:
+            console.print(f"[dim]第{e['chapter']}章 #{e['index']}[/]")
+            console.print(f"  before: {e['before']}")
+            console.print(f"  after:  {e['after']}")
+
+
+
 app.add_typer(tools_app, name="tools")
 
 

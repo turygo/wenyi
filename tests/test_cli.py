@@ -151,6 +151,33 @@ class TestCliConfig(unittest.TestCase):
         self.assertEqual(result.exit_code, 1, result.output)
         self.assertIn("输入文件不存在", result.output)
 
+    def test_tools_naturalize_rejects_non_integer_chapters(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "novel.txt")
+            state_dir = os.path.join(d, "state")
+            with open(src, "w", encoding="utf-8") as f:
+                f.write("第一段。\n\n第二段。\n")
+            cfg = Config.from_dict(
+                {
+                    "language": {"source": "ja", "target": "zh"},
+                    "paths": {"state_dir": state_dir},
+                }
+            )
+            run_dir = os.path.join(state_dir, "novel")
+            os.makedirs(run_dir, exist_ok=True)
+            with open(os.path.join(run_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"title": "novel", "chapters": []}')
+
+            with patch("trans_novel.cli._load_config", return_value=cfg):
+                result = CliRunner().invoke(
+                    app, ["tools", "naturalize", src, "--chapters", "1,x,3"])
+
+            self.assertNotEqual(result.exit_code, 0, result.output)
+            self.assertFalse(
+                isinstance(result.exception, ValueError),
+                "非法 --chapters 不应以未捕获的 ValueError 泄漏")
+            self.assertIn("--chapters", result.output)
+
     def test_status_does_not_create_state_directory(self):
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "novel.txt")
