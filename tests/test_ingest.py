@@ -56,6 +56,17 @@ _FB2_FLAT = """\
 </FictionBook>
 """
 
+_FB2_BODY_TITLE = """\
+<?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+<description><title-info><book-title>正文标题之书</book-title></title-info></description>
+<body>
+  <title><p>作者姓名</p><p>正文标题之书</p></title>
+  <section><title><p>第一章</p></title><p>第一段。</p></section>
+</body>
+</FictionBook>
+"""
+
 # 嵌套：部 → 章（section 套 section）。容器节正文不得丢失。
 _FB2_NESTED = """\
 <?xml version="1.0" encoding="utf-8"?>
@@ -114,6 +125,28 @@ class TestFb2Ingest(unittest.TestCase):
         # 注释正文不应出现在任何章中
         all_src = [s.source for ch in doc.chapters for s in ch.segments]
         self.assertNotIn("这是注释，应被跳过。", all_src)
+
+    def test_body_title_becomes_a_separate_chapter(self):
+        doc = self._load(_FB2_BODY_TITLE)
+        self.assertEqual(len(doc.chapters), 2)
+        title_page, first_chapter = doc.chapters
+        self.assertEqual(title_page.title, "正文标题之书")
+        self.assertEqual(
+            [s.source for s in title_page.segments],
+            ["作者姓名", "正文标题之书"],
+        )
+        self.assertTrue(all(s.kind == KIND_HEADING for s in title_page.segments))
+        self.assertEqual([s.index for s in title_page.segments], [0, 1])
+        self.assertEqual(
+            [s.anchor for s in title_page.segments],
+            ["tn0_0", "tn0_1"],
+        )
+        self.assertEqual(first_chapter.index, 1)
+        self.assertEqual(first_chapter.title, "第一章")
+        self.assertEqual(
+            [s.anchor for s in first_chapter.segments],
+            ["tn1_0", "tn1_1"],
+        )
 
     def test_block_types_not_lost(self):
         doc = self._load(_FB2_BLOCKS)
@@ -218,9 +251,14 @@ class TestEpubIngest(unittest.TestCase):
         self.assertEqual(ch1.title, "第一章　出会い")
         self.assertEqual(len(ch1.text_segments), 3)  # h1 + 2 p
         # 每个 segment 都有回填锚点，且模板里含该锚点
+        template = ch1.template
+        self.assertIsNotNone(template)
+        assert template is not None
         for s in ch1.text_segments:
-            self.assertIsNotNone(s.anchor)
-            self.assertIn(s.anchor, ch1.template)
+            anchor = s.anchor
+            self.assertIsNotNone(anchor)
+            assert anchor is not None
+            self.assertIn(anchor, template)
         self.assertIsNotNone(ch1.href)
 
     def test_epub_ignores_internal_file_title_when_no_heading(self):

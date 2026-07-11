@@ -122,6 +122,32 @@ def _make_chapter(ci: int, title_text: str, segments: list[Segment]) -> Chapter:
     return Chapter(index=ci, title=title_text, segments=segments)
 
 
+def _body_title_chapter(body: ET.Element) -> Chapter | None:
+    """把正文 ``<body><title>`` 解析为独立的标题页章节。"""
+    title_el = next((child for child in body if _local(child) == "title"), None)
+    if title_el is None:
+        return None
+
+    lines = [
+        _strip_markup(child).strip()
+        for child in title_el
+        if _local(child) == "p" and _strip_markup(child).strip()
+    ]
+    if not lines:
+        return None
+
+    segments = [
+        Segment(
+            index=idx,
+            source=line,
+            kind=KIND_HEADING,
+            anchor=f"tn0_{idx}",
+        )
+        for idx, line in enumerate(lines)
+    ]
+    return Chapter(index=0, title=lines[-1], segments=segments)
+
+
 def read_fb2(path: str, source_lang: str, target_lang: str) -> Document:
     """读取 .fb2 文件并返回 Document。"""
     with open(path, "rb") as f:
@@ -155,6 +181,9 @@ def read_fb2(path: str, source_lang: str, target_lang: str) -> Document:
         body_name = body.attrib.get("name", "")
         if body_name:  # notes, comments 等附属 body
             continue
+        title_chapter = _body_title_chapter(body)
+        if title_chapter is not None:
+            chapters.append(title_chapter)
         for section in body.findall(f"{{{_NS['fb']}}}section"):
             _walk_sections(section, chapters)
         break  # 只处理第一个 body
