@@ -123,14 +123,22 @@ def _translate_impl(
 
 
 def _print_back_matter(report: dict) -> None:
-    """列出被旁路的附属章供人工复核——误伤正文章会静默降质，必须可见。"""
+    """列出被简化处理的附属章供人工复核——误伤正文章会静默降质，必须可见。"""
     bm = report.get("back_matter_chapters") or []
     if not bm:
         return
-    items = "；".join(f"第{b['chapter']}章 {b['title']}（{b['mode']}档）" for b in bm)
+    mode_desc = {"skip": "保留原文，未翻译", "light": "快速粗翻，未精校润色"}
     console.print(
-        f"[yellow]附属章旁路[/]：{items}。"
-        f"若有正文章被误伤，把 pipeline.back_matter 调为 full 后重跑即自动重译。"
+        "[yellow]以下章节被识别为附属内容（致谢、作者简介、注释、索引、版权页等），"
+        "为节省成本只做了简化处理：[/]"
+    )
+    for b in bm:
+        console.print(
+            f"  第{b['chapter']}章 {b['title']} —— {mode_desc.get(b['mode'], b['mode'])}"
+        )
+    console.print(
+        "如果这里混进了需要完整翻译的正文章节，请打开 config.yaml，"
+        "把 pipeline.back_matter 一行改成 full，再重新运行一次，程序会自动重译这些章节。"
     )
 
 
