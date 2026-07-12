@@ -213,6 +213,7 @@ class Orchestrator:
             data = self.client.complete_json(
                 [{"role": "system", "content": system}, {"role": "user", "content": sample}],
                 tier="cheap",
+                stage="language_detect",
             )
             code = (data.get("language") if isinstance(data, dict) else "") or ""
             return _normalize_lang(str(code))
@@ -298,6 +299,8 @@ class Orchestrator:
                     total=total,
                 )
                 store.save_context(context.to_dict())
+                # 每章落一次累计用量快照（含 by_stage），中途即可做成本归因，不必等 report
+                store.log_event("usage_snapshot", chapter=ci, **self.client.usage_summary())
                 # 机会性排干：只处理已完成的审校 future，不阻塞下一章翻译
                 self._drain_ready_reviews(pending_reviews, store, blocking=False)
             # 全书译完后翻译各章标题和目录项（书名保持原文，借术语表保持专名一致）
@@ -598,6 +601,7 @@ class Orchestrator:
             data = self.client.complete_json(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 tier="strong",
+                stage="title_translate",
             )
         except Exception:
             return

@@ -42,6 +42,7 @@ class Agent:
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 tier=tier,
                 max_tokens=max_tokens,
+                stage=type(self).__name__,
             )
         except Exception:
             if default is _RAISE:
@@ -64,6 +65,7 @@ class Agent:
                     [{"role": "system", "content": system}, {"role": "user", "content": user}],
                     tier=tier,
                     max_tokens=max_tokens,
+                    stage=type(self).__name__,
                 )
                 or ""
             ).strip()

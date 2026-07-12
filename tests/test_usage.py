@@ -106,7 +106,7 @@ class TestDeepSeekUsageByTier(unittest.TestCase):
         c._client = _ClientStub(responses)
 
         msgs = [{"role": "user", "content": "hi"}]
-        self.assertEqual(c.complete(msgs, tier="strong"), "strong-out")
+        self.assertEqual(c.complete(msgs, tier="strong", stage="Translator"), "strong-out")
         self.assertEqual(c.complete(msgs, tier="cheap"), "cheap-out")
 
         summary = c.usage_summary()
@@ -126,6 +126,13 @@ class TestDeepSeekUsageByTier(unittest.TestCase):
         self.assertEqual(by_tier["cheap"]["calls"], 1)
         self.assertEqual(by_tier["strong"]["prompt_tokens"], 1000)
         self.assertEqual(by_tier["cheap"]["prompt_tokens"], 500)
+
+        # stage 归因：显式标注的调用进 by_stage；未标注的只计入 tier
+        by_stage = summary["by_stage"]
+        self.assertEqual(list(by_stage), ["Translator"])
+        self.assertEqual(by_stage["Translator"]["calls"], 1)
+        self.assertEqual(by_stage["Translator"]["prompt_tokens"], 1000)
+        self.assertEqual(by_stage["Translator"]["cache_hit_rate"], 0.8)
 
 
 class TestMissingUsage(unittest.TestCase):
@@ -195,6 +202,7 @@ class TestEmptyCacheHitRate(unittest.TestCase):
         self.assertEqual(totals["cache_hit_tokens"], 0)
         self.assertEqual(totals["cache_miss_tokens"], 0)
         self.assertEqual(c.usage_summary()["by_tier"], {})
+        self.assertEqual(c.usage_summary()["by_stage"], {})
 
 
 class TestUsageThreadSafety(unittest.TestCase):

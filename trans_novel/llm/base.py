@@ -103,17 +103,20 @@ def _hit_rate(hit: int, miss: int) -> float:
 
 
 class UsageTracker:
-    """线程安全的 token 用量累加器，按 tier 分档统计（worker 线程并发共享一个 client）。
+    """线程安全的 token 用量累加器，按 tier 分档、按 stage 分阶段统计
+    （worker 线程并发共享一个 client）。
 
     DeepSeek 的 usage 里 prompt_cache_hit_tokens + prompt_cache_miss_tokens == prompt_tokens；
     缓存命中率 = cache_hit /(cache_hit + cache_miss)。fake provider 不产生 usage，保持空。
+    stage 由调用方标注（agent 基类默认传类名，如 Translator/Reviewer），用于成本归因。
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_tier: dict[str, dict[str, int]] = {}
+        self._by_stage: dict[str, dict[str, int]] = {}
 
-    def record(self, tier: str, usage: Any) -> None:
+    def record(self, tier: str, usage: Any, stage: str | None = None) -> None:
         """累加一次响应的 usage；usage 缺失时静默跳过（不影响正常返回）。"""
         if usage is None:
             return
@@ -123,25 +126,29 @@ class UsageTracker:
         hit = _usage_int(usage, "prompt_cache_hit_tokens")
         miss = _usage_int(usage, "prompt_cache_miss_tokens")
         with self._lock:
-            slot = self._by_tier.setdefault(tier, dict.fromkeys(_USAGE_FIELDS, 0))
-            slot["calls"] += 1
-            slot["prompt_tokens"] += pt
-            slot["completion_tokens"] += ct
-            slot["total_tokens"] += tt
-            slot["cache_hit_tokens"] += hit
-            slot["cache_miss_tokens"] += miss
+            slots = [self._by_tier.setdefault(tier, dict.fromkeys(_USAGE_FIELDS, 0))]
+            if stage:
+                slots.append(self._by_stage.setdefault(stage, dict.fromkeys(_USAGE_FIELDS, 0)))
+            for slot in slots:
+                slot["calls"] += 1
+                slot["prompt_tokens"] += pt
+                slot["completion_tokens"] += ct
+                slot["total_tokens"] += tt
+                slot["cache_hit_tokens"] += hit
+                slot["cache_miss_tokens"] += miss
 
     def summary(self) -> dict[str, Any]:
-        """返回 {"totals": {...}, "by_tier": {tier: {...}}}，各档含 cache_hit_rate。"""
+        """返回 {"totals", "by_tier", "by_stage"}，各槽位含 cache_hit_rate。"""
         with self._lock:
             by_tier = {t: dict(v) for t, v in self._by_tier.items()}
+            by_stage = {s: dict(v) for s, v in self._by_stage.items()}
         totals = dict.fromkeys(_USAGE_FIELDS, 0)
         for v in by_tier.values():
             for f in _USAGE_FIELDS:
                 totals[f] += v[f]
-        for slot in (*by_tier.values(), totals):
+        for slot in (*by_tier.values(), *by_stage.values(), totals):
             slot["cache_hit_rate"] = _hit_rate(slot["cache_hit_tokens"], slot["cache_miss_tokens"])
-        return {"totals": totals, "by_tier": by_tier}
+        return {"totals": totals, "by_tier": by_tier, "by_stage": by_stage}
 
 
 # ── 抽象接口 ──────────────────────────────────────────────────────────────
@@ -163,8 +170,9 @@ class LLMClient(ABC):
         tier: str = "strong",
         json_mode: bool = False,
         max_tokens: Optional[int] = None,
+        stage: Optional[str] = None,
     ) -> str:
-        """返回模型回复的纯文本。"""
+        """返回模型回复的纯文本。stage 仅用于用量归因，不影响请求。"""
         raise NotImplementedError
 
     def complete_json(
@@ -173,9 +181,12 @@ class LLMClient(ABC):
         *,
         tier: str = "strong",
         max_tokens: Optional[int] = None,
+        stage: Optional[str] = None,
     ) -> Any:
         """要求 JSON 输出并解析。"""
-        text = self.complete(messages, tier=tier, json_mode=True, max_tokens=max_tokens)
+        text = self.complete(
+            messages, tier=tier, json_mode=True, max_tokens=max_tokens, stage=stage
+        )
         return parse_json_loose(text)
 
 
@@ -218,6 +229,7 @@ class DeepSeekClient(LLMClient):
         tier: str = "strong",
         json_mode: bool = False,
         max_tokens: Optional[int] = None,
+        stage: Optional[str] = None,
     ) -> str:
         tcfg = resolve_tier(self.cfg.tiers, tier)
         client = self._ensure_client()
@@ -246,7 +258,7 @@ class DeepSeekClient(LLMClient):
         )
         def _call() -> str:
             resp = client.chat.completions.create(**kwargs)
-            self.usage.record(tier, getattr(resp, "usage", None))
+            self.usage.record(tier, getattr(resp, "usage", None), stage)
             return resp.choices[0].message.content or ""
 
         return _call()
@@ -272,9 +284,16 @@ class FakeClient(LLMClient):
         tier: str = "strong",
         json_mode: bool = False,
         max_tokens: Optional[int] = None,
+        stage: Optional[str] = None,
     ) -> str:
         self.calls.append(
-            {"messages": messages, "tier": tier, "json_mode": json_mode, "max_tokens": max_tokens}
+            {
+                "messages": messages,
+                "tier": tier,
+                "json_mode": json_mode,
+                "max_tokens": max_tokens,
+                "stage": stage,
+            }
         )
         if self.handler is not None:
             return self.handler(messages, tier, json_mode)
