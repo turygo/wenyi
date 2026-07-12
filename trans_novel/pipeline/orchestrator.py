@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Optional
 
@@ -100,6 +101,40 @@ def _normalize_lang(code: str) -> str:
     if c in _LANG_ALIASES:
         return _LANG_ALIASES[c]
     return c[:2] if c[:2].isalpha() else ""
+
+
+# ── 锁定人物的部分称呼匹配（章级术语快照用）────────────────────────────────
+# 任意文字系统的「词」（字母序列，不含数字/下划线）；CJK 无空格文本会成为整段长 run，
+# 由 _person_mentioned 的汉字分支单独处理。
+_WORD_RE = re.compile(r"[^\W\d_]+")
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _person_mentioned(term, text: str, words: set[str]) -> bool:
+    """锁定人物是否以「部分形式」出现在本章源文里（全名/别名的整体匹配由 terms_in 负责）。
+
+    - 多词姓名（"Greg McKeown"、"田中 太郎"）：任一 ≥2 字符的组成词命中即算——
+      含汉字的词按子串匹配，其余文字按整词（words 集合）匹配且要求首字母大写
+      （跳过 "the"/"van"/"de" 等小写虚词，否则 "Catherine the Great" 会命中一切英文章节）；
+      覆盖后文只呼姓/名的段落。
+    - 无空格纯汉字姓名（"田中太郎"）：取 2/3 字前缀做子串匹配（日文姓氏典型长度），
+      覆盖只呼姓的段落；前缀等于全名时跳过（terms_in 已管）。
+    误报代价 = 多注入一条词条（无害）；漏报代价 = 该章译名靠模型自拟，故宁松勿紧。
+    """
+    for name in (term.source, *(term.aliases or [])):
+        parts = [p for p in _WORD_RE.findall(name) if len(p) >= 2]
+        if len(parts) >= 2:
+            for part in parts:
+                if _HAN_RE.search(part):
+                    if part in text:
+                        return True
+                elif part[0].isupper() and part in words:
+                    return True
+        elif _HAN_RE.search(name):
+            for plen in (2, 3):
+                if plen < len(name) and name[:plen] in text:
+                    return True
+    return False
 
 
 class Orchestrator:
@@ -1247,13 +1282,26 @@ class Orchestrator:
             store.save_chapter(chapter)
 
     def _chapter_term_snapshot(self, glossary: GlossaryStore, text_segs) -> list:
-        """返回当前章节要注入的术语快照；实时入库后可重新调用刷新。"""
+        """返回当前章节要注入的术语快照；实时入库后可重新调用刷新。
+
+        chapter 范围 = 本章源文命中的词条（terms_in 按 source/alias 全文匹配）
+        + 以「部分形式」出现的锁定人物（只呼姓/名，见 _person_mentioned）。
+        锁定人物不做无条件全量兜底：非虚构书定名动辄数百个一次性轶事人名
+        （实测 357 条 ≈ 1.1 万字符），全量注入会占翻译/润色/审校 prompt 的七成以上，
+        且对本章翻译是纯噪声。
+        """
         terms = glossary.all_terms()
         if self.config.pipeline.glossary_scope != "chapter":
             return terms
         src_text = "\n".join(s.source for s in text_segs)
         hit = {t.source for t in GlossaryStore.terms_in(terms, src_text)}
-        return [t for t in terms if t.source in hit or (t.type == TYPE_PERSON and t.locked)]
+        words = set(_WORD_RE.findall(src_text))
+        return [
+            t
+            for t in terms
+            if t.source in hit
+            or (t.type == TYPE_PERSON and t.locked and _person_mentioned(t, src_text, words))
+        ]
 
     def _extract_batch_glossary(
         self,

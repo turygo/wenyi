@@ -639,11 +639,17 @@ class TestGlossaryScope(unittest.TestCase):
         orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
         store = orch.prepare(txt)
         g = GlossaryStore(store.glossary_path)
-        # ①锁定人物（source 不在正文）②无关术语（source/alias 均不在正文）③alias 在正文出现
+        # ①锁定人物（全章无任何形式出现）②无关术语 ③alias 在正文出现
+        # ④锁定人物全名不在正文、但姓氏前缀「堀北」在正文（无空格汉字名）
+        # ⑤锁定人物空格分词名，其中「綾小路」一词在正文
         g.upsert_term(GlossaryTerm(source="外部人物X", target="外部译名", type="人物", locked=True))
         g.upsert_term(GlossaryTerm(source="無関係用語", target="无关术语", type="术语"))
         g.upsert_term(
             GlossaryTerm(source="ホリキタ", target="堀北译名", aliases=["堀北"], type="术语")
+        )
+        g.upsert_term(GlossaryTerm(source="堀北鈴音", target="堀北铃音", type="人物", locked=True))
+        g.upsert_term(
+            GlossaryTerm(source="綾小路 清隆", target="绫小路清隆", type="人物", locked=True)
         )
         g.close()
 
@@ -656,14 +662,24 @@ class TestGlossaryScope(unittest.TestCase):
         ]
 
     def test_chapter_scope_prunes(self):
-        """chapter：锁定人物保留、无关术语剔除、alias 命中保留。"""
+        """chapter：本章无关的锁定人物剔除；部分称呼（姓氏/分词）命中的人物保留。"""
         with tempfile.TemporaryDirectory() as d:
             translate_prompts = self._run_with_terms(d, "chapter")
             self.assertTrue(translate_prompts)
             for p in translate_prompts:
-                self.assertIn("外部人物X", p)  # 锁定人物：始终保留
+                self.assertNotIn("外部人物X", p)  # 锁定人物但全章无任何形式出现：剔除
                 self.assertNotIn("無関係用語", p)  # 本章未出现：剔除
-                self.assertIn("ホリキタ", p)  # 别名「堀北」在正文：保留
+                self.assertIn("ホリキタ", p)  # 别名「堀北」在两章正文均出现：保留
+                self.assertIn("堀北鈴音", p)  # 姓氏前缀「堀北」在两章正文均出现：保留
+            # 「綾小路」只在第一章正文出现：分词命中该章保留，第二章（放課後）剔除
+            ch1 = [p for p in translate_prompts if "綾小路は教室" in p]
+            ch2 = [p for p in translate_prompts if "放課後、二人は" in p]
+            self.assertTrue(ch1)
+            self.assertTrue(ch2)
+            for p in ch1:
+                self.assertIn("綾小路 清隆", p)
+            for p in ch2:
+                self.assertNotIn("綾小路 清隆", p)
 
     def test_full_scope_keeps_all(self):
         with tempfile.TemporaryDirectory() as d:
