@@ -103,12 +103,21 @@ class TestIsBackMatter(unittest.TestCase):
             "Works Cited",
             "About the Author",
             "About the Authors",
+            "Contents",
+            "Table of Contents",
+            "Epigraph",
+            "Dedication",
+            "Title Page",
             "注释",
             "索引",
             "参考文献",
             "致谢",
             "版权",
             "关于作者",
+            "目录",
+            "扉页",
+            "献词",
+            "题词",
         ]
         for title in positives:
             with self.subTest(title=title):
@@ -136,9 +145,13 @@ class TestIsBackMatter(unittest.TestCase):
                     is_back_matter(title, index=10, total=20),
                     "正文区撞词不得旁路（误伤=整章静默降质）",
                 )
+        # 前置章关键词同样受位置门控约束：正文区的 "Contents of the Box" 不得旁路
+        self.assertFalse(is_back_matter("The Contents of the Box", index=10, total=20))
         self.assertTrue(is_back_matter("Notes", index=19, total=20), "书尾 Notes 应命中")
         self.assertTrue(is_back_matter("Index", index=18, total=20), "书尾 Index 应命中")
         self.assertTrue(is_back_matter("Copyright", index=0, total=20), "书首版权页应命中")
+        self.assertTrue(is_back_matter("Contents", index=1, total=20), "书首目录页应命中")
+        self.assertTrue(is_back_matter("Epigraph", index=1, total=20), "书首题词页应命中")
         self.assertTrue(is_back_matter("致谢", index=19, total=20))
 
     def test_position_gate_optional(self):
