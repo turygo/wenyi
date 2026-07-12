@@ -164,7 +164,10 @@ class Orchestrator:
         cumulative = merge_usage_summaries(accumulated, increment)
         store.save_usage(cumulative)
         store.log_event(
-            "usage_summary", scope=scope, increment=increment, cumulative=cumulative,
+            "usage_summary",
+            scope=scope,
+            increment=increment,
+            cumulative=cumulative,
         )
         return cumulative
 

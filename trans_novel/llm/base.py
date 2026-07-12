@@ -111,7 +111,7 @@ def parse_json_loose(text: str) -> Any:
     starts = [i for i in (text.find("{"), text.find("[")) if i != -1]
     if starts:
         try:
-            value, _ = json.JSONDecoder().raw_decode(text[min(starts):])
+            value, _ = json.JSONDecoder().raw_decode(text[min(starts) :])
             return value
         except Exception:
             pass
@@ -122,18 +122,21 @@ def parse_json_loose(text: str) -> Any:
     starts = [i for i in (repaired.find("{"), repaired.find("[")) if i != -1]
     if starts:
         try:
-            value, _ = json.JSONDecoder().raw_decode(repaired[min(starts):])
+            value, _ = json.JSONDecoder().raw_decode(repaired[min(starts) :])
             return value
         except Exception:
             pass
 
     # 修复后仍无法解析时，才依次尝试完整文本和对象/数组片段。
-    for candidate in (text, *(
-        text[s : e + 1]
-        for o, c in (("[", "]"), ("{", "}"))
-        for s, e in [(text.find(o), text.rfind(c))]
-        if s != -1 and e > s
-    )):
+    for candidate in (
+        text,
+        *(
+            text[s : e + 1]
+            for o, c in (("[", "]"), ("{", "}"))
+            for s, e in [(text.find(o), text.rfind(c))]
+            if s != -1 and e > s
+        ),
+    ):
         try:
             return json.loads(_repair_unescaped_quotes(candidate))
         except Exception:
@@ -204,9 +207,7 @@ def usage_delta(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, 
     )
 
 
-def merge_usage_summaries(
-    accumulated: dict[str, Any], increment: dict[str, Any]
-) -> dict[str, Any]:
+def merge_usage_summaries(accumulated: dict[str, Any], increment: dict[str, Any]) -> dict[str, Any]:
     """把一次运行增量合并进某本书的历史累计用量（by_tier 与 by_stage 同时合并）。"""
 
     def _merge(field_name: str) -> dict[str, dict[str, int]]:

@@ -304,5 +304,6 @@ class TestConsistency(unittest.TestCase):
             self.assertEqual(issues[0]["type"], "terminology")
 
 
+
 if __name__ == "__main__":
     unittest.main()
