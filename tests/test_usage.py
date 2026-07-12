@@ -41,10 +41,12 @@ class _CompletionsStub:
     def __init__(self, responses: list[Any]) -> None:
         self._responses = list(responses)
         self._idx = 0
+        self.calls: list[dict[str, Any]] = []  # 记录请求 kwargs，供契约断言
 
     def create(self, **kwargs: Any) -> Any:
         if self._idx >= len(self._responses):
             raise AssertionError("stub 响应已耗尽")
+        self.calls.append(kwargs)
         resp = self._responses[self._idx]
         self._idx += 1
         return resp
@@ -75,6 +77,26 @@ def _minimal_deepseek_cfg() -> LLMConfig:
             "cheap": TierConfig(model="m2"),
         },
     )
+
+
+class TestThinkingFlagWiring(unittest.TestCase):
+    """thinking 开关必须显式下发：API 缺省是开思考，漏发 disabled 等于没关。"""
+
+    def test_thinking_tiers_send_explicit_enable_or_disable(self):
+        cfg = _minimal_deepseek_cfg()
+        cfg.tiers["strong"] = TierConfig(model="m1", thinking=True, reasoning_effort="high")
+        cfg.tiers["fast"] = TierConfig(model="m2", thinking=False)
+        c = DeepSeekClient(cfg)
+        stub = _ClientStub([_make_response("a", None), _make_response("b", None)])
+        c._client = stub
+        msgs = [{"role": "user", "content": "x"}]
+        c.complete(msgs, tier="strong")
+        c.complete(msgs, tier="fast")
+        on, off = stub.chat.completions.calls
+        self.assertEqual(on["extra_body"], {"thinking": {"type": "enabled"}})
+        self.assertEqual(on["reasoning_effort"], "high")
+        self.assertEqual(off["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertNotIn("reasoning_effort", off)
 
 
 class TestDeepSeekUsageByTier(unittest.TestCase):

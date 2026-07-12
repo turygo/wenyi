@@ -242,6 +242,10 @@ class DeepSeekClient(LLMClient):
         if tcfg.thinking:
             kwargs["reasoning_effort"] = tcfg.reasoning_effort
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        else:
+            # API 缺省是开思考：必须显式 disabled，否则"关思考省钱"的档位配置形同虚设
+            # （实测同一请求：缺省 88 tok 带 reasoning，显式 disabled 10 tok）。
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         if max_tokens:
