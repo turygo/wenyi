@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from typing import Any
 
-from trans_novel.config import LLMConfig, TierConfig
-from trans_novel.llm.base import DeepSeekClient, FakeClient, UsageTracker
+from tests.fake_llm import routing_handler
+from tests.sample_data import write_sample_txt
+from trans_novel.config import Config, LLMConfig, TierConfig
+from trans_novel.llm.base import (
+    DeepSeekClient,
+    FakeClient,
+    UsageTracker,
+    merge_usage_summaries,
+    usage_delta,
+)
+from trans_novel.pipeline.orchestrator import Orchestrator
+from trans_novel.pipeline.runstore import RunStore
 
 
 def _make_usage(
@@ -260,6 +272,108 @@ class TestUsageThreadSafety(unittest.TestCase):
         self.assertEqual(totals["cache_miss_tokens"], 7 * total_calls)
         self.assertEqual(totals["cache_hit_rate"], 0.3)  # 3/(3+7)
         self.assertEqual(summary["by_tier"]["strong"]["calls"], total_calls)
+
+
+class TestUsageIncrementalPersistence(unittest.TestCase):
+    @staticmethod
+    def _record(client: FakeClient, tier: str, *, prompt: int, completion: int) -> None:
+        client.usage.record(
+            tier,
+            _make_usage(
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=prompt + completion,
+                prompt_cache_hit_tokens=prompt // 2,
+                prompt_cache_miss_tokens=prompt - prompt // 2,
+            ),
+        )
+
+    def test_delta_and_merge_do_not_double_count(self):
+        client = FakeClient()
+        self._record(client, "strong", prompt=100, completion=20)
+        first = client.usage_summary()
+        self._record(client, "strong", prompt=50, completion=10)
+        self._record(client, "fast", prompt=30, completion=5)
+        second = client.usage_summary()
+
+        increment = usage_delta(second, first)
+        self.assertEqual(increment["totals"]["total_tokens"], 95)
+        merged = merge_usage_summaries(first, increment)
+        self.assertEqual(merged, second)
+
+    def test_usage_accumulates_across_orchestrators_for_one_book(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(os.path.join(d, "state", "book"))
+            config = Config.from_dict({"llm": {"provider": "fake"}})
+
+            first_client = FakeClient()
+            first = Orchestrator(config, client=first_client)
+            self._record(first_client, "strong", prompt=100, completion=20)
+            cumulative = first._flush_usage(store, scope="translate")
+            self.assertEqual(cumulative["totals"]["total_tokens"], 120)
+
+            # 同一进程再次 flush 没有新增调用，不能重复累计。
+            unchanged = first._flush_usage(store, scope="pipeline")
+            self.assertEqual(unchanged["totals"]["total_tokens"], 120)
+
+            # 模拟 resume：新 client / Orchestrator 的增量继续累加到同一本书。
+            resumed_client = FakeClient()
+            resumed = Orchestrator(config, client=resumed_client)
+            self._record(resumed_client, "cheap", prompt=40, completion=10)
+            cumulative = resumed._flush_usage(store, scope="translate")
+
+            self.assertEqual(cumulative["totals"]["total_tokens"], 170)
+            self.assertEqual(cumulative["totals"]["calls"], 2)
+            self.assertEqual(cumulative["by_tier"]["strong"]["total_tokens"], 120)
+            self.assertEqual(cumulative["by_tier"]["cheap"]["total_tokens"], 50)
+            self.assertEqual(store.load_usage(), cumulative)
+            self.assertTrue(os.path.isfile(store.usage_path))
+
+    def test_existing_report_usage_is_used_as_migration_baseline(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(os.path.join(d, "state", "book"))
+            historical_client = FakeClient()
+            self._record(historical_client, "strong", prompt=100, completion=20)
+            historical = historical_client.usage_summary()
+            store.save_report({"summary": {}, "usage": historical})
+
+            config = Config.from_dict({"llm": {"provider": "fake"}})
+            resumed_client = FakeClient()
+            resumed = Orchestrator(config, client=resumed_client)
+            self._record(resumed_client, "cheap", prompt=40, completion=10)
+            cumulative = resumed._flush_usage(store, scope="translate")
+
+            self.assertEqual(cumulative["totals"]["total_tokens"], 170)
+            self.assertTrue(os.path.isfile(store.usage_path))
+
+    def test_report_contains_persisted_book_total_after_resume(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = os.path.join(d, "novel.txt")
+            write_sample_txt(source)
+            config = Config.from_dict(
+                {
+                    "language": {"source": "ja", "target": "zh"},
+                    "llm": {"provider": "fake"},
+                    "pipeline": {"book_understanding": False, "review": False},
+                    "paths": {"state_dir": os.path.join(d, "state")},
+                }
+            )
+
+            initial_client = FakeClient(handler=routing_handler)
+            initial = Orchestrator(config, client=initial_client)
+            store = initial.run_steps(source, {"translate"})["store"]
+            self._record(initial_client, "strong", prompt=100, completion=20)
+            initial._flush_usage(store, scope="translate")
+
+            resumed_client = FakeClient(handler=routing_handler)
+            resumed = Orchestrator(config, client=resumed_client)
+            self._record(resumed_client, "cheap", prompt=40, completion=10)
+            result = resumed.run_steps(source, {"report"})
+
+            usage = result["report"]["usage"]
+            self.assertEqual(usage["totals"]["total_tokens"], 170)
+            self.assertEqual(usage["totals"]["calls"], 2)
+            self.assertEqual(result["store"].load_usage(), usage)
 
 
 if __name__ == "__main__":

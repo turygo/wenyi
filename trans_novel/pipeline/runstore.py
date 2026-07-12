@@ -7,6 +7,7 @@
   analysis.json     全局分析结果
   glossary.db       术语库 + 翻译记忆库
   report.json       QA 报告
+  usage.json        本书跨 translate/resume 累计的 LLM token 用量
   events.jsonl      追加式行为 / 改写 / 翻译结果日志
 """
 
@@ -59,6 +60,10 @@ class RunStore:
     @property
     def report_path(self) -> str:
         return os.path.join(self.run_dir, "report.json")
+
+    @property
+    def usage_path(self) -> str:
+        return os.path.join(self.run_dir, "usage.json")
 
     @property
     def event_log_path(self) -> str:
@@ -163,6 +168,19 @@ class RunStore:
 
     def save_report(self, data: dict) -> None:
         self._write_json(self.report_path, data)
+
+    def save_usage(self, data: dict) -> None:
+        self._write_json(self.usage_path, data)
+
+    def load_usage(self) -> dict | None:
+        if os.path.isfile(self.usage_path):
+            return self._read_json(self.usage_path)
+        # 从旧版单次统计平滑迁移：首次续跑以 report.json.usage 作为历史基数。
+        if os.path.isfile(self.report_path):
+            report = self._read_json(self.report_path)
+            usage = report.get("usage") if isinstance(report, dict) else None
+            return usage if isinstance(usage, dict) else None
+        return None
 
     # ── 追加式事件日志 ────────────────────────────────────────────────────
     def log_event(self, event: str, **data: Any) -> None:

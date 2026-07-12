@@ -168,6 +168,59 @@ def _hit_rate(hit: int, miss: int) -> float:
     return round(hit / total, 4) if total else 0.0
 
 
+def _usage_summary_from_parts(
+    by_tier: dict[str, dict[str, int]],
+    by_stage: dict[str, dict[str, int]],
+) -> dict[str, Any]:
+    """由各档/各阶段计数生成规范汇总；总计由 by_tier 求和，各槽位补 cache_hit_rate。"""
+    tiers = {t: {f: int(v.get(f, 0)) for f in _USAGE_FIELDS} for t, v in by_tier.items()}
+    stages = {s: {f: int(v.get(f, 0)) for f in _USAGE_FIELDS} for s, v in by_stage.items()}
+    totals: dict[str, Any] = dict.fromkeys(_USAGE_FIELDS, 0)
+    for v in tiers.values():
+        for f in _USAGE_FIELDS:
+            totals[f] += v[f]
+    for slot in (*tiers.values(), *stages.values(), totals):
+        slot["cache_hit_rate"] = _hit_rate(slot["cache_hit_tokens"], slot["cache_miss_tokens"])
+    return {"totals": totals, "by_tier": tiers, "by_stage": stages}
+
+
+def _nonneg_delta(
+    current: dict[str, dict[str, int]], previous: dict[str, dict[str, int]]
+) -> dict[str, dict[str, int]]:
+    delta: dict[str, dict[str, int]] = {}
+    for key, values in current.items():
+        old = previous.get(key) or {}
+        slot = {f: max(0, _usage_int(values, f) - _usage_int(old, f)) for f in _USAGE_FIELDS}
+        if any(slot.values()):
+            delta[key] = slot
+    return delta
+
+
+def usage_delta(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    """计算两个累计快照间的非负增量（by_tier 与 by_stage 各自），用于避免重复落盘。"""
+    return _usage_summary_from_parts(
+        _nonneg_delta(current.get("by_tier") or {}, previous.get("by_tier") or {}),
+        _nonneg_delta(current.get("by_stage") or {}, previous.get("by_stage") or {}),
+    )
+
+
+def merge_usage_summaries(
+    accumulated: dict[str, Any], increment: dict[str, Any]
+) -> dict[str, Any]:
+    """把一次运行增量合并进某本书的历史累计用量（by_tier 与 by_stage 同时合并）。"""
+
+    def _merge(field_name: str) -> dict[str, dict[str, int]]:
+        merged: dict[str, dict[str, int]] = {}
+        for summary in (accumulated, increment):
+            for key, values in (summary.get(field_name) or {}).items():
+                slot = merged.setdefault(key, dict.fromkeys(_USAGE_FIELDS, 0))
+                for f in _USAGE_FIELDS:
+                    slot[f] += _usage_int(values, f)
+        return merged
+
+    return _usage_summary_from_parts(_merge("by_tier"), _merge("by_stage"))
+
+
 class UsageTracker:
     """线程安全的 token 用量累加器，按 tier 分档、按 stage 分阶段统计
     （worker 线程并发共享一个 client）。
@@ -208,13 +261,7 @@ class UsageTracker:
         with self._lock:
             by_tier = {t: dict(v) for t, v in self._by_tier.items()}
             by_stage = {s: dict(v) for s, v in self._by_stage.items()}
-        totals = dict.fromkeys(_USAGE_FIELDS, 0)
-        for v in by_tier.values():
-            for f in _USAGE_FIELDS:
-                totals[f] += v[f]
-        for slot in (*by_tier.values(), *by_stage.values(), totals):
-            slot["cache_hit_rate"] = _hit_rate(slot["cache_hit_tokens"], slot["cache_miss_tokens"])
-        return {"totals": totals, "by_tier": by_tier, "by_stage": by_stage}
+        return _usage_summary_from_parts(by_tier, by_stage)
 
 
 # ── 抽象接口 ──────────────────────────────────────────────────────────────

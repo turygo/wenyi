@@ -42,7 +42,7 @@ from ..glossary.miner import mine_candidates
 from ..glossary.store import TYPE_PERSON, GlossaryStore
 from ..ingest.models import KIND_HEADING
 from ..ingest.segmenter import batch_segments, load_document
-from ..llm.base import LLMClient, build_client
+from ..llm.base import LLMClient, build_client, merge_usage_summaries, usage_delta
 from ..postprocess.punct import normalize_zh
 from . import checks, lint
 from .backmatter import is_back_matter
@@ -141,6 +141,8 @@ class Orchestrator:
     def __init__(self, config: Config, client: LLMClient | None = None):
         self.config = config
         self.client = client or build_client(config)
+        # client 的统计是进程内累计；checkpoint 用于每次落盘时只提取新增部分。
+        self._usage_checkpoint = self.client.usage_summary()
         self.analyzer = Analyzer(self.client, config)
         self.synopsizer = Synopsizer(self.client, config)
         self.translator = Translator(self.client, config)
@@ -150,6 +152,21 @@ class Orchestrator:
         self.extractor = GlossaryExtractor(self.client, config)
         self.namer = CastNamer(self.client, config)
         self.naturalizer = Naturalizer(self.client, config)
+
+    def _flush_usage(self, store: RunStore, *, scope: str) -> dict[str, Any]:
+        """把当前 client 尚未落盘的用量增量合并到本书 usage.json。"""
+        current = self.client.usage_summary()
+        increment = usage_delta(current, self._usage_checkpoint)
+        self._usage_checkpoint = current
+        accumulated = store.load_usage() or {"totals": {}, "by_tier": {}, "by_stage": {}}
+        if not increment["totals"]["calls"]:
+            return merge_usage_summaries(accumulated, increment)
+        cumulative = merge_usage_summaries(accumulated, increment)
+        store.save_usage(cumulative)
+        store.log_event(
+            "usage_summary", scope=scope, increment=increment, cumulative=cumulative,
+        )
+        return cumulative
 
     # ── 语言解析 ────────────────────────────────────────────────────────────
     def _apply_language(self, lang: str) -> None:
@@ -347,10 +364,10 @@ class Orchestrator:
             self._drain_ready_reviews(pending_reviews, store, blocking=True)
             executor.shutdown(wait=True)
             glossary.close()
+            self._flush_usage(store, scope="translate")
         if progress and total:
             progress(total, total, "翻译完成")
         store.log_event("translate_run_finished", total_segments=total)
-        store.log_event("usage_summary", scope="translate", **self.client.usage_summary())
         return store
 
     def _drain_ready_reviews(
@@ -1504,16 +1521,18 @@ class Orchestrator:
                     issues=qa_issues,
                 )
 
+            cumulative_usage = self._flush_usage(store, scope="pipeline")
             if "report" in steps:
                 if progress:
                     progress(0, 0, "生成报告…")
                 report = build_report(store, glossary)
                 report["consistency_issues"] = qa_issues
-                report["usage"] = self.client.usage_summary()
+                report["usage"] = cumulative_usage
                 store.save_report(report)
                 store.log_event("report_saved", path=store.report_path)
         finally:
             glossary.close()
+            self._flush_usage(store, scope="pipeline")
 
         outputs: list[str] = []
         if "assemble" in steps:
@@ -1547,7 +1566,6 @@ class Orchestrator:
                 )
             store.log_event("assembled", outputs=outputs, out_format=out_format)
 
-        store.log_event("usage_summary", scope="pipeline", **self.client.usage_summary())
         store.log_event(
             "run_steps_finished",
             steps=run_steps_input,
