@@ -1521,13 +1521,12 @@ class Orchestrator:
                     issues=qa_issues,
                 )
 
-            cumulative_usage = self._flush_usage(store, scope="pipeline")
+            self._flush_usage(store, scope="pipeline")
             if "report" in steps:
                 if progress:
                     progress(0, 0, "生成报告…")
                 report = build_report(store, glossary)
                 report["consistency_issues"] = qa_issues
-                report["usage"] = cumulative_usage
                 store.save_report(report)
                 store.log_event("report_saved", path=store.report_path)
         finally:

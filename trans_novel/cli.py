@@ -139,7 +139,7 @@ def _translate_impl(
         f"[bold green]完成[/]：{s['chapters_done']}/{s['chapters_total']} 章，"
         f"术语 {s['terms']}，一致性问题 {len(result['qa_issues'])} 项。"
     )
-    _print_usage(result["report"])
+    _print_usage({"usage": result["store"].load_usage() or {}})
     _print_back_matter(result["report"])
     for path in result.get("outputs") or [result["output"]]:
         console.print(f"译文：[bold]{path}[/]")

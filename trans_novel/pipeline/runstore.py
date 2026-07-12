@@ -173,14 +173,7 @@ class RunStore:
         self._write_json(self.usage_path, data)
 
     def load_usage(self) -> dict | None:
-        if os.path.isfile(self.usage_path):
-            return self._read_json(self.usage_path)
-        # 从旧版单次统计平滑迁移：首次续跑以 report.json.usage 作为历史基数。
-        if os.path.isfile(self.report_path):
-            report = self._read_json(self.report_path)
-            usage = report.get("usage") if isinstance(report, dict) else None
-            return usage if isinstance(usage, dict) else None
-        return None
+        return self._read_json(self.usage_path) if os.path.isfile(self.usage_path) else None
 
     # ── 追加式事件日志 ────────────────────────────────────────────────────
     def log_event(self, event: str, **data: Any) -> None:

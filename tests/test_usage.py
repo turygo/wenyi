@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from tests.fake_llm import routing_handler
 from tests.sample_data import write_sample_txt
@@ -81,7 +82,6 @@ def _minimal_deepseek_cfg() -> LLMConfig:
         provider="deepseek",
         base_url="x",
         api_key_env="X",
-        api_key="k",
         timeout=1,
         max_retries=0,
         tiers={
@@ -137,11 +137,10 @@ class TestDeepSeekUsageByTier(unittest.TestCase):
                 ),
             ),
         ]
-        c._client = _ClientStub(responses)
-
         msgs = [{"role": "user", "content": "hi"}]
-        self.assertEqual(c.complete(msgs, tier="strong", stage="Translator"), "strong-out")
-        self.assertEqual(c.complete(msgs, tier="cheap"), "cheap-out")
+        with patch.object(c, "_ensure_client", return_value=_ClientStub(responses)):
+            self.assertEqual(c.complete(msgs, tier="strong", stage="Translator"), "strong-out")
+            self.assertEqual(c.complete(msgs, tier="cheap"), "cheap-out")
 
         summary = c.usage_summary()
         totals = summary["totals"]
@@ -181,8 +180,12 @@ class TestMissingUsage(unittest.TestCase):
     def test_complete_with_none_usage_does_not_count(self):
         cfg = _minimal_deepseek_cfg()
         c = DeepSeekClient(cfg)
-        c._client = _ClientStub([_make_response("ok", None)])
-        self.assertEqual(c.complete([{"role": "user", "content": "x"}]), "ok")
+        with patch.object(
+            c,
+            "_ensure_client",
+            return_value=_ClientStub([_make_response("ok", None)]),
+        ):
+            self.assertEqual(c.complete([{"role": "user", "content": "x"}]), "ok")
         summary = c.usage_summary()
         self.assertEqual(summary["totals"]["calls"], 0)
         self.assertEqual(summary["totals"]["total_tokens"], 0)
@@ -195,8 +198,8 @@ class TestMissingUsage(unittest.TestCase):
         choice = SimpleNamespace(message=msg)
         # 无 usage 属性
         resp = SimpleNamespace(choices=[choice])
-        c._client = _ClientStub([resp])
-        self.assertEqual(c.complete([{"role": "user", "content": "x"}]), "ok")
+        with patch.object(c, "_ensure_client", return_value=_ClientStub([resp])):
+            self.assertEqual(c.complete([{"role": "user", "content": "x"}]), "ok")
         summary = c.usage_summary()
         self.assertEqual(summary["totals"]["calls"], 0)
         self.assertEqual(summary["by_tier"], {})
@@ -329,24 +332,7 @@ class TestUsageIncrementalPersistence(unittest.TestCase):
             self.assertEqual(store.load_usage(), cumulative)
             self.assertTrue(os.path.isfile(store.usage_path))
 
-    def test_existing_report_usage_is_used_as_migration_baseline(self):
-        with tempfile.TemporaryDirectory() as d:
-            store = RunStore(os.path.join(d, "state", "book"))
-            historical_client = FakeClient()
-            self._record(historical_client, "strong", prompt=100, completion=20)
-            historical = historical_client.usage_summary()
-            store.save_report({"summary": {}, "usage": historical})
-
-            config = Config.from_dict({"llm": {"provider": "fake"}})
-            resumed_client = FakeClient()
-            resumed = Orchestrator(config, client=resumed_client)
-            self._record(resumed_client, "cheap", prompt=40, completion=10)
-            cumulative = resumed._flush_usage(store, scope="translate")
-
-            self.assertEqual(cumulative["totals"]["total_tokens"], 170)
-            self.assertTrue(os.path.isfile(store.usage_path))
-
-    def test_report_contains_persisted_book_total_after_resume(self):
+    def test_report_omits_usage_and_usage_file_keeps_book_total(self):
         with tempfile.TemporaryDirectory() as d:
             source = os.path.join(d, "novel.txt")
             write_sample_txt(source)
@@ -370,7 +356,10 @@ class TestUsageIncrementalPersistence(unittest.TestCase):
             self._record(resumed_client, "cheap", prompt=40, completion=10)
             result = resumed.run_steps(source, {"report"})
 
-            usage = result["report"]["usage"]
+            self.assertNotIn("usage", result["report"])
+            usage = result["store"].load_usage()
+            self.assertIsNotNone(usage)
+            assert usage is not None
             self.assertEqual(usage["totals"]["total_tokens"], 170)
             self.assertEqual(usage["totals"]["calls"], 2)
             self.assertEqual(result["store"].load_usage(), usage)
