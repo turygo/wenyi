@@ -27,7 +27,9 @@ class GlossaryExtractor(Agent):
             source=source_text,
             target=target_text,
         )
-        raw = self._ask_json(system, user, tier="fast", key="terms", default=[])
+        raw = self._ask_json(
+            system, user, tier="fast", key="terms", default=[], operation="glossary.extract"
+        )
         terms: list[GlossaryTerm] = []
         for d in self.dict_items(raw):
             if not d.get("source") or not d.get("target"):

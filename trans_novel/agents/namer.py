@@ -107,7 +107,9 @@ class CastNamer(Agent):
         )
         # 不设 default：一次强档失败若被兜成空列表，term_mining_done 会静默永久落盘，
         # 续跑再也不重试——异常整体冒泡，交由 orchestrator 捕获并放弃本次落标记。
-        raw = self._ask_json(system, user, tier="strong", key="terms")
+        raw = self._ask_json(
+            system, user, tier="strong", key="terms", operation="prescan.name_terms"
+        )
         out: list[GlossaryTerm] = []
         for d in self.dict_items(raw):
             # 裁定标准（见 prompts.CAST_NAMING_SYSTEM）：宁缺勿滥。实现选择省略式——

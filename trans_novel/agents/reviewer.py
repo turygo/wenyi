@@ -37,7 +37,11 @@ class Reviewer(Agent):
             n=len(sources),
             pairs=prompts.numbered_pairs(sources, targets),
         )
-        return self.dict_items(self._ask_json(system, user, tier="cheap", key="issues", default=[]))
+        return self.dict_items(
+            self._ask_json(
+                system, user, tier="cheap", key="issues", default=[], operation="review.chapter"
+            )
+        )
 
 
 class BackTranslator(Agent):
@@ -60,6 +64,7 @@ class BackTranslator(Agent):
             tier="fast",  # 机械回译免思考；语义比对(check)仍走 cheap
             key="backtranslations",
             default=[],
+            operation="backtranslate.translate",
         )
         return [str(x) for x in items] if isinstance(items, list) else []
 
@@ -73,6 +78,11 @@ class BackTranslator(Agent):
         )
         return self.dict_items(
             self._ask_json(
-                _backtrans_compare_system(self.src), pairs, tier="cheap", key="issues", default=[]
+                _backtrans_compare_system(self.src),
+                pairs,
+                tier="cheap",
+                key="issues",
+                default=[],
+                operation="backtranslate.check",
             )
         )

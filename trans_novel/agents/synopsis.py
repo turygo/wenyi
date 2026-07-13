@@ -28,7 +28,7 @@ class Synopsizer(Agent):
             "chapter_digest_user", src=self.src, tgt=self.tgt, source=source_text[:8000]
         )
         # 机械任务走 fast 档（免思考）；梗概 ≤200 字，上限留足裕量防输出失控
-        return self._ask_text(system, user, tier="fast", max_tokens=600)
+        return self._ask_text(system, user, tier="fast", max_tokens=600, operation="prescan.digest")
 
     def book_synopsis(self, digests: list[str], analysis_brief: str, cast: str = "") -> str:
         """把各章梗概 + 前期分析 + 人物定名表归并成全书概览。超长则分组 map-reduce。"""
@@ -74,4 +74,6 @@ class Synopsizer(Agent):
             cast=cast or "（无）",
         )
         # 概览 ≤500 字，fast 档 + 上限
-        return self._ask_text(system, user, tier="fast", max_tokens=1200)
+        return self._ask_text(
+            system, user, tier="fast", max_tokens=1200, operation="prescan.book_synopsis"
+        )

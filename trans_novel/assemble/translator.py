@@ -51,7 +51,9 @@ class Translator(Agent):
             numbered_source=prompts.numbered(sources),
         )
         # 不传 default：调用失败照常抛出，由 translate_batch 的重试/兜底逻辑处理
-        items = self._ask_json(system, user, tier=tier, key="translations")
+        items = self._ask_json(
+            system, user, tier=tier, key="translations", operation="translate.batch"
+        )
         if not isinstance(items, list):
             raise AlignmentError("模型未返回译文数组")
         return [str(x) for x in items]
@@ -76,6 +78,7 @@ class Translator(Agent):
         source: str,
         *,
         feedback: str,
+        operation: str,
         glossary_terms: list[GlossaryTerm] | None = None,
         style: str = "",
         context_before: str = "",
@@ -83,10 +86,12 @@ class Translator(Agent):
         book_synopsis: str = "",
         chapter_digest: str = "",
     ) -> str:
-        """带审校意见定向重译单段（章末 autofix 用）。失败返回空串，由调用方决定弃用。
+        """带审校意见定向重译单段（lint 层/章末 autofix 用）。失败返回空串，由调用方决定弃用。
 
         复用 translator_system（与主翻译共享稳定前缀，命中缓存）；
         user 用 translator_fix_user：前缀块与主翻译一致，上下文换成前文+后文译文，附审校意见。
+        operation 由调用方按来源区分 translate.lint_fix / translate.review_fix，
+        采纳/拒绝在各自调用点记录，本方法不产生 outcome。
         """
         system = prompts.render(
             "translator_system",
@@ -108,7 +113,9 @@ class Translator(Agent):
             feedback=feedback or "（无）",
             source=source,
         )
-        items = self._ask_json(system, user, tier="strong", key="translations", default=None)
+        items = self._ask_json(
+            system, user, tier="strong", key="translations", default=None, operation=operation
+        )
         if isinstance(items, list) and items:
             return str(items[0]).strip()
         return ""

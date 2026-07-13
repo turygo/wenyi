@@ -121,7 +121,9 @@ class GlossaryAuditor(Agent):
             + '\n\n输出 JSON：{"unifications":[{"source":"...","canonical":"...","variants":["..."],"reason":"..."}]}'
         )
         system = prompts.render("glossary_audit_system", src=self.src, tgt=self.tgt)
-        uni = self._ask_json(system, user, tier="strong", key="unifications", default=[])
+        uni = self._ask_json(
+            system, user, tier="strong", key="unifications", default=[], operation="glossary.audit"
+        )
         result: list[dict[str, Any]] = []
         for u in self.dict_items(uni):
             if not u.get("source") or not u.get("canonical"):

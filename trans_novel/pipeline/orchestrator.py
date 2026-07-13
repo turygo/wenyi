@@ -154,12 +154,21 @@ class Orchestrator:
         self.naturalizer = Naturalizer(self.client, config)
 
     def _flush_usage(self, store: RunStore, *, scope: str) -> dict[str, Any]:
-        """把当前 client 尚未落盘的用量增量合并到本书 usage.json。"""
+        """把当前 client 尚未落盘的用量增量合并到本书 usage.json。
+
+        持久化门控不能只看 totals.calls（=by_tier 里成功响应计数）：一次完全失败的
+        逻辑调用（如 Agent._ask_json 捕获异常回退 default）不会走 usage.record()，
+        by_tier/by_stage/totals 全零，但 by_operation 的 attempts/failed_attempts/
+        logical_calls 仍真实增长——这类 operation-only 增量同样必须落盘，否则续跑
+        后这次失败尝试的底层统计永久丢失。usage_delta 内部已用 _nonneg_delta 过滤
+        掉全零槽位，故 increment["by_operation"] 非空即代表确有变化。
+        """
         current = self.client.usage_summary()
         increment = usage_delta(current, self._usage_checkpoint)
         self._usage_checkpoint = current
         accumulated = store.load_usage() or {"totals": {}, "by_tier": {}, "by_stage": {}}
-        if not increment["totals"]["calls"]:
+        has_activity = bool(increment["totals"]["calls"]) or bool(increment.get("by_operation"))
+        if not has_activity:
             return merge_usage_summaries(accumulated, increment)
         cumulative = merge_usage_summaries(accumulated, increment)
         store.save_usage(cumulative)
@@ -269,6 +278,7 @@ class Orchestrator:
                 [{"role": "system", "content": system}, {"role": "user", "content": sample}],
                 tier="cheap",
                 stage="language_detect",
+                operation="language.detect",
             )
             code = (data.get("language") if isinstance(data, dict) else "") or ""
             return _normalize_lang(str(code))
@@ -333,11 +343,17 @@ class Orchestrator:
         # 共享线程池：章内批次翻译仍严格串行（关键路径唯一阻塞点）；worker 线程只做 LLM
         # 调用——1 润色在飞 + 1 术语抽取 + 各章审校任务复用同一个池；硬编码 4，YAGNI 不加配置。
         # SQLite（GlossaryStore）与 RunStore 的读写全部留在主线程（仓库既有约定）。
+        # review_executor：专用于 review chunk 调用的独立池，全书共享、生命周期 = 本次
+        # run()。章级审校任务（同步/异步）本身跑在 executor 的 worker 线程上，内部再把
+        # 各 chunk 提交到 review_executor 并等待结果——两个池分开，避免"审校任务"和它
+        # 自己要等的"chunk 调用"抢同一个 executor 的 worker 造成嵌套死锁；四个 chunk
+        # 并发上限book-wide 生效（跨章节共享，不是每章各起 4 个）。
         pending_reviews: list[tuple[int, Future]] = []
         executor = ThreadPoolExecutor(max_workers=4)
+        review_executor = ThreadPoolExecutor(max_workers=4)
         try:
             self._resume_pending_reviews(
-                store, glossary, executor, pending_reviews, skip=set(targets)
+                store, glossary, executor, review_executor, pending_reviews, skip=set(targets)
             )
             for ci in targets:
                 done = self._translate_chapter(
@@ -348,13 +364,14 @@ class Orchestrator:
                     style,
                     book_synopsis,
                     executor=executor,
+                    review_executor=review_executor,
                     pending_reviews=pending_reviews,
                     progress=progress,
                     done=done,
                     total=total,
                 )
                 store.save_context(context.to_dict())
-                # 每章落一次累计用量快照（含 by_stage），中途即可做成本归因，不必等 report
+                # 每章落一次累计用量快照（含 by_stage/by_operation），中途即可做成本归因，不必等 report
                 store.log_event("usage_snapshot", chapter=ci, **self.client.usage_summary())
                 # 机会性排干：只处理已完成的审校 future，不阻塞下一章翻译
                 self._drain_ready_reviews(pending_reviews, store, blocking=False)
@@ -362,10 +379,12 @@ class Orchestrator:
             if not store.pending_chapters():
                 self._translate_titles(store, glossary, progress=progress)
         finally:
-            # 先排干所有在飞 future（含审校）再关闭线程池，翻译彻底结束前必须写回，
-            # 防止异常路径下悄悄丢弃未完成任务或异步审校结果。
+            # 先排干所有在飞 future（含审校）——此时 review_executor 仍在跑，_review_chapter
+            # 内部对它的 chunk future 才能真正等到结果——再依次关闭两个池；review_executor
+            # 后关，保证所有 chunk 结果已写回、无孤儿任务。
             self._drain_ready_reviews(pending_reviews, store, blocking=True)
             executor.shutdown(wait=True)
+            review_executor.shutdown(wait=True)
             glossary.close()
             self._flush_usage(store, scope="translate")
         if progress and total:
@@ -417,6 +436,7 @@ class Orchestrator:
         store: RunStore,
         glossary: GlossaryStore,
         executor: ThreadPoolExecutor,
+        review_executor: ThreadPoolExecutor,
         pending_reviews: list[tuple[int, Future]],
         *,
         skip: set[int],
@@ -433,7 +453,7 @@ class Orchestrator:
             chapter = store.load_chapter(ci)
             pairs = [(s.source, s.target or "") for s in chapter.text_segments]
             term_snapshot = self._chapter_term_snapshot(glossary, chapter.text_segments)
-            fut = executor.submit(self._review_chapter, pairs, list(term_snapshot))
+            fut = executor.submit(self._review_chapter, pairs, list(term_snapshot), review_executor)
             pending_reviews.append((ci, fut))
 
     @staticmethod
@@ -457,6 +477,7 @@ class Orchestrator:
             return ""
         manifest = store.load_manifest()
         chapters = manifest.get("chapters", [])
+        analysis = store.load_analysis() or {}
 
         # 各章梗概相互独立 → 并行调用（LLM 调用进线程池；落盘全部在主线程，
         # 保持原子写不竞争，且逐章增量落盘、续跑粒度不变）。已有梗概的章跳过（幂等）。
@@ -473,41 +494,17 @@ class Orchestrator:
             for ci in body_chapters
             if not loaded[ci].meta.get("source_digest")
         ]
-        if todo:
-            store.log_event(
-                "book_understanding_chapter_digest_started",
-                chapters=[ci for ci, _ in todo],
-                workers=max(1, self.config.pipeline.prescan_concurrency),
-            )
-            workers = max(1, self.config.pipeline.prescan_concurrency)
-            if progress:
-                progress(0, len(todo), "通读全书章节…")
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(self.synopsizer.digest_chapter, src): ci for ci, src in todo}
-                for n_done, fut in enumerate(as_completed(futs), 1):
-                    ci = futs[fut]
-                    loaded[ci].meta["source_digest"] = fut.result()  # 失败时 _ask_text 已回退 ""
-                    store.save_chapter(loaded[ci])
-                    store.log_event(
-                        "book_understanding_chapter_digest_saved",
-                        chapter=ci,
-                        digest=loaded[ci].meta["source_digest"],
-                    )
-                    if progress:
-                        progress(n_done, len(todo), "通读全书章节…")
 
-        # 按 manifest 章序组装（与并发完成顺序无关）
-        digests = [
-            loaded[c.get("index", i)].meta.get("source_digest", "") or ""
-            for i, c in enumerate(chapters)
-        ]
-
-        analysis = store.load_analysis() or {}
-
-        # 一次性全书定名：源文侧挖掘候选 + 强档一次性定名，取代译后逐批抽取——
-        # 翻译期术语表只读（见 _translate_chapter 的 inflight_glossary 门控）。
-        # 幂等标记 term_mining_done：已跑过（含续跑）则跳过，不重复定名。
-        if not analysis.get("term_mining_done"):
+        # 一次性全书定名分支：与逐章梗概真正重叠执行——本轮不再"digest 全跑完才挖掘"。
+        # mine_candidates 本身是同步阻塞调用（内部按 concurrency 自建线程池并发各章），
+        # 提交进独立的单线程后台池后立即返回 future；主线程随即进入下面 digest 的
+        # as_completed 落盘循环，二者的 LLM 调用天然同时在跑。SQLite/RunStore 写入
+        # 全程只留在主线程（mining_pool 里的调用只做 LLM 请求，不碰 store/glossary）。
+        # 幂等标记 term_mining_done：已跑过（含续跑）则跳过，不重复定名、不起后台池。
+        need_mining = not analysis.get("term_mining_done")
+        mining_pool: ThreadPoolExecutor | None = None
+        mining_future: Future | None = None
+        if need_mining:
             # 挖掘输入必须用 is_back_matter（而非 _back_matter_mode）排除附属章：
             # back_matter=full 时 _back_matter_mode 恒返回 None（不旁路），但附属章
             # 仍是附属章——引文人名/书目标题混进候选正是本次重构要消灭的污染源。
@@ -519,33 +516,93 @@ class Orchestrator:
             src_chapters = [
                 (ci, "\n".join(s.source for s in loaded[ci].text_segments)) for ci in mine_chapters
             ]
-            # 挖掘/定名任一环节异常都不得吞掉：一次强档超时若被默认值兜住，
-            # term_mining_done 会静默永久落盘为 True，续跑再也不会重试。
-            # 因此这里不设 default，异常整体冒泡，本轮降级为无定名（不写标记），
-            # 下次续跑重新尝试；真挖掘为空（无异常、无候选）才照常写标记。
+            mining_pool = ThreadPoolExecutor(max_workers=1)
+            mining_future = mining_pool.submit(
+                mine_candidates,
+                self.config.source_lang,
+                src_chapters,
+                self.namer,
+                concurrency=max(1, self.config.pipeline.prescan_concurrency),
+                on_progress=(lambda i, n: progress(i, n, "查找专有名词…")) if progress else None,
+            )
+
+        # digest 分支：与上面的挖掘后台线程并发跑；本分支自身的异常（含线程池收尾时
+        # 冒出的意外异常）保留"整体冒泡"的旧同步语义——记录后待挖掘分支排干完再抛出，
+        # 不静默吞掉，也不因为并发化就丢弃尚未处理完的挖掘结果。
+        digest_exc: Exception | None = None
+        if todo:
+            store.log_event(
+                "book_understanding_chapter_digest_started",
+                chapters=[ci for ci, _ in todo],
+                workers=max(1, self.config.pipeline.prescan_concurrency),
+            )
+            workers = max(1, self.config.pipeline.prescan_concurrency)
+            if progress:
+                progress(0, len(todo), "通读全书章节…")
             try:
-                candidates = mine_candidates(
-                    self.config.source_lang,
-                    src_chapters,
-                    self.namer,
-                    concurrency=max(1, self.config.pipeline.prescan_concurrency),
-                    on_progress=(lambda i, n: progress(i, n, "查找专有名词…"))
-                    if progress
-                    else None,
-                )
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    futs = {ex.submit(self.synopsizer.digest_chapter, src): ci for ci, src in todo}
+                    for n_done, fut in enumerate(as_completed(futs), 1):
+                        ci = futs[fut]
+                        loaded[ci].meta["source_digest"] = (
+                            fut.result()
+                        )  # 失败时 _ask_text 已回退 ""
+                        store.save_chapter(loaded[ci])
+                        store.log_event(
+                            "book_understanding_chapter_digest_saved",
+                            chapter=ci,
+                            digest=loaded[ci].meta["source_digest"],
+                        )
+                        if progress:
+                            progress(n_done, len(todo), "通读全书章节…")
+            except Exception as e:
+                digest_exc = e
+
+        # 按 manifest 章序组装（与并发完成顺序无关）；已落盘的 digest（即便挖掘/命名
+        # 随后异常或 digest 分支本身异常）保留在 chapter.meta 里，续跑不重复调用。
+        digests = [
+            loaded[c.get("index", i)].meta.get("source_digest", "") or ""
+            for i, c in enumerate(chapters)
+        ]
+
+        if need_mining:
+            assert mining_pool is not None and mining_future is not None
+            try:
+                candidates = mining_future.result()
+                mining_exc: Exception | None = None
+            except Exception as e:
+                candidates = None
+                mining_exc = e
+            finally:
+                # 两条分支都必须排干：即便 digest 分支已经异常，也要等挖掘的后台线程
+                # 池收尾完，不留孤儿任务。
+                mining_pool.shutdown(wait=True)
+
+            if digest_exc is not None:
+                # digest 异常优先级更高，与旧版"digest 先跑、失败直接冒泡"的同步行为
+                # 一致；挖掘分支的结果/异常本身不再单独处理（term_mining_done 也不落盘）。
+                raise digest_exc
+
+            if mining_exc is not None:
+                store.log_event("cast_naming_failed", error=str(mining_exc))
+                named = None
+            else:
                 store.log_event("term_candidates_mined", count=len(candidates))
                 existing = glossary.all_terms()
-                named = self.namer.name_terms(
-                    candidates,
-                    self.analyzer.style_brief(analysis),
-                    digests,
-                    existing=existing,
-                    concurrency=max(1, self.config.pipeline.prescan_concurrency),
-                    on_progress=(lambda i, n: progress(i, n, "统一译名…")) if progress else None,
-                )
-            except Exception as e:
-                store.log_event("cast_naming_failed", error=str(e))
-                named = None
+                try:
+                    named = self.namer.name_terms(
+                        candidates,
+                        self.analyzer.style_brief(analysis),
+                        digests,
+                        existing=existing,
+                        concurrency=max(1, self.config.pipeline.prescan_concurrency),
+                        on_progress=(lambda i, n: progress(i, n, "统一译名…"))
+                        if progress
+                        else None,
+                    )
+                except Exception as e:
+                    store.log_event("cast_naming_failed", error=str(e))
+                    named = None
             if named is not None:
                 inserted = 0
                 for t in named:
@@ -560,6 +617,8 @@ class Orchestrator:
                 analysis["term_mining_done"] = True
                 store.save_analysis(analysis)
                 store.log_event("cast_named", count=inserted)
+        elif digest_exc is not None:
+            raise digest_exc
 
         synopsis = analysis.get("book_synopsis", "")
         if not synopsis and any(d.strip() for d in digests):
@@ -657,6 +716,7 @@ class Orchestrator:
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 tier="strong",
                 stage="title_translate",
+                operation="title.translate",
             )
         except Exception:
             return
@@ -826,6 +886,7 @@ class Orchestrator:
         book_synopsis: str = "",
         *,
         executor: ThreadPoolExecutor,
+        review_executor: ThreadPoolExecutor,
         pending_reviews: list[tuple[int, Future]],
         progress: Optional[ProgressFn] = None,
         done: int = 0,
@@ -976,6 +1037,7 @@ class Orchestrator:
                     new_t = self.translator.retranslate_with_feedback(
                         seg.source,
                         feedback=feedback,
+                        operation="translate.lint_fix",
                         glossary_terms=term_snapshot,
                         style=style,
                         context_before=before,
@@ -994,6 +1056,7 @@ class Orchestrator:
                         else []
                     )
                     if new_t and len(new_issues) < len(seg_issues):
+                        self.client.usage.record_outcome("translate.lint_fix", accepted=True)
                         store.log_event(
                             "lint_refixed",
                             chapter=ci,
@@ -1005,6 +1068,7 @@ class Orchestrator:
                         raw_targets[idx] = new_t
                         remaining = new_issues
                     else:
+                        self.client.usage.record_outcome("translate.lint_fix", accepted=False)
                         remaining = seg_issues
                     for it in remaining:
                         lint_review_issues.append(
@@ -1138,7 +1202,7 @@ class Orchestrator:
             pairs = [(s.source, s.target or "") for s in text_segs]
             if self.config.pipeline.autofix_severe:
                 # 严重项定向重译要写回正文，必须留在关键路径上，完全同步（现状不变）。
-                new_issues = self._review_chapter(pairs, term_snapshot)
+                new_issues = self._review_chapter(pairs, term_snapshot, review_executor)
                 store.log_event(
                     "chapter_reviewed",
                     chapter=ci,
@@ -1165,7 +1229,9 @@ class Orchestrator:
                 # 由 run() 机会性/收尾统一排干、写回 review_issues、发 chapter_reviewed 事件。
                 # set_review_pending 落持久标记（写 manifest，随后 set STATUS_DONE 会保留它）：
                 # 崩溃发生在标 done 后、审校写回前时，续跑据此补跑，异步审校结果不静默丢失。
-                review_future = executor.submit(self._review_chapter, pairs, list(term_snapshot))
+                review_future = executor.submit(
+                    self._review_chapter, pairs, list(term_snapshot), review_executor
+                )
                 pending_reviews.append((ci, review_future))
                 store.set_review_pending(ci, True)
 
@@ -1274,7 +1340,9 @@ class Orchestrator:
             for i in range(count):
                 introduced = final_types.get(i, set()) - raw_types.get(i, set())
                 if not introduced:
+                    self.client.usage.record_outcome("polish.batch", accepted=True)
                     continue
+                self.client.usage.record_outcome("polish.batch", accepted=False)
                 rejected_text = final[i]
                 final[i] = raw_normalized[i]
                 store.log_event(
@@ -1348,7 +1416,9 @@ class Orchestrator:
     # ── 章末审校 + 严重项定向重译 ────────────────────────────────────────────
     _SEVERE_TYPES = ("missing", "mistranslation")
 
-    def _review_chapter(self, pairs: list[tuple[str, str]], terms) -> list[dict]:
+    def _review_chapter(
+        self, pairs: list[tuple[str, str]], terms, review_executor: ThreadPoolExecutor
+    ) -> list[dict]:
         """整章分块审校（章末统一做）。review=true 且 autofix_severe=false 时在
         worker 线程里跑（只做 LLM 调用，不碰 store）；autofix_severe=true 时同步跑。
 
@@ -1356,14 +1426,26 @@ class Orchestrator:
         块 = 连续段序列（约 3 倍翻译批大小，减少调用次数与重复注入的输入 token）；
         块内 reviewer 返回的 index 是块内下标，加块首段偏移映射回章内段号；
         越界 index 直接丢弃（模型幻觉防御）。
+
+        各 chunk 的 review 调用提交进 review_executor（全书共享、有界 4-worker，
+        与本方法运行所在的线程池分开——本方法自身可能就跑在另一个 executor 的
+        worker 线程上，若两者共用同一个池，chunk 调用会在等自己的父任务腾位置，
+        造成嵌套死锁）。按提交顺序（=chunk 原始顺序）依次取结果，而非按完成顺序，
+        保证合并结果严格保持原 chunk 顺序；chunk 内 issue 顺序由单次 reviewer.review
+        调用本身决定，不受并发影响。
         """
         budget = self.config.segment.max_chars_per_batch * 3
+        chunks = self._pack_contiguous(pairs, budget)
+        futures = [
+            review_executor.submit(
+                self.reviewer.review, [s for s, _ in chunk], [t for _, t in chunk], terms
+            )
+            for chunk in chunks
+        ]
         issues: list[dict] = []
         base = 0
-        for chunk in self._pack_contiguous(pairs, budget):
-            srcs = [s for s, _ in chunk]
-            tgts = [t for _, t in chunk]
-            for it in self.reviewer.review(srcs, tgts, terms):
+        for chunk, fut in zip(chunks, futures):
+            for it in fut.result():
                 idx = it.get("index")
                 if isinstance(idx, int) and 0 <= idx < len(chunk):
                     it["index"] = base + idx
@@ -1421,6 +1503,7 @@ class Orchestrator:
             new_t = self.translator.retranslate_with_feedback(
                 seg.source,
                 feedback=feedback,
+                operation="translate.review_fix",
                 glossary_terms=terms,
                 style=style,
                 context_before=before,
@@ -1428,7 +1511,9 @@ class Orchestrator:
                 book_synopsis=book_synopsis,
                 chapter_digest=chapter_digest,
             )
-            if new_t and not checks.length_flags([seg.source], [new_t]):
+            accepted = bool(new_t) and not checks.length_flags([seg.source], [new_t])
+            self.client.usage.record_outcome("translate.review_fix", accepted=accepted)
+            if accepted:
                 if self.config.punctuation_normalize:
                     new_t = normalize_zh(new_t)
                 old_t = seg.target

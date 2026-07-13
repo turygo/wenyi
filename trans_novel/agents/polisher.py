@@ -35,7 +35,9 @@ class Polisher(Agent):
             numbered_source=prompts.numbered(sources),
             numbered_target=prompts.numbered(targets),
         )
-        items = self._ask_json(system, user, tier="strong", key="polished", default=None)
+        items = self._ask_json(
+            system, user, tier="strong", key="polished", default=None, operation="polish.batch"
+        )
         if isinstance(items, list) and len(items) == n:
             return [str(x) for x in items]
         return list(targets)  # 失败/段数不符 → 保守保留原译

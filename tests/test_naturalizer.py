@@ -6,7 +6,9 @@ import json
 import os
 import re
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from trans_novel.agents.naturalizer import (
     Naturalizer,
@@ -150,6 +152,33 @@ class TestPairwiseAccept(unittest.TestCase):
         agent = Naturalizer(FakeClient(handler=handler), _config())
         self.assertFalse(agent.pairwise_accept("原译", "改写"))
 
+    def test_executor_runs_both_orders_concurrently(self):
+        """给出 executor 时，正反两次 judge_pair 必须真正并发提交，而非串行等待——
+        用双方计数的 barrier 证明：若退化为串行，第二次调用永远等不到第一次让路，
+        wait() 会阻塞直到超时并抛出 BrokenBarrierError，测试失败。"""
+        barrier = threading.Barrier(2, timeout=5)
+
+        def handler(messages, tier, json_mode):
+            barrier.wait()
+            return json.dumps({"winner": "tie"}, ensure_ascii=False)
+
+        agent = Naturalizer(FakeClient(handler=handler), _config())
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            # 不关心判定结果，只验证两次调用确实同时在飞（barrier 未超时即通过）。
+            agent.pairwise_accept("原译", "改写", ex)
+
+    def test_no_executor_still_runs_sequentially(self):
+        """不给 executor（独立调用/旧测试场景）：保持原地串行调用，行为不变。"""
+        calls: list[str] = []
+
+        def handler(messages, tier, json_mode):
+            calls.append(messages[-1]["content"])
+            return json.dumps({"winner": "tie"}, ensure_ascii=False)
+
+        agent = Naturalizer(FakeClient(handler=handler), _config())
+        agent.pairwise_accept("原译", "改写")
+        self.assertEqual(len(calls), 2)
+
 
 class TestNaturalizeChapterFlow(unittest.TestCase):
     """完整闭环：审读→改写→关卡①拒绝(丢数字)→关卡②接受→写回，事件含 before/after。"""
@@ -213,6 +242,21 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
 
             # back matter 章节完全不参与（不贡献 screened 计数、无对该章事件）
             self.assertFalse(any(e.get("chapter") == 1 for e in events))
+
+    def test_rewrite_outcome_recorded_per_actual_rewrite_request(self):
+        """naturalize.rewrite 的 accepted/rejected 计数：每次真正发生的改写请求算一次，
+        lint 拒绝算 rejected，采纳算 accepted（decision 53）。"""
+        with tempfile.TemporaryDirectory() as d:
+            store, _ = self._build(d)
+            config = _config(os.path.join(d, "state"))
+            client = FakeClient(handler=_combined_handler)
+            agent = Naturalizer(client, config)
+            run_naturalize(agent, store, _FakeGlossary(), config)
+
+            op = client.usage_summary()["by_operation"]["naturalize.rewrite"]
+            # test_full_flow 场景：段1的改写被 lint 拒绝（rejected），段5的改写被采纳（accepted）
+            self.assertEqual(op["accepted"], 1)
+            self.assertEqual(op["rejected"], 1)
 
     def test_dry_run_no_writeback(self):
         with tempfile.TemporaryDirectory() as d:

@@ -154,7 +154,9 @@ class TestMineCandidatesDualChannel(unittest.TestCase):
             self.tgt = "zh"
             self._candidates = candidates
 
-        def _ask_json(self, system, user, *, tier, key=None, default=None, max_tokens=None):
+        def _ask_json(
+            self, system, user, *, tier, key=None, default=None, max_tokens=None, operation=None
+        ):
             return list(self._candidates)
 
     def test_en_merges_llm_lowercase_terms_missed_by_uppercase_channel(self):
@@ -198,7 +200,9 @@ class TestMineCandidatesLlmConcurrency(unittest.TestCase):
             self.src, self.tgt = "ja", "zh"
             self._per = per_chapter
 
-        def _ask_json(self, system, user, *, tier, key=None, default=None, max_tokens=None):
+        def _ask_json(
+            self, system, user, *, tier, key=None, default=None, max_tokens=None, operation=None
+        ):
             import re
 
             ci = int(re.search(r"第(\d+)章", user).group(1))

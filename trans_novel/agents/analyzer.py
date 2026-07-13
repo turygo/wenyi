@@ -18,7 +18,7 @@ class Analyzer(Agent):
         system = prompts.render("analyzer_system", src=self.src, tgt=self.tgt)
         user = prompts.render("analyzer_user", src=self.src, tgt=self.tgt, sample=sample_text)
         # 不传 default：分析失败照常抛出，由调用方决定（prepare 阶段失败应显式暴露）
-        data = self._ask_json(system, user, tier="strong")
+        data = self._ask_json(system, user, tier="strong", operation="analyzer.analyze")
         if not isinstance(data, dict):
             data = {}
         data.setdefault("genre", "")

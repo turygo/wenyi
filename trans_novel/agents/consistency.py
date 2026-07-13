@@ -41,7 +41,11 @@ class ConsistencyChecker(Agent):
             + digests
             + '\n\n请输出 JSON：{"issues":[...]}。'
         )
-        return self.dict_items(self._ask_json(system, user, tier="cheap", key="issues", default=[]))
+        return self.dict_items(
+            self._ask_json(
+                system, user, tier="cheap", key="issues", default=[], operation="consistency.check"
+            )
+        )
 
     def autofix(self, store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
         """对可安全机械修复的术语/译名不一致，生成确定替换并改写正文。
@@ -62,7 +66,14 @@ class ConsistencyChecker(Agent):
             + digests
             + '\n\n请输出 JSON：{"replacements":[...]}。'
         )
-        raw = self._ask_json(system, user, tier="strong", key="replacements", default=[])
+        raw = self._ask_json(
+            system,
+            user,
+            tier="strong",
+            key="replacements",
+            default=[],
+            operation="consistency.autofix",
+        )
         replace_map: dict[str, str] = {}
         applied: list[dict] = []
         for r in raw:

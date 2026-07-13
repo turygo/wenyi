@@ -28,6 +28,7 @@ class Agent:
         user: str,
         *,
         tier: str,
+        operation: str,
         key: str | None = None,
         default: Any = _RAISE,
         max_tokens: int | None = None,
@@ -36,6 +37,7 @@ class Agent:
 
         异常时返回 default（未给 default 则照常抛出，如 Translator 交由重试逻辑处理）。
         key 给出时：结果为 dict 取 data[key]（缺失回退）；结果为非空 list 直接用；否则回退。
+        operation：稳定、可读的业务标签，驱动 llm/base.py 的 by_operation telemetry。
         """
         try:
             data = self.client.complete_json(
@@ -43,6 +45,7 @@ class Agent:
                 tier=tier,
                 max_tokens=max_tokens,
                 stage=type(self).__name__,
+                operation=operation,
             )
         except Exception:
             if default is _RAISE:
@@ -56,7 +59,14 @@ class Agent:
         return data if data else fb
 
     def _ask_text(
-        self, system: str, user: str, *, tier: str, default: str = "", max_tokens: int | None = None
+        self,
+        system: str,
+        user: str,
+        *,
+        tier: str,
+        operation: str,
+        default: str = "",
+        max_tokens: int | None = None,
     ) -> str:
         """complete 纯文本并 strip；异常返回 default。"""
         try:
@@ -66,6 +76,7 @@ class Agent:
                     tier=tier,
                     max_tokens=max_tokens,
                     stage=type(self).__name__,
+                    operation=operation,
                 )
                 or ""
             ).strip()

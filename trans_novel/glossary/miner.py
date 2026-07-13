@@ -394,7 +394,9 @@ def mine_candidates_llm(
         )
         # 不设 default：某章挖掘失败若被兜成空列表，会让 term_mining_done 静默永久
         # 落盘——异常整体冒泡，交由调用方（orchestrator）捕获并放弃本次落标记、下次续跑重试。
-        raw = agent._ask_json(system, user, tier="fast", key="candidates")
+        raw = agent._ask_json(
+            system, user, tier="fast", key="candidates", operation="prescan.term_mine"
+        )
         return [s.strip() for s in raw or [] if isinstance(s, str) and s.strip()]
 
     results: dict[int, list[str]] = {}

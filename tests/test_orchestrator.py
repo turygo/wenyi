@@ -6,6 +6,8 @@ import json
 import os
 import re
 import tempfile
+import threading
+import time
 import unittest
 
 from tests.fake_llm import routing_handler
@@ -366,6 +368,68 @@ class TestTermMiningRobustness(unittest.TestCase):
                     c["messages"][-1]["content"],
                     "back_matter=full 时 Notes 章不得进入挖掘候选输入",
                 )
+
+    def test_mining_input_chapters_match_pre_overlap_semantics(self):
+        """本批只把 digest/term-mining 改成重叠调度，term mining 的章节输入集合本身
+        （哪些章、按什么顺序、is_back_matter 排除口径）必须与改动前完全一致——
+        直接拦截 mine_candidates 的真实调用参数比对，而不仅凭候选词是否漏出判断。"""
+        from unittest.mock import patch
+
+        import trans_novel.pipeline.orchestrator as orchestrator_module
+
+        marker = "ZZQ_NOTES_MINING_MARKER"
+        body = "綾小路は教室の窓際に座っていた。空はどこまでも青く鳥が鳴いていた。" + "あ" * 220
+        dialog = "「おはよう、綾小路くん」と堀北が声をかけた。彼女はいつも通り無表情だった。"
+        notes = f"1. Endnote {marker} on chapter one, page 12.\n\n2. Bibliography entry."
+        doc = f"# 第一章 出会い\n\n{body}\n\n{dialog}\n\n# Notes\n\n{notes}\n"
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            with open(txt, "w", encoding="utf-8") as f:
+                f.write(doc)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.back_matter = "full"  # _back_matter_mode 恒不旁路，正文照常入 digest
+
+            client = FakeClient(handler=routing_handler)
+            orch = Orchestrator(cfg, client=client)
+            store = orch.prepare(txt)
+            manifest = store.load_manifest()
+            chapters = manifest["chapters"]
+
+            from trans_novel.pipeline.backmatter import is_back_matter
+
+            # 改动前的推导逻辑（与 orchestrator._build_understanding 里未变的过滤条件
+            # 完全一致）：只用 is_back_matter 排除，不受 back_matter=full 的
+            # _back_matter_mode 影响；顺序=manifest 章序。
+            expected_chapter_indices = [
+                c["index"]
+                for c in chapters
+                if not is_back_matter(
+                    store.load_chapter(c["index"]).title, index=c["index"], total=len(chapters)
+                )
+            ]
+
+            captured = {}
+            real_mine_candidates = orchestrator_module.mine_candidates
+
+            def _spy(src_lang, chapters_arg, agent, **kwargs):
+                captured["chapters"] = list(chapters_arg)
+                return real_mine_candidates(src_lang, chapters_arg, agent, **kwargs)
+
+            with patch.object(orchestrator_module, "mine_candidates", _spy):
+                orch.run(txt)
+
+            self.assertIn("chapters", captured, "mine_candidates 必须被真实调用一次")
+            actual_indices = [ci for ci, _ in captured["chapters"]]
+            self.assertEqual(
+                actual_indices,
+                expected_chapter_indices,
+                "term mining 的章节输入集合/顺序必须与改动前一致（本批只重叠调度，不新增排除）",
+            )
+            # 每章喂入的文本也必须是该章全部源文段落拼接（未经额外裁剪）
+            for ci, text in captured["chapters"]:
+                ch = store.load_chapter(ci)
+                self.assertEqual(text, "\n".join(s.source for s in ch.text_segments))
 
 
 class TestTitleReuse(unittest.TestCase):
@@ -1228,6 +1292,328 @@ class TestReviewAsync(unittest.TestCase):
             self.assertEqual(len(translate_calls), 0, "续跑只补审校，绝不重译")
 
 
+class TestReviewChunkConcurrency(unittest.TestCase):
+    """Reviewer chunk 并发：有界并发真实发生，且合并结果严格保持原 chunk 顺序。"""
+
+    def test_chunks_run_concurrently_in_bounded_pool_and_merge_in_order(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        n_chunks = 3
+        barrier = threading.Barrier(n_chunks, timeout=5)
+        order_lock = threading.Lock()
+        completion_order: list[int] = []
+
+        def handler(messages, tier, json_mode):
+            user = messages[-1]["content"]
+            m = re.search(r"MARK(\d+)", user)
+            assert m, "chunk marker missing from review prompt"
+            c = int(m.group(1))
+            # 所有 chunk 必须同时在飞才能通过 barrier——若并发退化为串行，该 wait 会
+            # 一直阻塞直到 barrier 超时并抛出 BrokenBarrierError，测试失败。
+            barrier.wait()
+            # 提交顺序 c=0,1,2；故意让完成顺序反转（c 越大睡得越少），验证结果
+            # 合并顺序仍按 chunk 原始顺序而非完成顺序。
+            time.sleep((n_chunks - c) * 0.03)
+            with order_lock:
+                completion_order.append(c)
+            return json.dumps(
+                {"issues": [{"index": 0, "type": "missing", "detail": f"chunk{c}"}]},
+                ensure_ascii=False,
+            )
+
+        cfg = _config("state")
+        cfg.segment.max_chars_per_batch = 1  # budget=3，强制每对独立成块
+        client = FakeClient(handler=handler)
+        orch = Orchestrator(cfg, client=client)
+        pairs = [(f"MARK{c} " + "源文" * 10, f"译文{c}") for c in range(n_chunks)]
+
+        with ThreadPoolExecutor(max_workers=4) as review_executor:
+            issues = orch._review_chapter(pairs, [], review_executor)
+
+        self.assertEqual([it["detail"] for it in issues], [f"chunk{c}" for c in range(n_chunks)])
+        # 完成顺序确实被反转了（证明真的并发，且合并未按完成顺序）
+        self.assertEqual(completion_order, list(reversed(range(n_chunks))))
+
+    def test_book_wide_pool_bounds_concurrency_across_chapters_without_deadlock(self):
+        """异步路径（review=true, autofix_severe=false）多章并发提交审校：
+        book-wide review_executor 上限生效、且不因"任务等自己"而死锁。"""
+        max_concurrent = 0
+        current = 0
+        lock = threading.Lock()
+
+        def handler(messages, tier, json_mode):
+            nonlocal max_concurrent, current
+            if "译文审校" in messages[0]["content"]:
+                with lock:
+                    current += 1
+                    max_concurrent = max(max_concurrent, current)
+                time.sleep(0.01)
+                with lock:
+                    current -= 1
+                return json.dumps({"issues": []}, ensure_ascii=False)
+            return routing_handler(messages, tier, json_mode)
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.autofix_severe = False
+
+            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+            # 未死锁即已经证明池分离设计成立；再断言并发确实发生过且没有超过硬上限 4。
+            self.assertGreaterEqual(max_concurrent, 1)
+            self.assertLessEqual(max_concurrent, 4)
+            m = store.load_manifest()
+            self.assertTrue(all(c["status"] == STATUS_DONE for c in m["chapters"]))
+
+
+class TestPrescanOverlap(unittest.TestCase):
+    """digest 与 term mining 真正并发；naming 等待两者收尾；异常语义不变。"""
+
+    def test_digest_and_mining_genuinely_overlap(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+
+            digest_reached = threading.Event()
+            mining_reached = threading.Event()
+            overlapped = threading.Event()
+
+            def handler(messages, tier, json_mode):
+                system = messages[0]["content"]
+                if "梗概员" in system:
+                    digest_reached.set()
+                    if mining_reached.wait(timeout=2):
+                        overlapped.set()
+                    return "本章梗概：人物登场，情节推进。"
+                if "术语候选挖掘" in system:
+                    mining_reached.set()
+                    if digest_reached.wait(timeout=2):
+                        overlapped.set()
+                    return json.dumps({"candidates": ["堀北"]}, ensure_ascii=False)
+                return routing_handler(messages, tier, json_mode)
+
+            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+
+            self.assertTrue(
+                overlapped.is_set(),
+                "digest 与 term mining 必须真正同时在跑，而非先后串行执行",
+            )
+            self.assertTrue((store.load_analysis() or {}).get("term_mining_done"))
+
+    def test_naming_waits_for_slower_mining_branch(self):
+        """mining 分支人为拖慢：naming（全书定名）调用必须等它彻底收尾才发生。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+
+            lock = threading.Lock()
+            mining_finished_at: list[float] = []
+            naming_started_at: list[float] = []
+
+            def handler(messages, tier, json_mode):
+                system = messages[0]["content"]
+                if "术语候选挖掘" in system:
+                    time.sleep(0.1)  # 故意拖慢挖掘分支
+                    with lock:
+                        mining_finished_at.append(time.monotonic())
+                    return json.dumps({"candidates": ["堀北"]}, ensure_ascii=False)
+                if "全书定名" in system:
+                    with lock:
+                        naming_started_at.append(time.monotonic())
+                return routing_handler(messages, tier, json_mode)
+
+            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+
+            self.assertTrue(mining_finished_at and naming_started_at)
+            self.assertGreaterEqual(
+                min(naming_started_at),
+                max(mining_finished_at),
+                "naming 必须等挖掘分支（含人为拖慢的每一章）全部收尾才能开始",
+            )
+            self.assertTrue((store.load_analysis() or {}).get("term_mining_done"))
+            g = GlossaryStore(store.glossary_path)
+            self.assertIsNotNone(g.get_term("堀北"), "naming 必须拿到挖掘分支的完整候选")
+            g.close()
+
+    def test_digest_exception_precedence_after_draining_mining_branch(self):
+        """digest 分支异常整体冒泡（旧同步语义），但挖掘分支必须先被排干；
+        term_mining_done 不得因此被落盘。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            client = FakeClient(handler=routing_handler)
+            orch = Orchestrator(cfg, client=client)
+            store = orch.prepare(txt)
+
+            def _boom(source_text):
+                raise RuntimeError("digest 崩")
+
+            orch.synopsizer.digest_chapter = _boom  # 遮蔽实例方法，绕过 _ask_text 的吞异常
+
+            with self.assertRaises(RuntimeError):
+                orch.run(txt)
+
+            reloaded_analysis = store.load_analysis() or {}
+            self.assertFalse(
+                reloaded_analysis.get("term_mining_done"),
+                "digest 异常时挖掘/定名结果不得被落盘为完成",
+            )
+
+
+class TestOperationOutcomeAccounting(unittest.TestCase):
+    """业务采纳结果写入对应 operation 槽位的 accepted/rejected（decision 19/53）。"""
+
+    def test_polish_batch_accepted_when_no_new_lint_issue(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))  # polish=True
+            client = FakeClient(handler=routing_handler)
+            Orchestrator(cfg, client=client).run(txt)
+
+            op = client.usage_summary()["by_operation"]["polish.batch"]
+            self.assertGreater(op["accepted"], 0)
+            self.assertEqual(op["rejected"], 0)
+
+    def test_polish_batch_rejected_when_introduces_new_lint_issue(self):
+        src = "「おはようございます」と彼は静かな声で言った。"
+
+        def handler(messages, tier, json_mode):
+            sys = messages[0]["content"]
+            user = messages[-1]["content"]
+            if "文学翻译" in sys:
+                n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
+                return json.dumps(
+                    {"translations": ["“早上好”他轻声说道" for _ in range(n)]}, ensure_ascii=False
+                )
+            if "中文润色编辑" in sys:
+                target_block = user.split("【待润色中文译文】", 1)[-1]
+                n = len(re.findall(r"^\[(\d+)\] ", target_block, re.M))
+                return json.dumps(
+                    {"polished": ["早上好他轻声说道" for _ in range(n)]}, ensure_ascii=False
+                )
+            return routing_handler(messages, tier, json_mode)
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            with open(txt, "w", encoding="utf-8") as f:
+                f.write(f"# 第一章\n\n{src}\n")
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+            client = FakeClient(handler=handler)
+            Orchestrator(cfg, client=client).run(txt)
+
+            op = client.usage_summary()["by_operation"]["polish.batch"]
+            self.assertGreaterEqual(op["rejected"], 1)
+
+    def test_lint_fix_accepted_when_retranslation_reduces_issues(self):
+        src = "「おはようございます」と彼は静かな声で言った。窓の外には青い空が広がっていた。"
+
+        def handler(messages, tier, json_mode):
+            sys = messages[0]["content"]
+            user = messages[-1]["content"]
+            if "文学翻译" in sys:
+                n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
+                if "【审校意见】" in user:
+                    out = ["“早上好”他轻声说道窗外是一片蔚蓝的天空" for _ in range(n)]
+                else:
+                    out = ["早上好他轻声说道窗外是一片蔚蓝的天空" for _ in range(n)]
+                return json.dumps({"translations": out}, ensure_ascii=False)
+            return routing_handler(messages, tier, json_mode)
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            with open(txt, "w", encoding="utf-8") as f:
+                f.write(f"# 第一章\n\n{src}\n")
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.polish = False
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+            client = FakeClient(handler=handler)
+            Orchestrator(cfg, client=client).run(txt)
+
+            op = client.usage_summary()["by_operation"]["translate.lint_fix"]
+            self.assertEqual(op["accepted"], 1)
+            self.assertEqual(op["rejected"], 0)
+
+    def test_review_fix_accepted_and_rejected_recorded(self):
+        FIX_TEXT = "第一章 邂逅"  # 7 字，比值 1.0，通过长度校验 → accepted
+
+        def handler(fix_text):
+            def h(messages, tier, json_mode):
+                sys = messages[0]["content"]
+                user = messages[-1]["content"]
+                if "译文审校" in sys:
+                    return json.dumps(
+                        {
+                            "issues": [
+                                {
+                                    "index": 0,
+                                    "type": "missing",
+                                    "detail": "漏了一句",
+                                    "suggestion": "补上",
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
+                if "文学翻译" in sys and "【审校意见】" in user:
+                    return json.dumps({"translations": [fix_text]}, ensure_ascii=False)
+                return routing_handler(messages, tier, json_mode)
+
+            return h
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+
+            cfg_accept = _config(os.path.join(d, "state_accept"))
+            cfg_accept.pipeline.autofix_severe = True
+            accepted_client = FakeClient(handler=handler(FIX_TEXT))
+            Orchestrator(cfg_accept, client=accepted_client).run(txt)
+            op = accepted_client.usage_summary()["by_operation"]["translate.review_fix"]
+            self.assertGreaterEqual(op["accepted"], 1)
+            self.assertEqual(op["rejected"], 0)
+
+            cfg_reject = _config(os.path.join(d, "state_reject"))
+            cfg_reject.pipeline.autofix_severe = True
+            rejected_client = FakeClient(handler=handler("短"))  # 过短，长度校验不通过
+            Orchestrator(cfg_reject, client=rejected_client).run(txt)
+            op2 = rejected_client.usage_summary()["by_operation"]["translate.review_fix"]
+            self.assertEqual(op2["accepted"], 0)
+            self.assertGreaterEqual(op2["rejected"], 1)
+
+
+class TestOperationLabelCompleteness(unittest.TestCase):
+    """production 调用一律显式标注 operation，不留 class-name-only 空档（decision 44/59）。"""
+
+    def test_no_production_call_has_blank_operation(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.backtranslate_sample = 1.0  # 强制触发回译抽检
+
+            client = FakeClient(handler=routing_handler)
+            orch = Orchestrator(cfg, client=client)
+            orch.run_steps(txt, {"translate", "qa", "report"})
+
+            blank = [c for c in client.calls if not c.get("operation")]
+            self.assertEqual(
+                blank,
+                [],
+                f"生产调用不得省略 operation 标签，缺失的 system 前缀："
+                f"{[c['messages'][0]['content'][:30] for c in blank]}",
+            )
+
+
 class TestPolishFailureFallback(unittest.TestCase):
     def test_polish_failure_falls_back_to_raw_translation(self):
         """润色调用失败（handler 抛异常）：该批最终 target 回退为未润色译文
@@ -1507,7 +1893,12 @@ class TestLintSkipBranchRecordsIssue(unittest.TestCase):
 
 
 class TestProgressLabels(unittest.TestCase):
-    """进度回调覆盖译前/译中/译后全阶段——防止新增阶段静默停在"准备中"。"""
+    """进度回调覆盖译前/译中/译后全阶段——防止新增阶段静默停在"准备中"。
+
+    digest（通读全书章节…）与 term mining（查找专有名词…）现在真正并发跑，二者的
+    进度标签彼此交织、相对顺序不确定；只断言宏观阶段边界仍严格有序（各自都晚于
+    分析全书风格，且都在纳入"统一译名…"（naming 等待两者）之前收尾）。
+    """
 
     def test_stage_labels_appear_in_order(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1521,7 +1912,7 @@ class TestProgressLabels(unittest.TestCase):
                 {"translate", "qa", "report", "assemble"},
                 progress=lambda done, total, label: labels.append(label),
             )
-            expected = [
+            for label in (
                 "读取原书…",
                 "分析全书风格…",
                 "通读全书章节…",
@@ -1532,10 +1923,27 @@ class TestProgressLabels(unittest.TestCase):
                 "检查全书一致性…",
                 "生成报告…",
                 "生成译文文件…",
-            ]
-            it = iter(labels)
-            missing = [e for e in expected if e not in it]
-            self.assertEqual(missing, [], f"缺失或乱序的阶段标签：{missing}；实际序列={labels}")
+            ):
+                self.assertIn(label, labels, f"缺失阶段标签：{label}；实际序列={labels}")
+
+            def first(lbl):
+                return labels.index(lbl)
+
+            def last(lbl):
+                return len(labels) - 1 - labels[::-1].index(lbl)
+
+            self.assertLess(first("读取原书…"), first("分析全书风格…"))
+            self.assertLess(first("分析全书风格…"), first("通读全书章节…"))
+            self.assertLess(first("分析全书风格…"), first("查找专有名词…"))
+            # naming（统一译名…）必须等 digest 与 mining 两条并发分支都收尾——
+            # 二者各自的最后一次进度回调都要早于统一译名的首次回调。
+            self.assertLess(last("通读全书章节…"), first("统一译名…"))
+            self.assertLess(last("查找专有名词…"), first("统一译名…"))
+            self.assertLess(last("统一译名…"), first("生成全书概览…"))
+            self.assertLess(last("生成全书概览…"), first("翻译完成"))
+            self.assertLess(first("翻译完成"), first("检查全书一致性…"))
+            self.assertLess(first("检查全书一致性…"), first("生成报告…"))
+            self.assertLess(first("生成报告…"), first("生成译文文件…"))
 
 
 if __name__ == "__main__":

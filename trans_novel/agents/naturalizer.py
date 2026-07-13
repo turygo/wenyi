@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..glossary.store import GlossaryStore, GlossaryTerm
@@ -68,13 +69,19 @@ class Naturalizer(Agent):
         user = prompts.render(
             "naturalize_screen_user", n=len(texts), numbered=prompts.numbered(texts)
         )
-        return self.dict_items(self._ask_json(system, user, tier="cheap", key="issues", default=[]))
+        return self.dict_items(
+            self._ask_json(
+                system, user, tier="cheap", key="issues", default=[], operation="naturalize.screen"
+            )
+        )
 
     def rewrite(self, text: str, quote: str, reason: str) -> str:
         """单语改写整段（strong 档）；失败或空结果回退原文。"""
         system = prompts.render("naturalize_rewrite_system")
         user = prompts.render("naturalize_rewrite_user", text=text, quote=quote, reason=reason)
-        data = self._ask_json(system, user, tier="strong", default={})
+        data = self._ask_json(
+            system, user, tier="strong", default={}, operation="naturalize.rewrite"
+        )
         rewritten = data.get("rewritten") if isinstance(data, dict) else None
         return rewritten.strip() if isinstance(rewritten, str) and rewritten.strip() else text
 
@@ -82,14 +89,25 @@ class Naturalizer(Agent):
         """单次成对判断，返回 "A"/"B"/"tie"（异常或不合法输出保守视为 tie）。"""
         system = prompts.render("naturalize_pair_system")
         user = prompts.render("naturalize_pair_user", a=a, b=b)
-        data = self._ask_json(system, user, tier="cheap", default={})
+        data = self._ask_json(system, user, tier="cheap", default={}, operation="naturalize.pair")
         winner = data.get("winner") if isinstance(data, dict) else None
         return winner if winner in ("A", "B", "tie") else "tie"
 
-    def pairwise_accept(self, orig: str, rewritten: str) -> bool:
-        """正反两序各判一次；改写版两序皆胜才采纳，tie/负任一次即拒。"""
-        order1 = self.judge_pair(orig, rewritten)  # A=原译 B=改写
-        order2 = self.judge_pair(rewritten, orig)  # A=改写 B=原译
+    def pairwise_accept(
+        self, orig: str, rewritten: str, executor: "ThreadPoolExecutor | None" = None
+    ) -> bool:
+        """正反两序各判一次；改写版两序皆胜才采纳，tie/负任一次即拒。
+
+        executor 给出时正反两次 judge_pair 并发提交（章级复用的 2-worker 池）；
+        不给时保持原顺序串行调用（独立调用/测试场景）。判定条件与结果语义不变。
+        """
+        if executor is not None:
+            fut1 = executor.submit(self.judge_pair, orig, rewritten)  # A=原译 B=改写
+            fut2 = executor.submit(self.judge_pair, rewritten, orig)  # A=改写 B=原译
+            order1, order2 = fut1.result(), fut2.result()
+        else:
+            order1 = self.judge_pair(orig, rewritten)
+            order2 = self.judge_pair(rewritten, orig)
         return order1 == "B" and order2 == "A"
 
     def fidelity_check(self, source: str, orig: str, rewritten: str) -> bool:
@@ -98,7 +116,16 @@ class Naturalizer(Agent):
         user = prompts.render(
             "naturalize_fidelity_user", source=source, orig=orig, rewritten=rewritten
         )
-        return bool(self._ask_json(system, user, tier="cheap", key="faithful", default=False))
+        return bool(
+            self._ask_json(
+                system,
+                user,
+                tier="cheap",
+                key="faithful",
+                default=False,
+                operation="naturalize.fidelity",
+            )
+        )
 
 
 def _lint_introduces_new_issue(
@@ -156,87 +183,95 @@ def naturalize_chapter(
     if not is_back_matter(chapter.title, index=ci, total=total):
         cands = candidate_segments(chapter)
 
-    for start in range(0, len(cands), _SCREEN_BATCH_SIZE):
-        if remaining is not None and remaining <= 0:
-            break
-        batch = cands[start : start + _SCREEN_BATCH_SIZE]
-        texts = [s.target or "" for s in batch]
-        stats["screened"] += len(texts)
-        issues = agent.screen(texts)
-        for issue in issues:
+    with ThreadPoolExecutor(max_workers=2) as pair_executor:
+        for start in range(0, len(cands), _SCREEN_BATCH_SIZE):
             if remaining is not None and remaining <= 0:
                 break
-            idx = issue.get("index")
-            if not isinstance(idx, int) or not (0 <= idx < len(batch)):
-                continue
-            seg = batch[idx]
-            stats["suspects"] += 1
-            quote = str(issue.get("quote", ""))
-            reason = str(issue.get("reason", ""))
-            before = seg.target or ""
-            rewritten = agent.rewrite(before, quote, reason)
-            if rewritten.strip() == before.strip():
-                continue
-            stats["rewritten"] += 1
+            batch = cands[start : start + _SCREEN_BATCH_SIZE]
+            texts = [s.target or "" for s in batch]
+            stats["screened"] += len(texts)
+            issues = agent.screen(texts)
+            for issue in issues:
+                if remaining is not None and remaining <= 0:
+                    break
+                idx = issue.get("index")
+                if not isinstance(idx, int) or not (0 <= idx < len(batch)):
+                    continue
+                seg = batch[idx]
+                stats["suspects"] += 1
+                quote = str(issue.get("quote", ""))
+                reason = str(issue.get("reason", ""))
+                before = seg.target or ""
+                rewritten = agent.rewrite(before, quote, reason)
+                if rewritten.strip() == before.strip():
+                    agent.client.usage.record_outcome("naturalize.rewrite", accepted=False)
+                    continue
+                stats["rewritten"] += 1
 
-            if _lint_introduces_new_issue(
-                seg.source, before, rewritten, locked_terms, config.source_lang
-            ):
-                stats["lint_rejected"] += 1
-                if not dry_run:
-                    store.log_event(
-                        "naturalize_rejected",
-                        chapter=ci,
-                        index=seg.index,
-                        gate="lint",
-                        detail={"quote": quote, "reason": reason, "rewritten": rewritten},
-                    )
-                continue
+                if _lint_introduces_new_issue(
+                    seg.source, before, rewritten, locked_terms, config.source_lang
+                ):
+                    stats["lint_rejected"] += 1
+                    agent.client.usage.record_outcome("naturalize.rewrite", accepted=False)
+                    if not dry_run:
+                        store.log_event(
+                            "naturalize_rejected",
+                            chapter=ci,
+                            index=seg.index,
+                            gate="lint",
+                            detail={"quote": quote, "reason": reason, "rewritten": rewritten},
+                        )
+                    continue
 
-            if not agent.fidelity_check(seg.source, before, rewritten):
-                stats["fidelity_rejected"] += 1
-                if not dry_run:
-                    store.log_event(
-                        "naturalize_rejected",
-                        chapter=ci,
-                        index=seg.index,
-                        gate="fidelity",
-                        detail={"quote": quote, "reason": reason, "rewritten": rewritten},
-                    )
-                continue
+                # 关卡③忠实度：is True 才放行成对判断——异常/默认 False 一律短路，
+                # 绝不在忠实度未确认前发出两次成对判断请求。
+                if agent.fidelity_check(seg.source, before, rewritten) is not True:
+                    stats["fidelity_rejected"] += 1
+                    agent.client.usage.record_outcome("naturalize.rewrite", accepted=False)
+                    if not dry_run:
+                        store.log_event(
+                            "naturalize_rejected",
+                            chapter=ci,
+                            index=seg.index,
+                            gate="fidelity",
+                            detail={"quote": quote, "reason": reason, "rewritten": rewritten},
+                        )
+                    continue
 
-            if not agent.pairwise_accept(before, rewritten):
-                stats["pairwise_rejected"] += 1
-                if not dry_run:
-                    store.log_event(
-                        "naturalize_rejected",
-                        chapter=ci,
-                        index=seg.index,
-                        gate="pairwise",
-                        detail={"quote": quote, "reason": reason, "rewritten": rewritten},
-                    )
-                continue
+                if not agent.pairwise_accept(before, rewritten, pair_executor):
+                    stats["pairwise_rejected"] += 1
+                    agent.client.usage.record_outcome("naturalize.rewrite", accepted=False)
+                    if not dry_run:
+                        store.log_event(
+                            "naturalize_rejected",
+                            chapter=ci,
+                            index=seg.index,
+                            gate="pairwise",
+                            detail={"quote": quote, "reason": reason, "rewritten": rewritten},
+                        )
+                    continue
 
-            final = rewritten
-            if config.punctuation_normalize:
-                final = normalize_zh(final)
-            stats["applied"] += 1
-            stats["applied_entries"].append(
-                {"chapter": ci, "index": seg.index, "before": before, "after": final}
-            )
-            if remaining is not None:
-                remaining -= 1
-            if not dry_run:
-                seg.target = final
-                store.log_event(
-                    "naturalize_applied",
-                    chapter=ci,
-                    index=seg.index,
-                    before=before,
-                    after=final,
-                    quote=quote,
-                    reason=reason,
+                final = rewritten
+                if config.punctuation_normalize:
+                    final = normalize_zh(final)
+                stats["applied"] += 1
+                agent.client.usage.record_outcome("naturalize.rewrite", accepted=True)
+                stats["applied_entries"].append(
+                    {"chapter": ci, "index": seg.index, "before": before, "after": final}
                 )
+                if remaining is not None:
+                    remaining -= 1
+                if not dry_run:
+                    seg.target = final
+                    store.log_event(
+                        "naturalize_applied",
+                        chapter=ci,
+                        index=seg.index,
+                        before=before,
+                        after=final,
+                        quote=quote,
+                        reason=reason,
+                    )
 
     if not dry_run:
         chapter.meta["naturalized"] = True
