@@ -8,7 +8,12 @@ import unittest
 import zipfile
 
 from tests.sample_data import write_sample_epub, write_sample_txt
-from trans_novel.ingest.epub_reader import _extract_chapter
+from trans_novel.ingest.epub_reader import (
+    _decode_markup,
+    _extract_chapter,
+    _find_opf_path,
+    _parse_opf,
+)
 from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
 from trans_novel.ingest.segmenter import (
     _split_text,
@@ -19,6 +24,20 @@ from trans_novel.ingest.segmenter import (
 
 
 class TestTextIngest(unittest.TestCase):
+    def test_untitled_preface_does_not_gain_book_title_heading(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "book.txt")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("preface\n\n# Chapter 1\nbody\n\n# Chapter 2\nbody")
+
+            doc = load_document(p, "en", "zh")
+
+        self.assertEqual(doc.chapters[0].title, "book")
+        self.assertEqual(
+            [(segment.kind, segment.source) for segment in doc.chapters[0].segments],
+            [(KIND_TEXT, "preface")],
+        )
+
     def test_text_chapters_and_segments(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "novel.txt")
@@ -142,6 +161,22 @@ class TestFb2Ingest(unittest.TestCase):
                     ["第一章", "第一段。", "第二段。"],
                 )
 
+    def test_single_quoted_windows_1251_declaration(self):
+        content = """<?xml version='1.0' encoding='windows-1251'?>
+<FictionBook>
+  <description><title-info><book-title>Детство</book-title></title-info></description>
+  <body><section><title><p>Глава</p></title><p>Текст</p></section></body>
+</FictionBook>"""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "book.fb2")
+            with open(path, "wb") as f:
+                f.write(content.encode("windows-1251"))
+
+            doc = load_document(path, "ru", "zh")
+
+        self.assertEqual(doc.title, "Детство")
+        self.assertEqual(doc.chapters[0].segments[0].source, "Глава")
+
     def test_body_title_becomes_a_separate_chapter(self):
         doc = self._load(_FB2_BODY_TITLE)
         self.assertEqual(len(doc.chapters), 2)
@@ -255,6 +290,54 @@ class TestSplitLongSegments(unittest.TestCase):
 
 
 class TestEpubIngest(unittest.TestCase):
+    def test_table_and_definition_list_cells_are_extracted(self):
+        html = """<html><body>
+<table><tr><td>Cell A</td><td>Cell B</td></tr></table>
+<dl><dt>Term</dt><dd>Definition</dd></dl>
+</body></html>"""
+
+        _title, segments, _template = _extract_chapter(html, 0, "chapter.xhtml")
+
+        self.assertEqual(
+            [segment.source for segment in segments],
+            ["Cell A", "Cell B", "Term", "Definition"],
+        )
+
+    def test_declared_legacy_xhtml_encoding_is_honored(self):
+        markup = (
+            '<?xml version="1.0" encoding="Shift_JIS"?><html><body><p>日本語</p></body></html>'
+        ).encode("shift_jis")
+
+        decoded = _decode_markup(markup)
+
+        self.assertIn("日本語", decoded)
+        self.assertNotIn("�", decoded)
+
+    def test_missing_required_opf_attributes_are_reported_or_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "book.epub")
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr(
+                    "META-INF/container.xml",
+                    "<container><rootfiles><rootfile/></rootfiles></container>",
+                )
+            with zipfile.ZipFile(path) as zf:
+                with self.assertRaisesRegex(ValueError, "full-path"):
+                    _find_opf_path(zf)
+
+            opf_path = os.path.join(d, "opf.epub")
+            with zipfile.ZipFile(opf_path, "w") as zf:
+                zf.writestr(
+                    "content.opf",
+                    """<package><manifest>
+<item href="ignored.xhtml" media-type="application/xhtml+xml"/>
+<item id="valid" href="valid.xhtml" media-type="application/xhtml+xml"/>
+</manifest><spine><itemref/><itemref idref="valid"/></spine></package>""",
+                )
+            with zipfile.ZipFile(opf_path) as zf:
+                _title, hrefs, _toc = _parse_opf(zf, "content.opf")
+            self.assertEqual(hrefs, ["valid.xhtml"])
+
     def test_epub_records_inline_nodes_in_segment_meta(self):
         html = """<html><body>
 <p class="Textbody"><img src="before.jpg"/>Avant<br/>Après<img src="after.jpg"/></p>

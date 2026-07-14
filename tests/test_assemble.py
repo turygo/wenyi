@@ -11,9 +11,9 @@ import zipfile
 from bs4 import BeautifulSoup, Tag
 
 from tests.fake_llm import routing_handler
-from tests.sample_data import write_sample_epub, write_sample_txt
+from tests.sample_data import write_inline_sample_epub, write_sample_epub, write_sample_txt
 from trans_novel.assemble.report import build_report
-from trans_novel.assemble.writer import _render_chapter_html, assemble
+from trans_novel.assemble.writer import _render_chapter_html, _rewrite_html_document, assemble
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.epub_reader import _extract_chapter
@@ -112,6 +112,50 @@ class TestAssembleText(unittest.TestCase):
 
 
 class TestAssembleEpub(unittest.TestCase):
+    def test_rewrite_html_honors_declared_encoding_and_emits_utf8(self):
+        source = (
+            '<?xml version="1.0" encoding="Shift_JIS"?><html><body><p>日本語</p></body></html>'
+        ).encode("shift_jis")
+
+        output = _rewrite_html_document(
+            source,
+            lang="zh-Hans",
+            force_horizontal=False,
+        )
+        decoded = output.decode("utf-8")
+
+        self.assertIn("日本語", decoded)
+        self.assertIn('encoding="utf-8"', decoded)
+        self.assertIn('lang="zh-Hans"', decoded)
+
+    def test_epub_export_restores_inline_image_from_persisted_meta(self):
+        with tempfile.TemporaryDirectory() as d:
+            epub = os.path.join(d, "inline.epub")
+            write_inline_sample_epub(epub)
+            store, _ = _run(epub, os.path.join(d, "state"))
+
+            persisted = store.load_chapter(0)
+            inline_segments = [s for s in persisted.segments if "epub_inline" in s.meta]
+            self.assertEqual(len(inline_segments), 1)
+
+            output = assemble(store, epub, out_format="epub")
+            with zipfile.ZipFile(output) as archive:
+                rendered = BeautifulSoup(
+                    archive.read("OEBPS/ch1.xhtml"),
+                    "html.parser",
+                )
+                image_data = archive.read("OEBPS/image.jpg")
+
+        paragraph = rendered.find("p", class_="Textbody")
+        self.assertIsInstance(paragraph, Tag)
+        assert isinstance(paragraph, Tag)
+        image = paragraph.find("img")
+        self.assertIsInstance(image, Tag)
+        assert isinstance(image, Tag)
+        self.assertEqual(image.get("src"), "image.jpg")
+        self.assertEqual(image_data, b"inline-image")
+        self.assertIsNone(rendered.find(attrs={"data-tn-inline-id": True}))
+
     def test_epub_render_restores_inline_images_and_breaks(self):
         html = """<html><body>
 <p class="Textbody"><img src="before.jpg"/>Avant<br/>Après<img src="after.jpg"/></p>

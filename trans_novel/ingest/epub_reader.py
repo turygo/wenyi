@@ -15,12 +15,26 @@ import posixpath
 import xml.etree.ElementTree as ET
 import zipfile
 
-from bs4 import BeautifulSoup, Comment, NavigableString, Tag
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
 
 from .models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
 
 _CONTAINER = "META-INF/container.xml"
-_BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"}
+_BLOCK_TAGS = {
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "li",
+    "blockquote",
+    "td",
+    "th",
+    "dt",
+    "dd",
+}
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 _INLINE_META_KEY = "epub_inline"
 _INLINE_ID_ATTR = "data-tn-inline-id"
@@ -129,8 +143,10 @@ def _find_opf_path(zf: zipfile.ZipFile) -> str:
     # container.xml 用了默认命名空间，按 localname 匹配
     for el in root.iter():
         if el.tag.rsplit("}", 1)[-1] == "rootfile":
-            return el.attrib["full-path"]
-    raise ValueError("EPUB 损坏：container.xml 未找到 rootfile")
+            path = el.attrib.get("full-path", "").strip()
+            if path:
+                return path
+    raise ValueError("EPUB 损坏：container.xml 未找到有效的 rootfile full-path")
 
 
 def _zip_href(base_path: str, href: str) -> str:
@@ -163,13 +179,18 @@ def _parse_opf(zf: zipfile.ZipFile, opf_path: str) -> tuple[str, list[str], list
         if name == "title" and not title and el.text:
             title = el.text.strip()
         elif name == "item":
-            manifest[el.attrib["id"]] = (
+            item_id = el.attrib.get("id", "").strip()
+            if not item_id:
+                continue
+            manifest[item_id] = (
                 el.attrib.get("href", ""),
                 el.attrib.get("media-type", ""),
                 el.attrib.get("properties", ""),
             )
         elif name == "itemref":
-            spine_ids.append(el.attrib["idref"])
+            idref = el.attrib.get("idref", "").strip()
+            if idref:
+                spine_ids.append(idref)
         elif name == "spine":
             toc = el.attrib.get("toc")
             if toc:
@@ -193,6 +214,12 @@ def _parse_opf(zf: zipfile.ZipFile, opf_path: str) -> tuple[str, list[str], list
 
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
+
+def _decode_markup(data: bytes) -> str:
+    """按 XML/HTML 声明与字节特征解码 XHTML，最后才使用 UTF-8 替换兜底。"""
+    decoded = UnicodeDammit(data).unicode_markup
+    return decoded if decoded is not None else data.decode("utf-8", errors="replace")
 
 
 def _toc_label_map(zf: zipfile.ZipFile, toc_paths: list[str]) -> dict[str, str]:
@@ -309,7 +336,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
         for href in hrefs:
             if href not in names:
                 continue
-            html = zf.read(href).decode("utf-8", errors="replace")
+            html = _decode_markup(zf.read(href))
             title, segments, template = _extract_chapter(
                 html, ci, href, book_title=book_title, toc_title=toc_titles.get(href, "")
             )

@@ -153,7 +153,7 @@ def read_fb2(path: str, source_lang: str, target_lang: str) -> Document:
 
     # 剥离 XML 声明中的 encoding（FB2 常见 windows-1251）
     enc = "utf-8"
-    m = re.search(rb'<\?xml.*?encoding\s*=\s*"([^"]+)"', raw)
+    m = re.search(rb"<\?xml.*?encoding\s*=\s*['\"]([^'\"]+)['\"]", raw)
     if m:
         enc = m.group(1).decode("ascii", errors="replace")
     try:

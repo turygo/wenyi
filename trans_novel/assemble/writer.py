@@ -12,7 +12,7 @@ import os
 import re
 import zipfile
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Tag, UnicodeDammit
 
 from ..ingest.models import KIND_HEADING, Chapter
 from ..pipeline.runstore import RunStore
@@ -27,6 +27,10 @@ _VERTICAL_MARKERS = (
 )
 _HORIZONTAL_OVERRIDE_ID = "trans-novel-horizontal-override"
 _BILINGUAL_STYLE_ID = "tn-bilingual-style"
+_XML_ENCODING = re.compile(
+    r"(<\?xml[^>]*\bencoding\s*=\s*)(['\"])[^'\"]+\2",
+    re.IGNORECASE,
+)
 _BILINGUAL_CSS = """\
 .tn-source {
   font-size: 0.88em;
@@ -313,7 +317,12 @@ def _rewrite_html_document(
 ) -> bytes:
     """给 XHTML/HTML 写入译后语言；必要时注入横排覆盖样式/双语原文样式。"""
     try:
-        text = data.decode("utf-8") if isinstance(data, bytes) else data
+        if isinstance(data, bytes):
+            text = UnicodeDammit(data).unicode_markup
+            if text is None:
+                text = data.decode("utf-8", errors="replace")
+        else:
+            text = data
         soup = BeautifulSoup(text, "html.parser")
         html = soup.find("html")
         if html is None:
@@ -355,7 +364,8 @@ def _rewrite_html_document(
             style = soup.new_tag("style", id=_BILINGUAL_STYLE_ID)
             style.string = _BILINGUAL_CSS
             head.append(style)
-        return str(soup).encode("utf-8")
+        output = _XML_ENCODING.sub(r'\1"utf-8"', str(soup))
+        return output.encode("utf-8")
     except Exception:
         return data if isinstance(data, bytes) else data.encode("utf-8")
 
