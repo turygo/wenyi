@@ -233,6 +233,16 @@ class Orchestrator:
         )
         run_dir = os.path.join(self.config.state_dir, slugify(doc.title))
         store = RunStore(run_dir)
+        with store.lock():
+            return self._prepare_locked(doc, store, input_path, progress)
+
+    def _prepare_locked(
+        self,
+        doc,
+        store: RunStore,
+        input_path: str,
+        progress: Optional[ProgressFn],
+    ) -> RunStore:
         if store.exists():
             store.log_event("run_resumed", input_path=input_path, run_dir=store.run_dir)
             return store  # 已有进度 → 直接续跑，不重置（语言在 run() 里按 manifest 应用）
@@ -348,6 +358,16 @@ class Orchestrator:
         progress: Optional[ProgressFn] = None,
     ) -> RunStore:
         store = self.prepare(input_path, progress=progress)
+        with store.lock():
+            return self._run_locked(store, only_chapter=only_chapter, progress=progress)
+
+    def _run_locked(
+        self,
+        store: RunStore,
+        *,
+        only_chapter: int | None,
+        progress: Optional[ProgressFn],
+    ) -> RunStore:
         manifest = store.load_manifest()
         self._apply_language(manifest.get("source_lang") or self.config.source_lang)
         chapter_indices = {chapter.get("index") for chapter in manifest.get("chapters", [])}
@@ -1624,9 +1644,6 @@ class Orchestrator:
         out_path: str | None = None,
     ) -> dict[str, Any]:
         """按需执行步骤子集（可单选可全选）。steps ⊆ ALL_STEPS。"""
-        from ..agents.consistency import ConsistencyChecker
-        from ..assemble.report import build_report
-        from ..assemble.writer import assemble, bilingual_out_path
 
         steps = set(steps)
         run_steps_input = sorted(steps)
@@ -1637,6 +1654,32 @@ class Orchestrator:
             store = self.prepare(input_path, progress=progress)
             m = store.load_manifest()
             self._apply_language(m.get("source_lang") or self.config.source_lang)
+        with store.lock():
+            return self._finish_steps_locked(
+                store,
+                input_path=input_path,
+                steps=steps,
+                run_steps_input=run_steps_input,
+                progress=progress,
+                out_format=out_format,
+                out_path=out_path,
+            )
+
+    def _finish_steps_locked(
+        self,
+        store: RunStore,
+        *,
+        input_path: str,
+        steps: set[str],
+        run_steps_input: list[str],
+        progress: Optional[ProgressFn],
+        out_format: str,
+        out_path: str | None,
+    ) -> dict[str, Any]:
+        from ..agents.consistency import ConsistencyChecker
+        from ..assemble.report import build_report
+        from ..assemble.writer import assemble, bilingual_out_path
+
         store.log_event("run_steps_started", steps=run_steps_input, input_path=input_path)
 
         glossary = GlossaryStore(store.glossary_path)

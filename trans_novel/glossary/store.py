@@ -129,71 +129,74 @@ class GlossaryStore:
           现有条目 locked 或置信度更高 → 保留现有，记冲突，返回 'conflict'；
           否则用新条目覆盖，返回 'updated'。
         """
-        existing = self.get_term(term.source)
-        now = time.time()
-        if existing is None:
-            self.conn.execute(
-                """INSERT INTO glossary
-                   (source,target,reading,type,gender,aliases,first_chapter,note,
-                    confidence,locked,status,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    term.source,
-                    term.target,
-                    term.reading,
-                    term.type,
-                    term.gender,
-                    json.dumps(term.aliases, ensure_ascii=False),
-                    term.first_chapter if term.first_chapter is not None else chapter,
-                    term.note,
-                    term.confidence,
-                    int(term.locked),
-                    term.status,
-                    now,
-                ),
-            )
+        try:
+            # 锁在读取 existing 之前取得，保证两个连接不会同时基于旧快照决策。
+            self.conn.execute("BEGIN IMMEDIATE")
+            existing = self.get_term(term.source)
+            now = time.time()
+            if existing is None:
+                self.conn.execute(
+                    """INSERT INTO glossary
+                       (source,target,reading,type,gender,aliases,first_chapter,note,
+                        confidence,locked,status,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        term.source,
+                        term.target,
+                        term.reading,
+                        term.type,
+                        term.gender,
+                        json.dumps(term.aliases, ensure_ascii=False),
+                        term.first_chapter if term.first_chapter is not None else chapter,
+                        term.note,
+                        term.confidence,
+                        int(term.locked),
+                        term.status,
+                        now,
+                    ),
+                )
+                result = "inserted"
+            elif existing.target == term.target:
+                # 合并别名 / 补全字段，不算冲突
+                merged_aliases = sorted(set(existing.aliases) | set(term.aliases))
+                self.conn.execute(
+                    """UPDATE glossary SET reading=COALESCE(NULLIF(?,''),reading),
+                       gender=COALESCE(NULLIF(?,''),gender), aliases=?,
+                       note=COALESCE(NULLIF(?,''),note), updated_at=? WHERE source=?""",
+                    (
+                        term.reading,
+                        term.gender,
+                        json.dumps(merged_aliases, ensure_ascii=False),
+                        term.note,
+                        now,
+                        term.source,
+                    ),
+                )
+                result = "unchanged"
+            else:
+                # target 不同 → 冲突判定
+                existing_priority = (existing.locked, CONFIDENCE_ORDER.get(existing.confidence, 1))
+                new_priority = (term.locked, CONFIDENCE_ORDER.get(term.confidence, 1))
+                self._log_conflict(term.source, existing.target, term.target, chapter)
+                if existing_priority >= new_priority:
+                    self.conn.execute(
+                        "UPDATE glossary SET status='conflict', updated_at=? WHERE source=?",
+                        (now, term.source),
+                    )
+                    result = "conflict"
+                else:
+                    self.conn.execute(
+                        """UPDATE glossary SET target=?, reading=COALESCE(NULLIF(?,''),reading),
+                           gender=COALESCE(NULLIF(?,''),gender), confidence=?, status='conflict',
+                           updated_at=? WHERE source=?""",
+                        (term.target, term.reading, term.gender, term.confidence, now, term.source),
+                    )
+                    result = "updated"
             self.conn.commit()
-            return "inserted"
-
-        if existing.target == term.target:
-            # 合并别名 / 补全字段，不算冲突
-            merged_aliases = sorted(set(existing.aliases) | set(term.aliases))
-            self.conn.execute(
-                """UPDATE glossary SET reading=COALESCE(NULLIF(?,''),reading),
-                   gender=COALESCE(NULLIF(?,''),gender), aliases=?, note=COALESCE(NULLIF(?,''),note),
-                   updated_at=? WHERE source=?""",
-                (
-                    term.reading,
-                    term.gender,
-                    json.dumps(merged_aliases, ensure_ascii=False),
-                    term.note,
-                    now,
-                    term.source,
-                ),
-            )
-            self.conn.commit()
-            return "unchanged"
-
-        # target 不同 → 冲突判定
-        existing_priority = (existing.locked, CONFIDENCE_ORDER.get(existing.confidence, 1))
-        new_priority = (term.locked, CONFIDENCE_ORDER.get(term.confidence, 1))
-        self._log_conflict(term.source, existing.target, term.target, chapter)
-        if existing_priority >= new_priority:
-            self.conn.execute(
-                "UPDATE glossary SET status='conflict', updated_at=? WHERE source=?",
-                (now, term.source),
-            )
-            self.conn.commit()
-            return "conflict"
-        else:
-            self.conn.execute(
-                """UPDATE glossary SET target=?, reading=COALESCE(NULLIF(?,''),reading),
-                   gender=COALESCE(NULLIF(?,''),gender), confidence=?, status='conflict',
-                   updated_at=? WHERE source=?""",
-                (term.target, term.reading, term.gender, term.confidence, now, term.source),
-            )
-            self.conn.commit()
-            return "updated"
+            return result
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def _log_conflict(self, source, existing_target, proposed_target, chapter):
         self.conn.execute(

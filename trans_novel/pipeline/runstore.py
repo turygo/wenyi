@@ -16,8 +16,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterator
 
 from ..ingest.models import Chapter, Document
 
@@ -39,6 +40,35 @@ class RunStore:
 
     def ensure_dirs(self) -> None:
         os.makedirs(self.chapters_dir, exist_ok=True)
+
+    @contextmanager
+    def lock(self) -> Iterator[None]:
+        """Serialize mutations for one book across independent processes."""
+        self.ensure_dirs()
+        lock_path = os.path.join(self.run_dir, ".run.lock")
+        with open(lock_path, "a+b") as lock_file:
+            if os.name == "nt":  # pragma: no cover - Windows-specific
+                import msvcrt
+
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     # ── 路径 ──────────────────────────────────────────────────────────────
     @property
