@@ -8,12 +8,16 @@ import tempfile
 import unittest
 import zipfile
 
+from bs4 import BeautifulSoup, Tag
+
 from tests.fake_llm import routing_handler
 from tests.sample_data import write_sample_epub, write_sample_txt
 from trans_novel.assemble.report import build_report
-from trans_novel.assemble.writer import assemble
+from trans_novel.assemble.writer import _render_chapter_html, assemble
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
+from trans_novel.ingest.epub_reader import _extract_chapter
+from trans_novel.ingest.models import Chapter
 from trans_novel.ingest.segmenter import load_document
 from trans_novel.llm.base import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator
@@ -108,6 +112,81 @@ class TestAssembleText(unittest.TestCase):
 
 
 class TestAssembleEpub(unittest.TestCase):
+    def test_epub_render_restores_inline_images_and_breaks(self):
+        html = """<html><body>
+<p class="Textbody"><img src="before.jpg"/>Avant<br/>Après<img src="after.jpg"/></p>
+<p class="illustration"><img src="standalone.jpg"/></p>
+</body></html>"""
+        title, segments, template = _extract_chapter(
+            html,
+            0,
+            "chapter.xhtml",
+        )
+        segments[0].target = "甲乙丙丁"
+        chapter = Chapter(
+            index=0,
+            title=title,
+            segments=segments,
+            href="chapter.xhtml",
+            template=template,
+        )
+
+        rendered = BeautifulSoup(_render_chapter_html(chapter), "html.parser")
+
+        paragraph = rendered.find("p", class_="Textbody")
+        self.assertIsInstance(paragraph, Tag)
+        assert isinstance(paragraph, Tag)
+        self.assertEqual(paragraph.get_text(), "甲乙丙丁")
+        self.assertEqual(
+            [image.get("src") for image in paragraph.find_all("img")],
+            ["before.jpg", "after.jpg"],
+        )
+        self.assertIsNotNone(paragraph.find("br"))
+        self.assertEqual(
+            [
+                child.name if getattr(child, "name", None) else str(child)
+                for child in paragraph.children
+            ],
+            ["img", "甲乙", "br", "丙丁", "img"],
+        )
+        self.assertIsNone(rendered.find(attrs={"data-tn-inline-id": True}))
+        standalone = rendered.find("p", class_="illustration")
+        self.assertIsInstance(standalone, Tag)
+        assert isinstance(standalone, Tag)
+        standalone_image = standalone.find("img")
+        self.assertIsInstance(standalone_image, Tag)
+        assert isinstance(standalone_image, Tag)
+        self.assertEqual(standalone_image.get("src"), "standalone.jpg")
+
+    def test_bilingual_render_does_not_duplicate_inline_images(self):
+        html = """<html><body>
+<p><img src="illustration.jpg"/>Texte original.</p>
+</body></html>"""
+        title, segments, template = _extract_chapter(
+            html,
+            0,
+            "chapter.xhtml",
+        )
+        segments[0].target = "译文。"
+        chapter = Chapter(
+            index=0,
+            title=title,
+            segments=segments,
+            href="chapter.xhtml",
+            template=template,
+        )
+
+        rendered = BeautifulSoup(
+            _render_chapter_html(chapter, bilingual=True),
+            "html.parser",
+        )
+
+        self.assertEqual(len(rendered.find_all("img")), 1)
+        source = rendered.find(class_="tn-source")
+        self.assertIsInstance(source, Tag)
+        assert isinstance(source, Tag)
+        self.assertIsNone(source.find("img"))
+
     def test_epub_template_rebuild(self):
         with tempfile.TemporaryDirectory() as d:
             ep = os.path.join(d, "novel.epub")
