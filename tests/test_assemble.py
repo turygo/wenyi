@@ -7,13 +7,19 @@ import os
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from bs4 import BeautifulSoup, Tag
 
 from tests.fake_llm import routing_handler
 from tests.sample_data import write_inline_sample_epub, write_sample_epub, write_sample_txt
 from trans_novel.assemble.report import build_report
-from trans_novel.assemble.writer import _render_chapter_html, _rewrite_html_document, assemble
+from trans_novel.assemble.writer import (
+    _inject_bilingual_style,
+    _render_chapter_html,
+    _rewrite_html_document,
+    assemble,
+)
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.epub_reader import _extract_chapter
@@ -94,6 +100,26 @@ class TestAssembleText(unittest.TestCase):
             with open(out, encoding="utf-8") as f:
                 content = f.read()
             self.assertIn("润0", content)  # 译文已写入
+
+    def test_bilingual_rewrite_removes_temporary_file_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "book.epub")
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(
+                    "ch0.xhtml",
+                    "<html><head></head><body><p>text</p></body></html>",
+                )
+
+            with (
+                patch(
+                    "trans_novel.assemble.writer.os.replace",
+                    side_effect=OSError("replace failed"),
+                ),
+                self.assertRaisesRegex(OSError, "replace failed"),
+            ):
+                _inject_bilingual_style(path, {"ch0.xhtml"}, "zh-Hans")
+
+            self.assertFalse(os.path.exists(path + ".tmp"))
 
     def test_txt_input_to_epub(self):
         with tempfile.TemporaryDirectory() as d:
