@@ -13,6 +13,7 @@ import hashlib
 import json
 import sqlite3
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -101,6 +102,11 @@ CREATE TABLE IF NOT EXISTS translation_memory (
 
 def _hash(text: str) -> str:
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+
+
+def _match_text(text: str) -> str:
+    """Normalize width/compatibility forms and case for glossary matching."""
+    return unicodedata.normalize("NFKC", text).casefold()
 
 
 class GlossaryStore:
@@ -256,13 +262,14 @@ class GlossaryStore:
         与 terms_in_text 同义，但接受预取的术语快照，避免逐批重复查库（章内术语表不变）。
         """
         out: list[GlossaryTerm] = []
+        normalized_text = _match_text(text)
         for term in terms:
             # 称谓/口癖/固定表达是带语气或场景的派生写法，不能因为 alias
             # 命中裸名就把派生译法注入到普通称呼处。
             keys = (
                 [term.source] if term.type in _SOURCE_ONLY_TYPES else [term.source] + term.aliases
             )
-            if any(k and k in text for k in keys):
+            if any(k and _match_text(k) in normalized_text for k in keys):
                 out.append(term)
         return out
 
