@@ -50,6 +50,27 @@ def _config(state_dir: str):
 
 
 class TestOrchestrator(unittest.TestCase):
+    def test_prepare_retries_after_analysis_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+
+            def fail_analysis(messages, tier, json_mode):
+                raise RuntimeError("temporary model failure")
+
+            with self.assertRaisesRegex(RuntimeError, "temporary model failure"):
+                Orchestrator(cfg, client=FakeClient(handler=fail_analysis)).prepare(txt)
+
+            run_dirs = [os.path.join(cfg.state_dir, name) for name in os.listdir(cfg.state_dir)]
+            self.assertEqual(len(run_dirs), 1)
+            self.assertFalse(os.path.isfile(os.path.join(run_dirs[0], "manifest.json")))
+
+            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).prepare(txt)
+            self.assertTrue(store.exists())
+            self.assertTrue(store.load_manifest()["initialized"])
+            self.assertIsNotNone(store.load_analysis())
+
     def test_full_run_and_resume(self):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")

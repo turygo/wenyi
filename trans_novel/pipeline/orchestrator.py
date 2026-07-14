@@ -230,36 +230,42 @@ class Orchestrator:
             store.log_event("language_detected", source_lang=doc.source_lang)
         self._apply_language(doc.source_lang)
 
-        store.init_from_document(doc)
-        store.log_event(
-            "run_initialized",
-            input_path=input_path,
-            run_dir=store.run_dir,
-            title=doc.title,
-            fmt=doc.fmt,
-            source_lang=doc.source_lang,
-            target_lang=doc.target_lang,
-            chapters=len(doc.chapters),
-            config={
-                "review": self.config.pipeline.review,
-                "autofix_severe": self.config.pipeline.autofix_severe,
-                "polish": self.config.pipeline.polish,
-                "backtranslate_sample": self.config.pipeline.backtranslate_sample,
-                "consistency_qa": self.config.pipeline.consistency_qa,
-                "book_understanding": self.config.pipeline.book_understanding,
-            },
-        )
+        manifest = store.stage_document(doc)
         glossary = GlossaryStore(store.glossary_path)
-        if progress:
-            progress(0, 0, "分析全书风格…")
-        sample = self._sample_text(doc)
-        analysis = self.analyzer.analyze(sample) if sample else {}
-        if analysis:
-            self.analyzer.seed_glossary(glossary, analysis)
-        store.save_analysis(analysis)
-        store.log_event("analysis_saved", has_analysis=bool(analysis))
-        glossary.close()
-        store.save_context(RollingContext().to_dict())
+        try:
+            if progress:
+                progress(0, 0, "分析全书风格…")
+            sample = self._sample_text(doc)
+            analysis = self.analyzer.analyze(sample) if sample else {}
+            if analysis:
+                self.analyzer.seed_glossary(glossary, analysis)
+            store.save_analysis(analysis)
+            store.log_event("analysis_saved", has_analysis=bool(analysis))
+            store.save_context(RollingContext().to_dict())
+
+            # manifest 是初始化完成标志，必须最后原子落盘。
+            manifest["initialized"] = True
+            store.save_manifest(manifest)
+            store.log_event(
+                "run_initialized",
+                input_path=input_path,
+                run_dir=store.run_dir,
+                title=doc.title,
+                fmt=doc.fmt,
+                source_lang=doc.source_lang,
+                target_lang=doc.target_lang,
+                chapters=len(doc.chapters),
+                config={
+                    "review": self.config.pipeline.review,
+                    "autofix_severe": self.config.pipeline.autofix_severe,
+                    "polish": self.config.pipeline.polish,
+                    "backtranslate_sample": self.config.pipeline.backtranslate_sample,
+                    "consistency_qa": self.config.pipeline.consistency_qa,
+                    "book_understanding": self.config.pipeline.book_understanding,
+                },
+            )
+        finally:
+            glossary.close()
         return store
 
     def _detect_language_ai(self, doc) -> str:
