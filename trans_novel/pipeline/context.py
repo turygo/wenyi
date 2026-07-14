@@ -26,8 +26,23 @@ class RollingContext:
             self.recent_targets = self.recent_targets[-self.max_recent_keep :]
 
     def to_dict(self) -> dict:
-        return {"recent_targets": self.recent_targets}
+        return {
+            "recent_targets": self.recent_targets,
+            "max_recent_keep": self.max_recent_keep,
+        }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RollingContext":
-        return cls(recent_targets=d.get("recent_targets", []) or [])
+    def from_dict(
+        cls,
+        d: dict,
+        *,
+        min_recent_keep: int = 0,
+    ) -> "RollingContext":
+        persisted = d.get("max_recent_keep", 40)
+        max_recent_keep = persisted if isinstance(persisted, int) else 40
+        max_recent_keep = max(max_recent_keep, min_recent_keep)
+        recent_targets = d.get("recent_targets", []) or []
+        return cls(
+            recent_targets=recent_targets[-max_recent_keep:],
+            max_recent_keep=max_recent_keep,
+        )

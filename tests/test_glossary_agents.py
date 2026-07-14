@@ -215,9 +215,17 @@ class TestRollingContext(unittest.TestCase):
         self.assertNotIn("c", rendered)
 
     def test_roundtrip(self):
-        ctx = RollingContext(recent_targets=["x", "y"])
+        ctx = RollingContext(recent_targets=["x", "y"], max_recent_keep=75)
         ctx2 = RollingContext.from_dict(ctx.to_dict())
         self.assertEqual(ctx2.recent_targets, ["x", "y"])
+        self.assertEqual(ctx2.max_recent_keep, 75)
+
+    def test_configured_minimum_expands_legacy_context_limit(self):
+        ctx = RollingContext.from_dict(
+            {"recent_targets": [str(i) for i in range(40)]},
+            min_recent_keep=100,
+        )
+        self.assertEqual(ctx.max_recent_keep, 100)
 
 
 class TestLatinResidueFix(unittest.TestCase):

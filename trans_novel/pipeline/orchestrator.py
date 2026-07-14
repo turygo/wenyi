@@ -137,6 +137,28 @@ def _person_mentioned(term, text: str, words: set[str]) -> bool:
     return False
 
 
+def _resume_batches(segments, max_chars: int) -> list[list]:
+    """按字符预算分批后，再沿“已完成/待翻译”边界切开。
+
+    用户调整批次预算时，新的批次可能同时包含已有译文和空译文。若直接重跑
+    该混合批次会覆盖已确认内容；按完成状态分组可只补译缺失段。
+    """
+    batches: list[list] = []
+    for raw_batch in batch_segments(segments, max_chars):
+        current: list = []
+        current_done: bool | None = None
+        for segment in raw_batch:
+            done = bool(segment.target and segment.target.strip())
+            if current and done != current_done:
+                batches.append(current)
+                current = []
+            current.append(segment)
+            current_done = done
+        if current:
+            batches.append(current)
+    return batches
+
+
 class Orchestrator:
     def __init__(self, config: Config, client: LLMClient | None = None):
         self.config = config
@@ -241,7 +263,11 @@ class Orchestrator:
                 self.analyzer.seed_glossary(glossary, analysis)
             store.save_analysis(analysis)
             store.log_event("analysis_saved", has_analysis=bool(analysis))
-            store.save_context(RollingContext().to_dict())
+            store.save_context(
+                RollingContext(
+                    max_recent_keep=max(40, self.config.pipeline.rolling_context_segments)
+                ).to_dict()
+            )
 
             # manifest 是初始化完成标志，必须最后原子落盘。
             manifest["initialized"] = True
@@ -325,7 +351,10 @@ class Orchestrator:
         manifest = store.load_manifest()
         self._apply_language(manifest.get("source_lang") or self.config.source_lang)
         glossary = GlossaryStore(store.glossary_path)
-        context = RollingContext.from_dict(store.load_context() or {})
+        context = RollingContext.from_dict(
+            store.load_context() or {},
+            min_recent_keep=max(40, self.config.pipeline.rolling_context_segments),
+        )
         style = self.analyzer.style_brief(store.load_analysis() or {})
         # 翻译前预扫源文，建立全书理解（幂等、可续跑）；全书概览注入每章翻译
         book_synopsis = self._build_understanding(store, glossary, progress=progress)
@@ -916,8 +945,12 @@ class Orchestrator:
         chapter.meta.pop("back_matter_mode", None)
         chapter_digest = chapter.meta.get("source_digest", "")
 
-        batches = batch_segments(text_segs, self.config.segment.max_chars_per_batch)
+        batches = _resume_batches(text_segs, self.config.segment.max_chars_per_batch)
         label = f"第{ci}章 {chapter.title}"
+        # prepare() 的最后一个标签通常是“解析文档…”。续跑首批可能先恢复术语，
+        # 若不在章首刷新，整个模型请求期间都会错误地显示成仍在解析源文件。
+        if progress:
+            progress(done, total, label)
         # 章内术语快照会在每个批次术语抽取后刷新，让新确认的称呼/口癖/固定表达
         # 立即影响后续批次。glossary_scope=chapter 时仍按本章源文裁剪，避免全量表过大。
         term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
