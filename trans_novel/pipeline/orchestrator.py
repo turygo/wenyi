@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import random
 import re
+import warnings
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Optional
 
@@ -1511,9 +1512,20 @@ class Orchestrator:
         for chunk, fut in zip(chunks, futures):
             for it in fut.result():
                 idx = it.get("index")
+                if isinstance(idx, str):
+                    try:
+                        idx = int(idx.strip())
+                    except ValueError:
+                        idx = None
                 if isinstance(idx, int) and 0 <= idx < len(chunk):
                     it["index"] = base + idx
                     issues.append(it)
+                else:
+                    warnings.warn(
+                        f"忽略无效审校索引 {it.get('index')!r}；当前审校块长度为 {len(chunk)}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
             base += len(chunk)
         return issues
 
