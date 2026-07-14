@@ -63,6 +63,25 @@ class TestAnalyzer(unittest.TestCase):
         brief = a.style_brief(result)
         self.assertIn("绫小路", brief)
 
+    def test_malformed_collection_items_are_filtered(self):
+        analysis = {
+            "genre": {"unexpected": True},
+            "characters": ["bad", {"source": "綾小路", "target": "绫小路"}],
+            "terms": [1, {"source": "学校", "target": "学校", "type": {"bad": 1}}],
+        }
+        client = FakeClient(handler=lambda m, t, j: json.dumps(analysis, ensure_ascii=False))
+        analyzer = Analyzer(client, _cfg())
+        result = analyzer.analyze("……样章……")
+
+        self.assertEqual(result["genre"], "")
+        self.assertEqual(len(result["characters"]), 1)
+        self.assertEqual(len(result["terms"]), 1)
+        with tempfile.TemporaryDirectory() as d:
+            store = GlossaryStore(os.path.join(d, "g.db"))
+            self.assertEqual(analyzer.seed_glossary(store, result), 2)
+            self.assertEqual(store.get_term("学校").type, "术语")
+            store.close()
+
 
 class TestExtractor(unittest.TestCase):
     def test_extract_and_store(self):
@@ -160,6 +179,29 @@ class TestExtractor(unittest.TestCase):
             self.assertIn("龙园", prompt)  # 未命中但锁定人物，兜底保留
             self.assertNotIn("屋上", prompt)  # 未命中且非锁定人物，裁掉
             store.close()
+
+    def test_malformed_optional_fields_fall_back_safely(self):
+        terms = {
+            "terms": [
+                {
+                    "source": "term",
+                    "target": "术语",
+                    "type": {"bad": 1},
+                    "gender": ["bad"],
+                    "aliases": 1,
+                    "note": {"bad": 1},
+                }
+            ]
+        }
+        extractor = GlossaryExtractor(FakeClient(handler=lambda m, t, j: json.dumps(terms)), _cfg())
+
+        result = extractor.extract("term", "术语", [])
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].type, "术语")
+        self.assertEqual(result[0].gender, "")
+        self.assertEqual(result[0].aliases, [])
+        self.assertEqual(result[0].note, "")
 
 
 class TestRollingContext(unittest.TestCase):
