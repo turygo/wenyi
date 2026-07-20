@@ -1588,22 +1588,40 @@ class Orchestrator:
         各 chunk 的 review 调用提交进 review_executor（全书共享、有界 4-worker，
         与本方法运行所在的线程池分开——本方法自身可能就跑在另一个 executor 的
         worker 线程上，若两者共用同一个池，chunk 调用会在等自己的父任务腾位置，
-        造成嵌套死锁）。按提交顺序（=chunk 原始顺序）依次取结果，而非按完成顺序，
+        造成嵌套死锁）。按提交顺序（=chunk 原始顺序）合并结果，而非按完成顺序，
         保证合并结果严格保持原 chunk 顺序；chunk 内 issue 顺序由单次 reviewer.review
         调用本身决定，不受并发影响。
+
+        预热：chunk 数量大于 1 时，先提交 chunk 0 并等待结果。章内各 chunk 共享由
+        system prompt 和术语表组成的前缀；若同时发起所有请求，其余 chunk 可能在该前缀
+        写入缓存前发出，因而无法命中 provider 的前缀缓存（实测命中率仅 30%）。待 chunk 0
+        完成并写入缓存后，再并发提交其余 chunk，即可利用缓存降低成本。chunk 数量不超过 1
+        时无需预热，行为不变。
         """
         budget = self.config.segment.max_chars_per_batch * 3
         chunks = self._pack_contiguous(pairs, budget)
+        warm = len(chunks) > 1
+        results: list[list[dict]] = [[] for _ in chunks]
+        if warm:
+            first = chunks[0]
+            results[0] = review_executor.submit(
+                self.reviewer.review, [s for s, _ in first], [t for _, t in first], terms
+            ).result()
+        pending = chunks[1:] if warm else chunks
+        offset = 1 if warm else 0
         futures = [
             review_executor.submit(
                 self.reviewer.review, [s for s, _ in chunk], [t for _, t in chunk], terms
             )
-            for chunk in chunks
+            for chunk in pending
         ]
+        for i, fut in enumerate(futures):
+            results[offset + i] = fut.result()
+
         issues: list[dict] = []
         base = 0
-        for chunk, fut in zip(chunks, futures):
-            for it in fut.result():
+        for chunk, result in zip(chunks, results):
+            for it in result:
                 idx = it.get("index")
                 if isinstance(idx, str):
                     try:

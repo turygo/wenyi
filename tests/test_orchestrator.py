@@ -1607,25 +1607,37 @@ class TestReviewAsync(unittest.TestCase):
 
 
 class TestReviewChunkConcurrency(unittest.TestCase):
-    """Reviewer chunk 并发：有界并发真实发生，且合并结果严格保持原 chunk 顺序。"""
+    """Reviewer chunk 预热 + 并发：chunk 0 先单独完成（预热 provider 前缀缓存），
+    其余 chunk 随后真正并发；合并结果严格保持原 chunk 顺序。"""
 
-    def test_chunks_run_concurrently_in_bounded_pool_and_merge_in_order(self):
+    def test_chunk0_warms_up_then_rest_run_concurrently_and_merge_in_order(self):
         from concurrent.futures import ThreadPoolExecutor
 
         n_chunks = 3
-        barrier = threading.Barrier(n_chunks, timeout=5)
+        rest_barrier = threading.Barrier(n_chunks - 1, timeout=5)
         order_lock = threading.Lock()
         completion_order: list[int] = []
+        chunk0_done = threading.Event()
 
         def handler(messages, tier, json_mode):
             user = messages[-1]["content"]
             m = re.search(r"MARK(\d+)", user)
             assert m, "chunk marker missing from review prompt"
             c = int(m.group(1))
-            # 所有 chunk 必须同时在飞才能通过 barrier——若并发退化为串行，该 wait 会
+            if c == 0:
+                # chunk 0 必须独自先完成（预热前缀缓存），此时其余 chunk 尚未提交。
+                with order_lock:
+                    completion_order.append(c)
+                chunk0_done.set()
+                return json.dumps(
+                    {"issues": [{"index": 0, "type": "missing", "detail": "chunk0"}]},
+                    ensure_ascii=False,
+                )
+            assert chunk0_done.is_set(), "chunk 0 应先完成预热，其余 chunk 才可提交"
+            # 其余 chunk 必须同时在飞才能通过 barrier——若退化为串行，该 wait 会
             # 一直阻塞直到 barrier 超时并抛出 BrokenBarrierError，测试失败。
-            barrier.wait()
-            # 提交顺序 c=0,1,2；故意让完成顺序反转（c 越大睡得越少），验证结果
+            rest_barrier.wait()
+            # 提交顺序 c=1,2；故意让完成顺序反转（c 越大睡得越少），验证结果
             # 合并顺序仍按 chunk 原始顺序而非完成顺序。
             time.sleep((n_chunks - c) * 0.03)
             with order_lock:
@@ -1645,8 +1657,9 @@ class TestReviewChunkConcurrency(unittest.TestCase):
             issues = orch._review_chapter(pairs, [], review_executor)
 
         self.assertEqual([it["detail"] for it in issues], [f"chunk{c}" for c in range(n_chunks)])
-        # 完成顺序确实被反转了（证明真的并发，且合并未按完成顺序）
-        self.assertEqual(completion_order, list(reversed(range(n_chunks))))
+        # chunk 0 确实先于其余 chunk 完成；其余 chunk 之间完成顺序被反转（证明真并发）。
+        self.assertEqual(completion_order[0], 0)
+        self.assertEqual(completion_order[1:], [2, 1])
 
     def test_book_wide_pool_bounds_concurrency_across_chapters_without_deadlock(self):
         """异步路径（review=true, autofix_severe=false）多章并发提交审校：
