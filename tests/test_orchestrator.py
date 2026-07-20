@@ -2428,5 +2428,82 @@ class TestLintFixMergeFallback(unittest.TestCase):
             self.assertIn("“", ch.text_segments[2].target, "回退逐段调用应成功修复第二段")
 
 
+class TestTitleTermTrim(unittest.TestCase):
+    """标题翻译术语裁剪：仅注入标题文本命中的词条 + 锁定人物部分姓名命中；
+    标题裁剪无条件生效，不受 glossary_scope 配置影响。"""
+
+    def _run(self, d, scope):
+        from trans_novel.glossary.store import GlossaryTerm
+
+        state_dir = os.path.join(d, "state")
+        cfg = _epub_config(state_dir)
+        cfg.pipeline.glossary_scope = scope
+        store = RunStore(os.path.join(state_dir, "book"))
+        store.save_chapter(
+            Chapter(
+                index=0,
+                title="The Duel of Vane",
+                segments=[Segment(index=0, source="Body one.")],
+            )
+        )
+        store.save_manifest(
+            {
+                "title": "Book",
+                "fmt": "epub",
+                "source_path": "",
+                "source_lang": "en",
+                "target_lang": "zh",
+                "meta": {},
+                "chapters": [
+                    {
+                        "index": 0,
+                        "title": "The Duel of Vane",
+                        "href": "a.xhtml",
+                        "toc_entry_id": None,
+                        "status": "done",
+                    }
+                ],
+            }
+        )
+        glossary = GlossaryStore(store.glossary_path)
+        # 锁定人物：标题里只出现「Vane」这个部分称呼（非全名），仍应命中保留。
+        glossary.upsert_term(
+            GlossaryTerm(source="Alden Vane", target="奥尔登·韦恩", type="人物", locked=True)
+        )
+        # source 直接在标题文本里出现：命中保留。
+        glossary.upsert_term(GlossaryTerm(source="Duel", target="决斗", type="术语"))
+        # 标题里完全未出现：应被裁剪掉。
+        glossary.upsert_term(GlossaryTerm(source="Excalibur", target="王者之剑", type="术语"))
+        glossary.close()
+
+        captured = {}
+
+        def handler(messages, tier, json_mode):
+            if "标题翻译" in messages[0]["content"]:
+                captured["user"] = messages[-1]["content"]
+            return routing_handler(messages, tier, json_mode)
+
+        glossary2 = GlossaryStore(store.glossary_path)
+        Orchestrator(cfg, client=FakeClient(handler=handler))._translate_titles(store, glossary2)
+        glossary2.close()
+        self.assertIn("user", captured)
+        return captured["user"]
+
+    def test_title_prompt_only_includes_title_hits(self):
+        with tempfile.TemporaryDirectory() as d:
+            user = self._run(d, "chapter")
+            self.assertIn("Duel → 决斗", user)
+            self.assertIn("Alden Vane → 奥尔登·韦恩", user)
+            self.assertNotIn("Excalibur", user)
+
+    def test_full_scope_does_not_bypass_title_trim(self):
+        """glossary_scope=full 只影响章节翻译路径，标题裁剪始终无条件生效。"""
+        with tempfile.TemporaryDirectory() as d:
+            user = self._run(d, "full")
+            self.assertIn("Duel → 决斗", user)
+            self.assertIn("Alden Vane → 奥尔登·韦恩", user)
+            self.assertNotIn("Excalibur", user)
+
+
 if __name__ == "__main__":
     unittest.main()

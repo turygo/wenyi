@@ -811,12 +811,16 @@ class Orchestrator:
             tgt=self.config.target_lang,
             n=len(unique_titles),
         )
+        # 标题裁剪始终生效，不受 glossary_scope 配置影响：标题文本很短，全量术语表（可达
+        # 数百至上千条）会给标题翻译引入噪声；这与章节翻译是否启用全量注入
+        # （glossary_scope=full，用于统一全书译名）无关。
+        title_terms = self._terms_matching_text(glossary.all_terms(), "\n".join(unique_titles))
         user = prompts.render(
             "title_translator_user",
             src=self.config.source_lang,
             tgt=self.config.target_lang,
             book_synopsis=book_synopsis,
-            glossary=prompts.render_glossary(glossary.all_terms()),
+            glossary=prompts.render_glossary(title_terms),
             n=len(unique_titles),
             numbered_titles=prompts.numbered(unique_titles),
         )
@@ -1540,13 +1544,20 @@ class Orchestrator:
         if self.config.pipeline.glossary_scope != "chapter":
             return terms
         src_text = "\n".join(s.source for s in text_segs)
-        hit = {t.source for t in GlossaryStore.terms_in(terms, src_text)}
-        words = set(_WORD_RE.findall(src_text))
+        return self._terms_matching_text(terms, src_text)
+
+    @staticmethod
+    def _terms_matching_text(terms: list, text: str) -> list:
+        """按纯文本裁剪术语表：source/alias 命中 + 锁定人物以「部分形式」出现
+        （见 _person_mentioned）。章级快照与标题翻译共用同一套匹配语义，避免
+        维护第二套裁剪逻辑。"""
+        hit = {t.source for t in GlossaryStore.terms_in(terms, text)}
+        words = set(_WORD_RE.findall(text))
         return [
             t
             for t in terms
             if t.source in hit
-            or (t.type == TYPE_PERSON and t.locked and _person_mentioned(t, src_text, words))
+            or (t.type == TYPE_PERSON and t.locked and _person_mentioned(t, text, words))
         ]
 
     def _extract_batch_glossary(
