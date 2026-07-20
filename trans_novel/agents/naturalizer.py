@@ -62,7 +62,7 @@ class Naturalizer(Agent):
     """审读/改写/成对判断三合一 agent。"""
 
     def screen(self, texts: list[str]) -> list[dict]:
-        """批量审读中文段，返回 [{index,quote,reason,rewrite}]（单语，宁缺勿滥）。"""
+        """批量审读中文段，返回 [{index,quote,reason}]（单语，宁缺勿滥）。"""
         if not texts:
             return []
         system = prompts.render("naturalize_screen_system")

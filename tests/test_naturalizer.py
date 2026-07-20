@@ -75,6 +75,8 @@ ORIG1 = "400名工程师建造了这座桥。"
 REWRITE1_DROPS_NUMBER = "许多工程师建造了这座桥。"
 
 
+# 这里故意保留 pair.reason、fidelity.detail 等旧字段：多余字段会被忽略，
+# 用于验证模型仍按旧格式返回额外字段时，代码也能正常处理。
 def _combined_handler(messages, tier, json_mode):
     system = messages[0]["content"]
     user = messages[-1]["content"]
@@ -382,11 +384,7 @@ class TestFidelityGate(unittest.TestCase):
             store = _make_store(d, [chapter])
             config = _config(os.path.join(d, "state"))
             client = FakeClient(
-                handler=self._handler(
-                    json.dumps(
-                        {"faithful": False, "detail": "丢失了 every 的全称限定"}, ensure_ascii=False
-                    )
-                )
+                handler=self._handler(json.dumps({"faithful": False}, ensure_ascii=False))
             )
             agent = Naturalizer(client, config)
             stats = naturalize_chapter(
@@ -417,9 +415,7 @@ class TestFidelityGate(unittest.TestCase):
             store = _make_store(d, [chapter])
             config = _config(os.path.join(d, "state"))
             client = FakeClient(
-                handler=self._handler(
-                    json.dumps({"faithful": True, "detail": ""}, ensure_ascii=False)
-                )
+                handler=self._handler(json.dumps({"faithful": True}, ensure_ascii=False))
             )
             agent = Naturalizer(client, config)
             stats = naturalize_chapter(
@@ -453,11 +449,7 @@ class TestFidelityGate(unittest.TestCase):
             chapter = self._chapter()
             store = _make_store(d, [chapter])
             config = _config(os.path.join(d, "state"))
-            client = FakeClient(
-                handler=self._handler(
-                    json.dumps({"detail": "缺少 faithful 字段"}, ensure_ascii=False)
-                )
-            )
+            client = FakeClient(handler=self._handler(json.dumps({}, ensure_ascii=False)))
             agent = Naturalizer(client, config)
             stats = naturalize_chapter(
                 agent, chapter, 0, 1, [], config, store, dry_run=False, remaining=None

@@ -375,7 +375,7 @@ NATURALIZE_SCREEN_SYSTEM = Template("""\
 你是中文书稿的母语审读编辑。你只看中文稿，手边没有任何外文原文。
 任务：找出「读起来像从外文直译、不像中文母语作者手笔」的段落——即翻译腔：生硬的欧化句式、别扭的搭配、冗余的对称结构、准被动堆叠、不自然的抽象名词化等。
 要求：只标你有把握的。正常的书面语、专业术语、合理的被动句、新闻体叙述不要标。宁缺勿滥。
-输出 JSON：{"issues":[{"index":段号,"quote":"该段中最别扭的原文短语(照抄，≤30字)","reason":"一句话说明哪里不自然","rewrite":"更自然的说法"}]}；全部自然则 {"issues":[]}\
+输出 JSON：{"issues":[{"index":段号,"quote":"该段中最别扭的原文短语(照抄，≤30字)","reason":"一句话说明哪里不自然"}]}；全部自然则 {"issues":[]}\
 """)
 
 NATURALIZE_SCREEN_USER = Template("""\
@@ -404,7 +404,7 @@ $text
 """)
 
 NATURALIZE_PAIR_SYSTEM = Template("""\
-你是中文母语审读编辑。下面给出同一段落的两个版本 A 和 B（只看中文）。判断哪个版本更像中文母语作者的自然表达（搭配、句式、节奏）。输出 JSON：{"winner":"A|B|tie","reason":"一句话"}\
+你是中文母语审读编辑。下面给出同一段落的两个版本 A 和 B（只看中文）。判断哪个版本更像中文母语作者的自然表达（搭配、句式、节奏）。输出 JSON：{"winner":"A|B|tie"}\
 """)
 
 NATURALIZE_PAIR_USER = Template("""\
@@ -414,7 +414,7 @@ $a
 【版本 B】
 $b
 
-请判断哪个更自然，输出 JSON：{"winner":"A|B|tie","reason":"..."}。\
+请判断哪个更自然，输出 JSON：{"winner":"A|B|tie"}。\
 """)
 
 NATURALIZE_FIDELITY_SYSTEM = Template("""\
@@ -424,7 +424,7 @@ NATURALIZE_FIDELITY_SYSTEM = Template("""\
 - 增加了源文没有的信息或强调；
 - 改变了指称、因果、时间关系。
 只要有一项成立即不通过。纯表达方式变化（语序/搭配/句式）不算。
-输出 JSON：{"faithful":true|false,"detail":"不通过时一句话指出具体差异，通过则空"}\
+输出 JSON：{"faithful":true|false}\
 """)
 
 NATURALIZE_FIDELITY_USER = Template("""\
@@ -437,7 +437,7 @@ $orig
 【译文改写版】
 $rewritten
 
-请核对改写版是否忠实于源文（相对原版未丢失/增加/改变信息），输出 JSON：{"faithful":true|false,"detail":"..."}。\
+请核对改写版是否忠实于源文（相对原版未丢失/增加/改变信息），输出 JSON：{"faithful":true|false}。\
 """)
 
 _DEFAULTS = {
