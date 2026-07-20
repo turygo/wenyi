@@ -139,10 +139,10 @@ def _person_mentioned(term, text: str, words: set[str]) -> bool:
 
 
 def _resume_batches(segments, max_chars: int) -> list[list]:
-    """按字符预算分批后，再沿“已完成/待翻译”边界切开。
+    """按字符预算分批后，再按“已完成/待翻译”的状态边界拆分。
 
-    用户调整批次预算时，新的批次可能同时包含已有译文和空译文。若直接重跑
-    该混合批次会覆盖已确认内容；按完成状态分组可只补译缺失段。
+    用户调整批次预算后，新批次可能同时包含已完成和待翻译的段落。直接重跑
+    这种混合批次会覆盖已确认的译文；按完成状态拆分后，只需补译未完成的段落。
     """
     batches: list[list] = []
     for raw_batch in batch_segments(segments, max_chars):
@@ -381,8 +381,9 @@ class Orchestrator:
         chapter_indices = {chapter.get("index") for chapter in manifest.get("chapters", [])}
         if only_chapter is not None and only_chapter not in chapter_indices:
             available = sorted(index for index in chapter_indices if isinstance(index, int))
-            valid_range = f"0–{available[-1]}" if available else "无可翻译章节"
-            raise ValueError(f"章节编号 {only_chapter} 不存在；可用范围：{valid_range}")
+            if available:
+                raise ValueError(f"章节编号 {only_chapter} 不存在；可用范围：0–{available[-1]}")
+            raise ValueError(f"章节编号 {only_chapter} 不存在；当前没有可翻译的章节")
         glossary = GlossaryStore(store.glossary_path)
         context = RollingContext.from_dict(
             store.load_context() or {},
@@ -980,8 +981,8 @@ class Orchestrator:
 
         batches = _resume_batches(text_segs, self.config.segment.max_chars_per_batch)
         label = f"第{ci}章 {chapter.title}"
-        # prepare() 的最后一个标签通常是“解析文档…”。续跑首批可能先恢复术语，
-        # 若不在章首刷新，整个模型请求期间都会错误地显示成仍在解析源文件。
+        # prepare() 的最后一个标签通常是“解析文档…”。续跑的首个批次可能先重新抽取
+        # 术语；若不在章首刷新进度，模型请求期间会一直误显示为仍在解析源文件。
         if progress:
             progress(done, total, label)
         # 章内术语快照会在每个批次术语抽取后刷新，让新确认的称呼/口癖/固定表达

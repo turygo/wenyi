@@ -217,7 +217,7 @@ def _local(tag: str) -> str:
 
 
 def _decode_markup(data: bytes) -> str:
-    """按 XML/HTML 声明与字节特征解码 XHTML，最后才使用 UTF-8 替换兜底。"""
+    """按 XML/HTML 声明和字节特征解码 XHTML；都无法识别时，才用 UTF-8 解码并替换无效字节。"""
     decoded = UnicodeDammit(data).unicode_markup
     return decoded if decoded is not None else data.decode("utf-8", errors="replace")
 

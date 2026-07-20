@@ -136,7 +136,7 @@ class GlossaryStore:
           否则用新条目覆盖，返回 'updated'。
         """
         try:
-            # 锁在读取 existing 之前取得，保证两个连接不会同时基于旧快照决策。
+            # 读取 existing 前先加锁，避免两个连接同时依据旧快照作出判断。
             self.conn.execute("BEGIN IMMEDIATE")
             existing = self.get_term(term.source)
             now = time.time()

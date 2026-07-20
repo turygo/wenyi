@@ -209,7 +209,7 @@ class TestSegmentLevelResume(unittest.TestCase):
             store.save_chapter(chapter)
             store.set_chapter_status(0, STATUS_PENDING)
 
-            # 改变预算后，新分批仍可能把已完成段与空段放在一起。
+            # 改变预算后，新分批仍可能把已完成的段与待翻译的段放在一起。
             cfg.segment.max_chars_per_batch = 50_000
             second_client = FakeClient(handler=self._tr_handler("R2"))
             Orchestrator(cfg, client=second_client).run(txt, only_chapter=0)

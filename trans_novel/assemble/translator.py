@@ -173,5 +173,5 @@ class Translator(Agent):
                     )
                 )
             except Exception as error:
-                raise AlignmentError(f"逐段兜底翻译在第 {index} 段失败") from error
+                raise AlignmentError(f"索引为 {index} 的段落在兜底翻译时失败") from error
         return targets

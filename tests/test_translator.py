@@ -68,7 +68,7 @@ class TestTranslatorAlignment(unittest.TestCase):
         )
         translator = Translator(client, self._config())
 
-        with self.assertRaisesRegex(Exception, "第 0 段失败"):
+        with self.assertRaisesRegex(Exception, "索引为 0 的段落"):
             translator.translate_batch(["あ", "い"])
 
     def test_non_string_translation_is_rejected(self):
@@ -77,7 +77,7 @@ class TestTranslatorAlignment(unittest.TestCase):
         )
         translator = Translator(client, self._config())
 
-        with self.assertRaisesRegex(Exception, "第 0 段失败"):
+        with self.assertRaisesRegex(Exception, "索引为 0 的段落"):
             translator.translate_batch(["あ"])
 
 

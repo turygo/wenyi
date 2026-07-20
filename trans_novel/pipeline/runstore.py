@@ -121,10 +121,10 @@ class RunStore:
 
     # ── manifest ──────────────────────────────────────────────────────────
     def stage_document(self, doc: Document) -> dict:
-        """写入初始章节文件并返回 manifest 内容，但不提前写 manifest。
+        """写入初始章节文件并返回 manifest 内容，但暂不写入 manifest。
 
-        manifest 是一次运行初始化完成的标志，由调用方在分析、术语库
-        和上下文都已落盘后最后保存。
+        manifest 标志着本次运行已完成初始化；调用方应在分析结果、
+        术语库和上下文全部落盘后再保存。
         """
         manifest = {
             "title": doc.title,
