@@ -53,12 +53,8 @@ class TestGlossary(unittest.TestCase):
         self.assertEqual(hits[0].source, "綾小路")
 
     def test_terms_in_text_normalizes_case_and_character_width(self):
-        self.store.upsert_term(
-            GlossaryTerm(source="OpenAI", target="开放人工智能")
-        )
-        self.store.upsert_term(
-            GlossaryTerm(source="ＡＢＣ", target="ABC 组织")
-        )
+        self.store.upsert_term(GlossaryTerm(source="OpenAI", target="开放人工智能"))
+        self.store.upsert_term(GlossaryTerm(source="ＡＢＣ", target="ABC 组织"))
 
         hits = self.store.terms_in_text("openai 与 ABC")
 

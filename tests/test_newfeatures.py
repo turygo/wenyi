@@ -64,11 +64,13 @@ class TestModelLanguageDetection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
-            cfg = Config.from_dict({
-                "language": {"source": "ja", "target": "ja-JP"},
-                "llm": {"provider": "fake"},
-                "paths": {"state_dir": os.path.join(d, "state")},
-            })
+            cfg = Config.from_dict(
+                {
+                    "language": {"source": "ja", "target": "ja-JP"},
+                    "llm": {"provider": "fake"},
+                    "paths": {"state_dir": os.path.join(d, "state")},
+                }
+            )
             client = FakeClient(handler=routing_handler)
 
             with self.assertRaisesRegex(ValueError, "源语言与目标语言相同（ja）"):
