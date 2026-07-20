@@ -121,7 +121,10 @@ class TestTermMiss(unittest.TestCase):
     def test_word_boundary_matches_whole_word(self):
         term = GlossaryTerm(source="Chang", target="常先生", type="人物", locked=True)
         issues = lint_targets(
-            ["Chang walked in."], ["他走了进来。"], locked_terms=[term], src_lang="en"
+            ["Everyone said Chang walked in."],
+            ["他走了进来。"],
+            locked_terms=[term],
+            src_lang="en",
         )
         self.assertIn("term_miss", _types(issues, 0))
 
@@ -134,6 +137,132 @@ class TestTermMiss(unittest.TestCase):
         term = GlossaryTerm(source="堀北", target="", type="人物", locked=True)
         issues = lint_targets(
             ["堀北が振り返った。"], ["她转过身来。"], locked_terms=[term], src_lang="ja"
+        )
+        self.assertNotIn("term_miss", _types(issues, 0))
+
+
+class TestTermMissExemptions(unittest.TestCase):
+    """term_miss 的两条确定性豁免（依据对剩余 129 条结果的人工归因：E1 命中 72 条，
+    E2 命中 14 条，其余 43 条确为问题，不予豁免）。"""
+
+    def test_e1_partial_target_hit_passes(self):
+        """部分译名豁免：锁定「乔赛亚·蔡尔德」，译文只写「蔡尔德」也算已译。"""
+        term = GlossaryTerm(source="Josiah", target="乔赛亚·蔡尔德", type="人物", locked=True)
+        issues = lint_targets(
+            ["Josiah walked into the room."],
+            ["蔡尔德走进房间。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
+        self.assertNotIn("term_miss", _types(issues, 0))
+
+    def test_e1_no_separator_still_flags(self):
+        """无分隔符的译名无法拆分，沿用原有行为：译文缺少完整译名时仍报告问题
+        （源文特意避开句首，以排除 E2 干扰，并单独验证 E1 不会误判）。"""
+        term = GlossaryTerm(source="Truman", target="杜鲁门", type="人物", locked=True)
+        issues = lint_targets(
+            ["Everyone recognized Truman immediately."],
+            ["大家立刻认出了他。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
+        self.assertIn("term_miss", _types(issues, 0))
+
+    def test_e2_sentence_initial_only_passes(self):
+        """句首歧义单词豁免：误录为人名的条目 Any→安尼；源文中的 Any 只出现在句首。"""
+        term = GlossaryTerm(source="Any", target="安尼", type="人物", locked=True)
+        issues = lint_targets(
+            ["Any reduction of interest is welcome."],
+            ["任何利息减少都受欢迎。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
+        self.assertNotIn("term_miss", _types(issues, 0))
+
+    def test_e2_non_initial_match_still_flags(self):
+        """存在非句首命中则不豁免：the Law of Unintended Consequences 中的 Law。"""
+        term = GlossaryTerm(source="Law", target="约翰·劳", type="人物", locked=True)
+        issues = lint_targets(
+            ["History remembers the Law of Unintended Consequences."],
+            ["这不受欢迎。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
+        self.assertIn("term_miss", _types(issues, 0))
+
+    def test_e2_multi_word_source_not_exempted(self):
+        """多词源（含空格）不走 E2：即使命中位于句首，译名缺失仍报。"""
+        term = GlossaryTerm(source="St Bonaventure", target="圣文德", type="人物", locked=True)
+        issues = lint_targets(
+            ["St Bonaventure was born in Italy."],
+            ["他出生在意大利。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
+        self.assertIn("term_miss", _types(issues, 0))
+
+    def test_cjk_source_not_exempted_by_e2(self):
+        """CJK 源词不是仅含拉丁字母的单个 token；即使命中位于句首，也不适用 E2 豁免。"""
+        term = GlossaryTerm(source="堀北", target="太郎", type="人物", locked=True)
+        issues = lint_targets(
+            ["堀北が振り返った。"], ["她转过身来。"], locked_terms=[term], src_lang="ja"
+        )
+        self.assertIn("term_miss", _types(issues, 0))
+
+    def test_exact_hit_still_passes(self):
+        """回归验证原有的精确子串匹配逻辑：出现完整译名时即通过。"""
+        term = GlossaryTerm(source="Josiah", target="乔赛亚·蔡尔德", type="人物", locked=True)
+        issues = lint_targets(
+            ["Josiah walked into the room."],
+            ["乔赛亚·蔡尔德走进房间。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
+        self.assertNotIn("term_miss", _types(issues, 0))
+
+    def test_e2_mid_sentence_quote_not_exempted(self):
+        """句中引号不算句首：开引号出现在逗号和空格之后（如 said, “Law …），
+        不满足"句末标点后接空白"的锚点条件，因此不予豁免，仍报告 term_miss。"""
+        term = GlossaryTerm(source="Law", target="约翰·劳", type="人物", locked=True)
+        issues = lint_targets(
+            ['They invoked "Law" repeatedly.'],
+            ["这不受欢迎。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
+        self.assertIn("term_miss", _types(issues, 0))
+
+    def test_e2_string_initial_quote_still_exempted(self):
+        """字符串开头的开引号仍算句首的一部分：紧跟在开头之后。"""
+        term = GlossaryTerm(source="Any", target="安尼", type="人物", locked=True)
+        issues = lint_targets(
+            ['"Any reduction of interest," he said.'],
+            ["这不受欢迎。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
+        self.assertNotIn("term_miss", _types(issues, 0))
+
+    def test_e2_quote_after_comma_not_exempted(self):
+        """句中逗号后接开引号（如 He said, “Law is king.”）不构成句首，
+        不予豁免。"""
+        term = GlossaryTerm(source="Law", target="约翰·劳", type="人物", locked=True)
+        issues = lint_targets(
+            ["He said, \u201cLaw is king.\u201d"],
+            ["这不受欢迎。"],
+            locked_terms=[term],
+            src_lang="en",
+        )
+        self.assertIn("term_miss", _types(issues, 0))
+
+    def test_e2_adjacent_quote_after_period_exempted(self):
+        """相邻引语：句末标点和闭引号后有空白，随后出现的开引号仍属于下一句句首。"""
+        term = GlossaryTerm(source="Any", target="安尼", type="人物", locked=True)
+        issues = lint_targets(
+            ["He replied, \u201cNo.\u201d \u201cAny reduction is welcome.\u201d"],
+            ["这不受欢迎。"],
+            locked_terms=[term],
+            src_lang="en",
         )
         self.assertNotIn("term_miss", _types(issues, 0))
 

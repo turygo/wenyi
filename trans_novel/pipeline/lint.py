@@ -365,6 +365,40 @@ def _term_matches_source(term_source: str, source: str) -> bool:
     return re.search(r"\b" + re.escape(term_source) + r"\b", source) is not None
 
 
+_LATIN_SINGLE_TOKEN_RE = re.compile(r"[A-Za-z]+")
+# 句首位置：字符串开头，或句末标点（.!?…）和空白之后。句末标点与空白之间可以出现闭引号
+# 或闭括号；空白之后可以紧跟开引号或开括号。只有紧邻这两类锚点的引号或括号才属于句首；
+# 句中开引号（如 said, “Law …）不算句首。
+_SENTENCE_INITIAL_RE = re.compile(r"(?:^|[.!?…][\u201d\u2019\"')）]*\s+)[\u201c\u2018\"'（(]*\s*$")
+
+
+def _partial_target_hit(t_target: str, target: str) -> bool:
+    """人工分析剩余的 129 条 term_miss 后发现，其中 72 条（56%）是译文合理地只使用了
+    部分译名（如锁定「乔赛亚·蔡尔德」，译文只写「蔡尔德」）。将 t_target 按 ·、• 或空白
+    拆分；若译文中出现任一长度不小于 2 且不等于完整译名的部分，则视为已翻译。无法拆分
+    的 t_target（如「杜鲁门」）沿用原逻辑，仍须完整匹配。
+    """
+    for part in re.split(r"[·•\s]+", t_target):
+        if len(part) >= 2 and part != t_target and part in target:
+            return True
+    return False
+
+
+def _only_sentence_initial_matches(t_source: str, source: str) -> bool:
+    """E2 句首歧义单词豁免：对剩余 129 条结果进行人工分析后发现，其中 14 条源于误录为
+    人名的条目命中了句首大写的普通英文单词（如 Any→安尼、Law→约翰·劳）。仅当 t_source
+    为纯拉丁字母单个 token、且源文中所有词边界命中都位于句首时才豁免；只要有一处在非
+    句首命中，仍按常规检查——例如 “...and the Law of Unintended Consequences” 中的
+    Law 仍会被报告，并按真实问题处理。
+    """
+    if not _LATIN_SINGLE_TOKEN_RE.fullmatch(t_source):
+        return False
+    matches = list(re.finditer(r"\b" + re.escape(t_source) + r"\b", source))
+    if not matches:
+        return False
+    return all(_SENTENCE_INITIAL_RE.search(source[: m.start()]) for m in matches)
+
+
 def _term_miss_details(source: str, target: str, locked_terms) -> list[str]:
     details = []
     for term in locked_terms:
@@ -375,6 +409,10 @@ def _term_miss_details(source: str, target: str, locked_terms) -> list[str]:
         if not _term_matches_source(t_source, source):
             continue
         if t_target in (target or ""):
+            continue
+        if _partial_target_hit(t_target, target or ""):
+            continue
+        if _only_sentence_initial_matches(t_source, source):
             continue
         details.append(
             f"锁定术语「{t_source}」应译为「{t_target}」，译文未出现该译名，请核对后重译"
