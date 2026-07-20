@@ -1131,6 +1131,7 @@ class Orchestrator:
                 by_idx: dict[int, list] = {}
                 for it in lint_issues:
                     by_idx.setdefault(it.index, []).append(it)
+                actionable_idx: list[int] = []
                 for idx, seg_issues in sorted(by_idx.items()):
                     if not any(it.type in lint.ACTIONABLE_TYPES for it in seg_issues):
                         # too_short/too_long 等非定向重译类型：只记录，不重译
@@ -1147,21 +1148,13 @@ class Orchestrator:
                                 }
                             )
                         continue
+                    actionable_idx.append(idx)
+
+                def _apply_fix_result(idx: int, new_t: str) -> None:
+                    """单段独立复检 + 采纳/拒绝：合并调用与单段回退共用同一判据
+                    （issue 数严格减少才采纳，防越修越糟）。"""
+                    seg_issues = by_idx[idx]
                     seg = b[idx]
-                    feedback = "；".join(it.detail for it in seg_issues)
-                    before = "\n".join(raw_targets[j] for j in range(max(0, idx - 2), idx))
-                    after = "\n".join(raw_targets[j] for j in range(idx + 1, min(len(b), idx + 3)))
-                    new_t = self.translator.retranslate_with_feedback(
-                        seg.source,
-                        feedback=feedback,
-                        operation="translate.lint_fix",
-                        glossary_terms=term_snapshot,
-                        style=style,
-                        context_before=before,
-                        context_after=after,
-                        book_synopsis=book_synopsis,
-                        chapter_digest=chapter_digest,
-                    )
                     new_issues = (
                         lint.lint_targets(
                             [seg.source],
@@ -1198,6 +1191,54 @@ class Orchestrator:
                                 "fixed": False,
                             }
                         )
+
+                merged_targets: dict[int, str] = {}
+                if len(actionable_idx) > 1:
+                    # 同一批次内有多个待修复段落时，将其合并为一次调用（减少 N-1 次请求）：
+                    # 上下文改为注入整批当前译文，其中包含待修复段落的旧译文，并按批内段号
+                    # 编号。待重译项沿用同一套段号，模型可据此定位原译及上下文，不再使用
+                    # 无法映射段号的单一上下文拼接块。
+                    merged = self.translator.retranslate_batch_with_feedback(
+                        [
+                            (idx, b[idx].source, "；".join(it.detail for it in by_idx[idx]))
+                            for idx in actionable_idx
+                        ],
+                        raw_targets,
+                        operation="translate.lint_fix",
+                        glossary_terms=term_snapshot,
+                        style=style,
+                        book_synopsis=book_synopsis,
+                        chapter_digest=chapter_digest,
+                    )
+                    if len(merged) == len(actionable_idx):
+                        merged_targets = dict(zip(actionable_idx, merged))
+
+                if merged_targets:
+                    for idx in actionable_idx:
+                        _apply_fix_result(idx, merged_targets.get(idx, ""))
+                else:
+                    # 逐段调用兜底：本批仅有 1 个待修复段落而无需合并，或合并调用失败、
+                    # 返回数量不符时，执行此路径。沿用原有逻辑：以前后各 2 段旧译文作为
+                    # 局部上下文，采纳后立即写回 raw_targets，供同批后续段落使用最新译文。
+                    for idx in actionable_idx:
+                        seg = b[idx]
+                        feedback = "；".join(it.detail for it in by_idx[idx])
+                        before = "\n".join(raw_targets[j] for j in range(max(0, idx - 2), idx))
+                        after = "\n".join(
+                            raw_targets[j] for j in range(idx + 1, min(len(b), idx + 3))
+                        )
+                        new_t = self.translator.retranslate_with_feedback(
+                            seg.source,
+                            feedback=feedback,
+                            operation="translate.lint_fix",
+                            glossary_terms=term_snapshot,
+                            style=style,
+                            context_before=before,
+                            context_after=after,
+                            book_synopsis=book_synopsis,
+                            chapter_digest=chapter_digest,
+                        )
+                        _apply_fix_result(idx, new_t)
             for s, t in zip(b, raw_targets):
                 s.target = t
             batch_start = seg_base

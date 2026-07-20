@@ -96,6 +96,28 @@ $feedback
 请重译该段，完整传达原文全部信息并与前后文衔接，输出 JSON：{"translations":["译文"]}，数组长度恰为 1。\
 """)
 
+TRANSLATOR_FIX_MULTI_USER = Template("""\
+【角色信息 / 风格指南】
+$style
+
+【全书概览】
+$book_synopsis
+
+【本章梗概】
+$chapter_digest
+
+【专有名词对照表】（必须遵守）
+$glossary
+
+【本批当前译文】（按批内段号编号，包含各待修复段落的旧译文，可据此定位原译及上下文）
+$batch_targets
+
+【待重译$src_label段落及各自审校意见】（编号对应上方【本批当前译文】中的段号；首译存在问题，重译须逐项修正）
+$items
+
+请依次重译以上每一段，完整传达原文全部信息并与前后文衔接，输出 JSON：{"translations":[...]}，数组长度必须恰为 $n（待重译段数），顺序与上方列表一致。\
+""")
+
 REVIEWER_SYSTEM = Template("""\
 你是严格的译文审校，比对$src_label原文与中文译文，逐段找出**确凿**的问题。问题类型：
 - missing：漏译（原文有的信息译文缺失）
@@ -422,6 +444,7 @@ _DEFAULTS = {
     "translator_system": TRANSLATOR_SYSTEM,
     "translator_user": TRANSLATOR_USER,
     "translator_fix_user": TRANSLATOR_FIX_USER,
+    "translator_fix_multi_user": TRANSLATOR_FIX_MULTI_USER,
     "reviewer_system": REVIEWER_SYSTEM,
     "reviewer_user": REVIEWER_USER,
     "polisher_system": POLISHER_SYSTEM,
@@ -497,4 +520,16 @@ def numbered_pairs(sources: list[str], targets: list[str]) -> str:
     out = []
     for i, (s, t) in enumerate(zip(sources, targets)):
         out.append(f"[{i}] 原文：{s}\n    译文：{t}")
+    return "\n".join(out)
+
+
+def numbered_feedback(items: list[tuple[int, str, str]]) -> str:
+    """生成“[批内段号] 源文\\n意见：反馈”格式的编号列表（供批量合并定向重译调用使用）。
+
+    items 的编号必须与【本批当前译文】里的批内段号一致，模型才能据此定位原译及前后文——
+    不能按 items 在列表中的排列顺序重新编号，否则会失去与整批译文的索引对应关系。
+    """
+    out = []
+    for idx, source, feedback in items:
+        out.append(f"[{idx}] {source}\n意见：{feedback or '（无）'}")
     return "\n".join(out)

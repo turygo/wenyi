@@ -80,6 +80,36 @@ class TestTranslatorAlignment(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "索引为 0 的段落"):
             translator.translate_batch(["あ"])
 
+    def test_retranslate_batch_with_feedback_rejects_non_string_element(self):
+        """translations 数组中包含 dict 元素时应视为无效并返回 []，不应经 str() 强制转换后采纳。"""
+        client = FakeClient(
+            handler=lambda messages, tier, json_mode: json.dumps(
+                {"translations": ["译0", {"text": "译1"}]}, ensure_ascii=False
+            )
+        )
+        translator = Translator(client, self._config())
+        out = translator.retranslate_batch_with_feedback(
+            [(0, "あ", "意见0"), (1, "い", "意见1")],
+            ["旧译0", "旧译1"],
+            operation="translate.review_fix",
+        )
+        self.assertEqual(out, [])
+
+    def test_retranslate_batch_with_feedback_rejects_blank_element(self):
+        """translations 数组含空串元素时视为无效，返回 []。"""
+        client = FakeClient(
+            handler=lambda messages, tier, json_mode: json.dumps(
+                {"translations": ["译0", "  "]}, ensure_ascii=False
+            )
+        )
+        translator = Translator(client, self._config())
+        out = translator.retranslate_batch_with_feedback(
+            [(0, "あ", "意见0"), (1, "い", "意见1")],
+            ["旧译0", "旧译1"],
+            operation="translate.review_fix",
+        )
+        self.assertEqual(out, [])
+
 
 class TestTranslatorPromptOrder(unittest.TestCase):
     def test_static_chapter_digest_precedes_dynamic_glossary(self):

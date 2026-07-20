@@ -90,7 +90,7 @@ class Translator(Agent):
         book_synopsis: str = "",
         chapter_digest: str = "",
     ) -> str:
-        """带审校意见定向重译单段（lint 层/章末 autofix 用）。失败返回空串，由调用方决定弃用。
+        """带审校意见定向重译单段（lint 层单段回退/章末 autofix 用）。失败返回空串，由调用方决定弃用。
 
         复用 translator_system（与主翻译共享稳定前缀，命中缓存）；
         user 用 translator_fix_user：前缀块与主翻译一致，上下文换成前文+后文译文，附审校意见。
@@ -123,6 +123,58 @@ class Translator(Agent):
         if isinstance(items, list) and items:
             return str(items[0]).strip()
         return ""
+
+    def retranslate_batch_with_feedback(
+        self,
+        items: list[tuple[int, str, str]],
+        batch_targets: list[str],
+        *,
+        operation: str,
+        glossary_terms: list[GlossaryTerm] | None = None,
+        style: str = "",
+        book_synopsis: str = "",
+        chapter_digest: str = "",
+    ) -> list[str]:
+        """根据审校意见批量重译同一批次中的多个待修复段落（合并为一次调用，可减少 N-1 次
+        请求）。调用失败、返回值不是数组或数组长度不等于 N 时返回 []，由调用方回退到逐段
+        调用；各段是否采纳仍由调用方独立判断，本方法不记录 outcome。
+
+        items：（批内段号，源文，审校意见）三元组，长度为 N（N > 1，由调用方保证）。批内段号
+        必须与 batch_targets 的下标口径一致，模型才能据此在整批译文里定位原译及前后文。
+        batch_targets：按批内段号排列的整批当前译文，包含待修复段落的旧译文；按原顺序编号后注入。
+        """
+        n = len(items)
+        if n == 0:
+            return []
+        system = prompts.render(
+            "translator_system",
+            src=self.src,
+            tgt=self.tgt,
+            n=n,
+            lang_guidance=langprofile.translate_guidance(self.src, self.config.honorific_strategy),
+        )
+        user = prompts.render(
+            "translator_fix_multi_user",
+            src=self.src,
+            tgt=self.tgt,
+            style=style or "（无）",
+            book_synopsis=book_synopsis or "（无）",
+            glossary=prompts.render_glossary(glossary_terms or []),
+            chapter_digest=chapter_digest or "（无）",
+            batch_targets=prompts.numbered(batch_targets),
+            n=n,
+            items=prompts.numbered_feedback(items),
+        )
+        out = self._ask_json(
+            system, user, tier="strong", key="translations", default=None, operation=operation
+        )
+        if (
+            isinstance(out, list)
+            and len(out) == n
+            and all(isinstance(x, str) and x.strip() for x in out)
+        ):
+            return [x.strip() for x in out]
+        return []
 
     def translate_batch(
         self,

@@ -785,7 +785,7 @@ class TestReviewReporting(unittest.TestCase):
     FIX_TEXT = "第一章 邂逅"  # 7 字，比值 1.0
 
     def _handler(self, fix_text):
-        """审校每块报 index 0 漏译；带【审校意见】的翻译调用返回定向重译文。"""
+        """审校每块报 index 0 漏译；带审校意见的定向重译调用返回定向重译文。"""
 
         def handler(messages, tier, json_mode):
             sys = messages[0]["content"]
@@ -804,7 +804,7 @@ class TestReviewReporting(unittest.TestCase):
                     },
                     ensure_ascii=False,
                 )
-            if "文学翻译" in sys and "【审校意见】" in user:
+            if "文学翻译" in sys and "审校意见" in user:
                 return json.dumps({"translations": [fix_text]}, ensure_ascii=False)
             return routing_handler(messages, tier, json_mode)
 
@@ -1834,7 +1834,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
             user = messages[-1]["content"]
             if "文学翻译" in sys:
                 n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
-                if "【审校意见】" in user:
+                if "审校意见" in user:
                     out = ["“早上好”他轻声说道窗外是一片蔚蓝的天空" for _ in range(n)]
                 else:
                     out = ["早上好他轻声说道窗外是一片蔚蓝的天空" for _ in range(n)]
@@ -1878,7 +1878,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
                         },
                         ensure_ascii=False,
                     )
-                if "文学翻译" in sys and "【审校意见】" in user:
+                if "文学翻译" in sys and "审校意见" in user:
                     return json.dumps({"translations": [fix_text]}, ensure_ascii=False)
                 return routing_handler(messages, tier, json_mode)
 
@@ -1974,7 +1974,7 @@ class TestLintQuoteRefix(unittest.TestCase):
         user = messages[-1]["content"]
         if "文学翻译" in sys:
             n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
-            if "【审校意见】" in user:
+            if "审校意见" in user:
                 # 定向重译：修复丢引号问题，补回成对引号
                 out = ["“早上好”他轻声说道窗外是一片蔚蓝的天空" for _ in range(n)]
             else:
@@ -2258,6 +2258,161 @@ class TestProgressLabels(unittest.TestCase):
             self.assertLess(first("翻译完成"), first("检查全书一致性…"))
             self.assertLess(first("检查全书一致性…"), first("生成报告…"))
             self.assertLess(first("生成报告…"), first("生成译文文件…"))
+
+
+class TestLintFixMerged(unittest.TestCase):
+    """同一批次内的多个待修复段落合并为一次定向重译调用，并逐段独立决定采纳或拒收。"""
+
+    SRC = (
+        "「一」と彼は静かな声で言った。\n"
+        "\n"
+        "「二」と彼女は静かな声で言った。\n"
+        "\n"
+        "「三」と先生は静かな声で言った。\n"
+    )
+
+    def _write(self, path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# 第一章\n\n{self.SRC}")
+
+    def _handler(self, fix_calls):
+        def handler(messages, tier, json_mode):
+            sys = messages[0]["content"]
+            user = messages[-1]["content"]
+            if "文学翻译" in sys:
+                if "审校意见" in user:
+                    fix_calls.append(user)
+                    items_block = user.split("待重译", 1)[-1]
+                    n = len(re.findall(r"^\[(\d+)\] ", items_block, re.M))
+                    # 前两段修复成功（补回引号），第三段修复仍未带引号 → 应被独立拒收
+                    out = [f"“修复{i}”他说道" if i != 2 else "仍未带引号" for i in range(n)]
+                    return json.dumps({"translations": out}, ensure_ascii=False)
+                n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
+                return json.dumps(
+                    {"translations": [f"首译{i}丢引号" for i in range(n)]}, ensure_ascii=False
+                )
+            return routing_handler(messages, tier, json_mode)
+
+        return handler
+
+    def test_three_flagged_segments_merge_into_one_call_with_independent_accept(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            self._write(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.polish = False
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            fix_calls: list[str] = []
+            client = FakeClient(handler=self._handler(fix_calls))
+            store = Orchestrator(cfg, client=client).run(txt)
+
+            self.assertEqual(
+                len(fix_calls), 1, "3 个待修复段落应合并为一次调用，而不是分别发起调用。"
+            )
+            self.assertIn("【本批当前译文】", fix_calls[0], "多段合并 prompt 必须含整批当前译文块")
+            items_block = fix_calls[0].split("待重译", 1)[-1]
+            self.assertEqual(len(re.findall(r"^\[(\d+)\] ", items_block, re.M)), 3)
+            item_indices = {int(m) for m in re.findall(r"^\[(\d+)\] ", items_block, re.M)}
+            self.assertEqual(
+                item_indices,
+                {1, 2, 3},
+                "待重译项编号必须是批内段号（与【本批当前译文】的下标一致），不能重新按 0 至 N-1 编号。",
+            )
+
+            ch = store.load_chapter(0)
+            # text_segments[0] 是标题段，正文从 [1] 开始。
+            self.assertIn("“", ch.text_segments[1].target, "第一段修复应被采纳")
+            self.assertIn("“", ch.text_segments[2].target, "第二段修复应被采纳")
+            self.assertNotIn(
+                "“", ch.text_segments[3].target, "第三段修复未解决问题，应被拒收保留首译"
+            )
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            refixed = {
+                e["index"]: e for e in events if e["event"] == "lint_refixed" and e["chapter"] == 0
+            }
+            self.assertEqual(set(refixed), {1, 2}, "只有独立采纳的段才应产生 lint_refixed 事件")
+
+            unresolved = [
+                i
+                for i in ch.meta["review_issues"]
+                if i.get("type") == "quote_loss" and i.get("stage") == "lint"
+            ]
+            self.assertEqual(
+                {i["index"] for i in unresolved}, {3}, "被拒收的第三段应作为未解决 lint issue 记录"
+            )
+
+
+class TestLintFixMergeFallback(unittest.TestCase):
+    """合并调用返回数量不符时，回退到原有的逐段定向重译。"""
+
+    SRC = "「一」と彼は静かな声で言った。\n\n「二」と彼女は静かな声で言った。\n"
+
+    def _write(self, path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# 第一章\n\n{self.SRC}")
+
+    def _handler(self, fix_calls):
+        def handler(messages, tier, json_mode):
+            sys = messages[0]["content"]
+            user = messages[-1]["content"]
+            if "文学翻译" in sys:
+                if "审校意见" in user:
+                    fix_calls.append(user)
+                    items_block = user.split("待重译", 1)[-1]
+                    n = len(re.findall(r"^\[(\d+)\] ", items_block, re.M))
+                    if n > 1:
+                        # 合并调用故意少返回一段：长度不符，触发回退
+                        return json.dumps(
+                            {"translations": ["“修复”他说道" for _ in range(n - 1)]},
+                            ensure_ascii=False,
+                        )
+                    return json.dumps({"translations": ["“修复”他说道"]}, ensure_ascii=False)
+                n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
+                return json.dumps(
+                    {"translations": [f"首译{i}丢引号" for i in range(n)]}, ensure_ascii=False
+                )
+            return routing_handler(messages, tier, json_mode)
+
+        return handler
+
+    def test_merge_length_mismatch_falls_back_to_per_segment_calls(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            self._write(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.polish = False
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            fix_calls: list[str] = []
+            client = FakeClient(handler=self._handler(fix_calls))
+            store = Orchestrator(cfg, client=client).run(txt)
+
+            # 1 次合并调用（长度不符失败）+ 2 次逐段兜底调用 = 共 3 次带审校意见的调用
+            self.assertEqual(len(fix_calls), 3)
+            self.assertIn("【本批当前译文】", fix_calls[0], "首次合并调用仍应走多段模板")
+            merged_items = fix_calls[0].split("待重译", 1)[-1]
+            self.assertEqual(len(re.findall(r"^\[(\d+)\] ", merged_items, re.M)), 2)
+            for single_call in fix_calls[1:]:
+                single_items = single_call.split("待重译", 1)[-1]
+                self.assertEqual(len(re.findall(r"^\[(\d+)\] ", single_items, re.M)), 1)
+                # 回退单段路径必须走恢复后的单段模板：前文/后文译文独立成块，
+                # 而不是合并路径使用的、无法映射段号的单一上下文块。
+                self.assertIn("【前文译文】", single_call)
+                self.assertIn("【后文译文】", single_call)
+                self.assertLess(
+                    single_call.index("【前文译文】"), single_call.index("【后文译文】")
+                )
+
+            ch = store.load_chapter(0)
+            self.assertIn("“", ch.text_segments[1].target, "回退逐段调用应成功修复第一段")
+            self.assertIn("“", ch.text_segments[2].target, "回退逐段调用应成功修复第二段")
 
 
 if __name__ == "__main__":
