@@ -1,8 +1,10 @@
 """回填：把译文写回原格式。
 
 - 纯文本：按章重建，标题 + 段落（空行分隔）。
-- EPUB：重开原始 zip，逐条目原样拷贝；命中章节 href 的 XHTML 用 chapter.template
-  按 data-tn-id 锚点替换为译文后写回，非正文资源（图片/CSS/字体）不动。
+- EPUB：重开原始 zip，逐条目原样拷贝；schema 2 状态按物理资源 href 聚合
+  全书 Segment，每个物理 XHTML 用已保存的模板渲染一次；schema 1 旧状态
+  沿用逐章 chapter.template 渲染。两条路径都按 data-tn-id 锚点替换为
+  译文后写回，非正文资源（图片/CSS/字体）不动。
 缺失译文的段回退使用原文，保证不丢内容。
 """
 
@@ -14,7 +16,8 @@ import zipfile
 
 from bs4 import BeautifulSoup, Tag, UnicodeDammit
 
-from ..ingest.models import KIND_HEADING, Chapter
+from ..ingest.epub_toc import nav_root_list, nav_toc_scopes
+from ..ingest.models import KIND_HEADING, Chapter, Segment
 from ..pipeline.runstore import RunStore
 from ..postprocess.punct import normalize_heading_numbering
 
@@ -203,20 +206,27 @@ def _replace_block_content(el: Tag, text: str, meta: dict[str, object]) -> None:
         el.append(text[cursor:])
 
 
-def _render_chapter_html(
-    chapter: Chapter,
+def _render_segments_html(
+    template: str,
+    segments: list[Segment],
     *,
     bilingual: bool = False,
     order: str = "target_first",
 ) -> str:
-    soup = BeautifulSoup(chapter.template or "", "html.parser")
+    """把同一物理 HTML 资源内的译文按锚点一次性回填。
+
+    EPUB 的逻辑章节边界可以落在同一个 XHTML 中，也可以跨越多个 XHTML；
+    真正的回填单位是物理资源而非 Chapter，调用方需先把属于同一
+    ``resource_href`` 的 Segment（可能来自多个 Chapter）聚合后再调用本函数。
+    """
+    soup = BeautifulSoup(template or "", "html.parser")
     # 合并 cont 续段：续段文本并回其所属 anchor 元素
     by_anchor: dict[str, str] = {}
     src_by_anchor: dict[str, str] = {}
     kind_by_anchor: dict[str, str] = {}
     meta_by_anchor: dict[str, dict] = {}
     cur_anchor: str | None = None
-    for s in chapter.segments:
+    for s in segments:
         if s.cont and cur_anchor is not None:
             by_anchor[cur_anchor] += _seg_text(s)
             src_by_anchor[cur_anchor] += s.source
@@ -247,6 +257,33 @@ def _render_chapter_html(
         else:
             el.insert_after(src_el)
     return str(soup)
+
+
+def _render_chapter_html(
+    chapter: Chapter,
+    *,
+    bilingual: bool = False,
+    order: str = "target_first",
+) -> str:
+    """回填旧版“每章一个模板”的 HTML/EPUB 章节（仅用于 schema 1 状态）。
+
+    schema 2 状态的物理资源改由 :func:`_render_segments_html` 按聚合后的
+    Segment 一次性回填，见 ``_assemble_epub``。
+    """
+    return _render_segments_html(
+        chapter.template or "", chapter.segments, bilingual=bilingual, order=order
+    )
+
+
+def _segments_by_resource(chapters: list[Chapter]) -> dict[str, list[Segment]]:
+    """按源文顺序，将各逻辑章节中的 EPUB Segment 按物理资源分组。"""
+    grouped: dict[str, list[Segment]] = {}
+    for chapter in chapters:
+        for segment in chapter.segments:
+            href = segment.resource_href
+            if href:
+                grouped.setdefault(href, []).append(segment)
+    return grouped
 
 
 def _base_no_frag(href: str) -> str:
@@ -369,35 +406,168 @@ def _rewrite_html_document(
         return data if isinstance(data, bytes) else data.encode("utf-8")
 
 
-def _rewrite_toc(data: bytes, title_by_base: dict[str, str], *, is_ncx: bool) -> bytes:
-    """把目录（NCX navLabel / NAV 的 <a>）标题文本改为译名，按 href 文件名匹配。"""
+def _direct_child(parent: Tag | BeautifulSoup, name: str) -> Tag | None:
+    """返回 ``parent`` 的首个指定直接子元素。"""
+    child = parent.find(name, recursive=False)
+    return child if isinstance(child, Tag) else None
+
+
+def _nav_label_nodes(soup: BeautifulSoup) -> list[tuple[Tag, str]]:
+    """按 preorder 列出 EPUB3 NAV 目录条目标签及原始 href。
+
+    枚举顺序复用 ``epub_toc.nav_toc_scopes``/``nav_root_list`` 定位规则，
+    并按 ``epub_toc._parse_nav`` 同样的 ``li`` 直接子 ``a``/``span`` 规则
+    遍历，保证此处的 node_index 与解析阶段完全一致。
+    """
+    labels: list[tuple[Tag, str]] = []
+
+    def walk_list(ordered_list: Tag) -> None:
+        for li in ordered_list.find_all("li", recursive=False):
+            if not isinstance(li, Tag):
+                continue
+            label = _direct_child(li, "a") or _direct_child(li, "span")
+            if label is not None:
+                labels.append((label, _attr_str(label.get("href"))))
+            nested = _direct_child(li, "ol")
+            if nested is not None:
+                walk_list(nested)
+
+    for scope in nav_toc_scopes(soup):
+        root = nav_root_list(scope)
+        if root is not None:
+            walk_list(root)
+    return labels
+
+
+def _ncx_nav_points(soup: BeautifulSoup) -> list[Tag]:
+    """按 preorder 列出 NCX ``navPoint``，遍历规则与 ``epub_toc._parse_ncx`` 一致。"""
+    nav_map = soup.find("navMap")
+    if not isinstance(nav_map, Tag):
+        return []
+    points: list[Tag] = []
+
+    def walk(parent: Tag) -> None:
+        for child in parent.children:
+            if not isinstance(child, Tag) or child.name != "navPoint":
+                continue
+            points.append(child)
+            walk(child)
+
+    walk(nav_map)
+    return points
+
+
+def _translated_toc_title(entry: dict[str, object]) -> str:
+    """返回目录条目的有效译名（标题编号统一为汉字），缺失时回退原标题。"""
+    value = entry.get("title_translated") or entry.get("title")
+    if not isinstance(value, str):
+        return ""
+    stripped = value.strip()
+    return normalize_heading_numbering(stripped) if stripped else ""
+
+
+def _indexed_toc_entries(
+    entries: list[dict[str, object]], toc_path: str
+) -> dict[int, dict[str, object]]:
+    """按 ``toc_path + node_index`` 建立目录节点的精确索引。"""
+    indexed: dict[int, dict[str, object]] = {}
+    for entry in entries:
+        if entry.get("toc_path") != toc_path:
+            continue
+        node_index = entry.get("node_index")
+        if isinstance(node_index, int) and node_index >= 0:
+            indexed[node_index] = entry
+    return indexed
+
+
+def _toc_kind_at(toc_entries: list[dict[str, object]], name: str) -> str | None:
+    """返回目录节点中 ``toc_path == name`` 的 ``kind``（``"ncx"``/``"nav"``）。
+
+    未匹配到该 zip 成员的精确条目时返回 ``None``，调用方据此改用后缀判断
+    （兼容旧状态）。同一 ``toc_path`` 下所有条目的 ``kind`` 相同，取首条即可。
+    """
+    for entry in toc_entries:
+        if entry.get("toc_path") == name:
+            kind = entry.get("kind")
+            return kind if isinstance(kind, str) else None
+    return None
+
+
+def _rewrite_toc(
+    data: bytes,
+    entries_or_legacy_titles: list[dict[str, object]] | dict[str, str],
+    *,
+    is_ncx: bool,
+    toc_path: str = "",
+) -> bytes:
+    """回填 NCX/NAV 的可见标题，``src``/``href`` 属性原样保留。
+
+    新状态传入目录项列表：按 ``toc_path + node_index`` 精确定位节点，
+    同一 XHTML 中的多个 fragment 分别使用对应译名；回填前核对 ``raw_href``
+    是否与源文件一致，不一致（状态与源书不匹配）时跳过该节点，不误改。
+    传入 ``{basename: title}`` 字典时使用旧版模式，沿用按 href 文件名
+    匹配的逻辑，供 schema 1 旧状态导出使用。
+    """
     try:
+        exact_entries = (
+            _indexed_toc_entries(entries_or_legacy_titles, toc_path)
+            if isinstance(entries_or_legacy_titles, list)
+            else {}
+        )
+        legacy_titles = (
+            entries_or_legacy_titles if isinstance(entries_or_legacy_titles, dict) else {}
+        )
         if is_ncx:
             soup = BeautifulSoup(data, "xml")
-            for np in soup.find_all("navPoint"):
-                content = np.find("content")
-                label = np.find("text")
-                if content is None or label is None:
+            for node_index, nav_point in enumerate(_ncx_nav_points(soup)):
+                nav_label = _direct_child(nav_point, "navLabel")
+                label = nav_label.find("text") if nav_label is not None else None
+                if not isinstance(label, Tag):
                     continue
-                t = title_by_base.get(_base_no_frag(_attr_str(content.get("src"))))
-                if t:
+                content = _direct_child(nav_point, "content")
+                entry = exact_entries.get(node_index)
+                if entry is not None:
+                    raw_src = _attr_str(content.get("src")) if content else ""
+                    expected = entry.get("raw_href")
+                    if isinstance(expected, str) and expected != raw_src:
+                        continue  # 状态与源书不匹配，宁可保留原标题也不改错节点
+                    title = _translated_toc_title(entry)
+                else:
+                    title = legacy_titles.get(
+                        _base_no_frag(_attr_str(content.get("src")) if content else "")
+                    )
+                if title:
                     label.clear()
-                    label.append(t)
+                    label.append(title)
             return soup.encode()
+
         # EPUB3 nav.xhtml：只改 epub:type="toc" 的导航，避免误改 landmarks / page-list
         soup = BeautifulSoup(data, "html.parser")
-        toc_navs = [
-            n
-            for n in soup.find_all("nav")
-            if "toc" in (_attr_str(n.get("epub:type")) or _attr_str(n.get("type"))).split()
-        ]
-        scopes = toc_navs or [soup]  # 找不到带类型的 toc nav 时退回全局
-        for scope in scopes:
-            for a in scope.find_all("a", href=True):
-                t = title_by_base.get(_base_no_frag(_attr_str(a.get("href"))))
-                if t:
-                    a.clear()
-                    a.append(t)
+        if legacy_titles:
+            toc_navs = [
+                n
+                for n in soup.find_all("nav")
+                if "toc" in (_attr_str(n.get("epub:type")) or _attr_str(n.get("type"))).split()
+            ]
+            scopes = toc_navs or [soup]  # 找不到带类型的 toc nav 时退回全局
+            for scope in scopes:
+                for a in scope.find_all("a", href=True):
+                    t = legacy_titles.get(_base_no_frag(_attr_str(a.get("href"))))
+                    if t:
+                        a.clear()
+                        a.append(t)
+            return str(soup).encode("utf-8")
+        for node_index, (label, raw_href) in enumerate(_nav_label_nodes(soup)):
+            entry = exact_entries.get(node_index)
+            if entry is None:
+                continue
+            expected = entry.get("raw_href")
+            if isinstance(expected, str) and expected != raw_href:
+                continue  # 状态与源书不匹配，宁可保留原标题也不改错节点
+            title = _translated_toc_title(entry)
+            if title:
+                label.clear()
+                label.append(title)
         return str(soup).encode("utf-8")
     except Exception:
         return data
@@ -411,37 +581,63 @@ def _assemble_epub(
     bilingual: bool = False,
     order: str = "target_first",
 ) -> str:
+    """复制原 EPUB，并按物理资源替换正文、回填目录及目标语言元数据。
+
+    schema 2 状态（``resource_templates.json`` 非空）按 ``Segment.resource_href``
+    把全书 Segment 聚合到物理 href，每个物理 XHTML 只渲染一次——天然兼容
+    “一个文件含多个逻辑章”和“一章跨多个文件”。schema 1 旧状态（模板仍
+    随 Chapter 存储）继续按旧版逻辑逐章渲染。
+    """
     m = store.load_manifest()
     target_lang = _epub_lang(m.get("target_lang", "zh"))
+    raw_meta = m.get("meta")
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    raw_toc_entries = meta.get("toc_entries", [])
+    toc_entries: list[dict[str, object]] = (
+        [entry for entry in raw_toc_entries if isinstance(entry, dict)]
+        if isinstance(raw_toc_entries, list)
+        else []
+    )
+
+    chapters = [store.load_chapter(c["index"]) for c in m["chapters"]]
+    resource_templates = store.load_resource_templates()
+
     # href -> 渲染后的 XHTML
     rendered: dict[str, str] = {}
-    for c in m["chapters"]:
-        ch = store.load_chapter(c["index"])
-        if ch.href and ch.template:
-            rendered[ch.href] = _render_chapter_html(ch, bilingual=bilingual, order=order)
+    if meta.get("epub_schema") == 2:
+        if not resource_templates:
+            raise ValueError(
+                "EPUB 翻译状态使用 schema 2，但缺少 resource_templates.json（状态不完整，无法导出）"
+            )
+        grouped = _segments_by_resource(chapters)
+        undeclared = sorted(set(grouped) - set(resource_templates))
+        if undeclared:
+            raise ValueError("EPUB 翻译状态引用了未登记的正文资源：" + ", ".join(undeclared[:3]))
+        for href, segments in grouped.items():
+            rendered[href] = _render_segments_html(
+                resource_templates[href], segments, bilingual=bilingual, order=order
+            )
+    else:
+        # schema 1 旧状态：模板仍随 Chapter 存储，逐章渲染。
+        for chapter in chapters:
+            if chapter.href and chapter.template:
+                rendered[chapter.href] = _render_chapter_html(
+                    chapter, bilingual=bilingual, order=order
+                )
 
-    # 目录标题映射（文件名 → 译名）；书名保持原文，不改 OPF 主标题。
-    title_by_base: dict[str, str] = {}
+    # 目录标题：兼容旧状态的 basename 映射（用于旧状态导出，以及精确模式未命中时的回退）。
+    legacy_titles: dict[str, str] = {}
     for c in m["chapters"]:
         base = _base_no_frag(c.get("href") or "")
         t = _ch_title(c)
         if base and t:
-            title_by_base[base] = t
-    raw_meta = m.get("meta")
-    meta = raw_meta if isinstance(raw_meta, dict) else {}
-    raw_toc_entries = meta.get("toc_entries", [])
-    toc_entries = raw_toc_entries if isinstance(raw_toc_entries, list) else []
+            legacy_titles[base] = t
     for entry in toc_entries:
-        if not isinstance(entry, dict):
-            continue
-        href = entry.get("href")
-        title_value = entry.get("title_translated") or entry.get("title")
+        href = entry.get("resource_href") or entry.get("href")
         base = _base_no_frag(href if isinstance(href, str) else "")
-        title = (
-            normalize_heading_numbering(title_value.strip()) if isinstance(title_value, str) else ""
-        )
+        title = _translated_toc_title(entry)
         if base and title:
-            title_by_base[base] = title
+            legacy_titles[base] = title
     book_title = ""
 
     with zipfile.ZipFile(source_path, "r") as zin:
@@ -452,17 +648,8 @@ def _assemble_epub(
                 name = info.filename
                 low = name.lower()
                 data = zin.read(name)
-                if name in rendered:
-                    zout.writestr(
-                        info,
-                        _rewrite_html_document(
-                            rendered[name],
-                            lang=target_lang,
-                            force_horizontal=force_horizontal,
-                            bilingual=bilingual,
-                        ),
-                    )
-                elif name == "mimetype":
+                toc_kind = _toc_kind_at(toc_entries, name)
+                if name == "mimetype":
                     zout.writestr(info, data, zipfile.ZIP_STORED)
                 elif low.endswith(".opf"):
                     zout.writestr(
@@ -474,15 +661,32 @@ def _assemble_epub(
                             force_horizontal=force_horizontal,
                         ),
                     )
-                elif low.endswith(".ncx"):
-                    zout.writestr(info, _rewrite_toc(data, title_by_base, is_ncx=True))
-                elif low.endswith(_HTML_EXTS):
-                    if _is_nav(data):
-                        data = _rewrite_toc(data, title_by_base, is_ncx=False)
+                elif toc_kind == "ncx" or (toc_kind is None and low.endswith(".ncx")):
+                    # 优先按 toc_entries 中的 toc_path + kind 路由（OPF 可把 NCX 命名为
+                    # 任意扩展名，如 toc.xml）；没有精确匹配的目录项时，才改用 .ncx 后缀判断。
+                    exact = _indexed_toc_entries(toc_entries, name)
+                    toc_source: list[dict[str, object]] | dict[str, str] = (
+                        toc_entries if exact else legacy_titles
+                    )
+                    zout.writestr(info, _rewrite_toc(data, toc_source, is_ncx=True, toc_path=name))
+                elif toc_kind == "nav" or (toc_kind is None and low.endswith(_HTML_EXTS)):
+                    html_data = rendered[name].encode("utf-8") if name in rendered else data
+                    exact = _indexed_toc_entries(toc_entries, name)
+                    if exact:
+                        # 存在精确匹配的目录项时，无条件使用精确模式，不依赖 _is_nav 探测
+                        # （解析端 nav_toc_scopes 也能识别缺少 epub:type 的 NAV）。
+                        html_data = _rewrite_toc(
+                            html_data, toc_entries, is_ncx=False, toc_path=name
+                        )
+                    elif _is_nav(html_data):
+                        # 兼容旧状态的回退逻辑：没有 toc_entries 时，根据内容特征识别 NAV。
+                        html_data = _rewrite_toc(
+                            html_data, legacy_titles, is_ncx=False, toc_path=name
+                        )
                     zout.writestr(
                         info,
                         _rewrite_html_document(
-                            data,
+                            html_data,
                             lang=target_lang,
                             force_horizontal=force_horizontal,
                             bilingual=bilingual,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+from copy import deepcopy
 
 from .epub_reader import read_epub
 from .fb2_reader import read_fb2
@@ -78,11 +79,26 @@ def split_long_segments(chapters: list[Chapter], max_chars: int) -> None:
             for k, piece in enumerate(_split_text(s.source, max_chars)):
                 if k == 0:
                     new_segs.append(
-                        Segment(index=idx, source=piece, kind=s.kind, anchor=s.anchor, cont=False)
+                        Segment(
+                            index=idx,
+                            source=piece,
+                            kind=s.kind,
+                            anchor=s.anchor,
+                            resource_href=s.resource_href,
+                            cont=False,
+                            meta=deepcopy(s.meta),
+                        )
                     )
                 else:  # 续段：并回首段，无独立 anchor
                     new_segs.append(
-                        Segment(index=idx, source=piece, kind=KIND_TEXT, anchor=None, cont=True)
+                        Segment(
+                            index=idx,
+                            source=piece,
+                            kind=KIND_TEXT,
+                            anchor=None,
+                            resource_href=s.resource_href,
+                            cont=True,
+                        )
                     )
                 idx += 1
         ch.segments = new_segs

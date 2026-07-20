@@ -708,9 +708,15 @@ class Orchestrator:
     def _translate_titles(
         self, store: RunStore, glossary: GlossaryStore, progress: Optional[ProgressFn] = None
     ) -> None:
-        """把各章标题和额外目录项翻成中文，写回 manifest（幂等：已全部译过则跳过）。
+        """把各章标题和目录项翻成中文，写回 manifest（幂等：已全部译过则跳过）。
 
-        书名保持原文，不写 title_translated；借术语表保证章节标题里的专名一致。
+        schema 2（EPUB 逻辑切章）下，章标题不再各自独立翻译：
+        - 带 toc_entry_id 的章节（TOC 边界章节），其标题始终与对应 TOC entry 的原文
+          一致；只翻译 entry，再按 toc_entry_id 将译文同步到章节条目。
+        - 没有 toc_entry_id 的章（spine-fallback 章 / 前置章 / 非 EPUB 文档）仍按
+          章自身标题翻译；若首段是已译 heading 且原文与章标题一致，直接复用该
+          heading 译文，不再单独调用模型。
+        书名保持原文，不写 title_translated；借术语表保证标题里的专名一致。
         """
         from ..agents import prompts
 
@@ -723,44 +729,78 @@ class Orchestrator:
 
         raw_meta = m.get("meta")
         meta = raw_meta if isinstance(raw_meta, dict) else {}
-        chapter_hrefs = {c.get("href") for c in chapters if c.get("href")}
         raw_toc_entries = meta.get("toc_entries", [])
-        toc_entry_items = raw_toc_entries if isinstance(raw_toc_entries, list) else []
-        toc_entries = [
+        toc_entry_list = raw_toc_entries if isinstance(raw_toc_entries, list) else []
+        entries_by_id = {
+            e["entry_id"]: e
+            for e in toc_entry_list
+            if isinstance(e, dict) and isinstance(e.get("entry_id"), str)
+        }
+        # 待译 entry：有标题、非外部链接、还没译过（去重在下面按源文文本做，这里只
+        # 挑出候选）。任意 depth 的 entry 都算（不仅 boundary），与数据契约一致。
+        toc_entries_pending = [
             e
-            for e in toc_entry_items
+            for e in toc_entry_list
             if isinstance(e, dict)
-            and e.get("href") not in chapter_hrefs
+            and not e.get("external")
             and _flat(e.get("title", ""))
+            and not e.get("title_translated")
         ]
 
-        titled_chapters = [c for c in chapters if _flat(c.get("title", ""))]
+        # 章节分为两类：toc_entry_id 指向已知 entry 的 TOC 边界章节，其标题由对应
+        # entry 决定；其余章节（spine-fallback 章节 / 前置章节 / 非 EPUB 文档）各自翻译。
+        toc_covered_chapters = []
+        other_chapters = []
+        for c in chapters:
+            entry_id = c.get("toc_entry_id")
+            if entry_id and entry_id in entries_by_id:
+                toc_covered_chapters.append(c)
+            elif _flat(c.get("title", "")):
+                other_chapters.append(c)
+
         m.pop("title_translated", None)
 
-        # 正文标题复用：首段是已译 heading 的章，标题直接取该段译文（与正文用词一致，
-        # 避免独立标题 agent 无上下文另起译法），不进 LLM 列表。
+        # 正文标题复用：首段是已译 heading 且原文与章标题一致的章，标题直接取该段
+        # 译文（与正文用词一致，避免独立标题 agent 无上下文另起译法），不进 LLM
+        # 列表；已有 title_translated（断点续跑）的也不重发，只补真正的缺口。
         llm_chapters = []
-        for c in titled_chapters:
+        for c in other_chapters:
             chapter = store.load_chapter(c["index"])
             segs = chapter.segments
-            heading_target = _flat(segs[0].target) if segs and segs[0].kind == KIND_HEADING else ""
+            heading_target = ""
+            if (
+                segs
+                and segs[0].kind == KIND_HEADING
+                and _flat(segs[0].source) == _flat(c.get("title", ""))
+            ):
+                heading_target = _flat(segs[0].target)
             if heading_target:
                 c["title_translated"] = heading_target
-            else:
+            elif not c.get("title_translated"):
                 llm_chapters.append(c)
-        store.save_manifest(m)  # 先落盘复用结果，即便后续 LLM 调用失败也不丢失
 
-        if all(c.get("title_translated") for c in llm_chapters) and all(
-            e.get("title_translated") for e in toc_entries
-        ):
+        # TOC 边界章：entry 若已译（本轮之前落盘 / 断点续跑），先同步，省一次调用。
+        for c in toc_covered_chapters:
+            entry_translated = entries_by_id[c["toc_entry_id"]].get("title_translated")
+            if entry_translated:
+                c["title_translated"] = entry_translated
+
+        store.save_manifest(m)  # 先落盘复用/同步结果，即便后续 LLM 调用失败也不丢失
+
+        if not llm_chapters and not toc_entries_pending:
             store.log_event("titles_skipped", reason="already_translated")
-            return  # 已译（含复用），断点续跑不重复调用
+            return  # 已译（含复用/同步），断点续跑不重复调用
 
-        titles = [_flat(c.get("title", "")) for c in llm_chapters] + [
-            _flat(e.get("title", "")) for e in toc_entries
-        ]
-        if not any(t.strip() for t in titles):
-            return  # 全部复用/已译，LLM 列表为空，不发请求
+        # 去重：章和 entry 可能共享同一源标题文本，只译一次，按首次出现顺序发送。
+        pending_items: list[dict] = [*llm_chapters, *toc_entries_pending]
+        unique_titles: list[str] = []
+        title_slot: dict[str, int] = {}
+        for item in pending_items:
+            key = _flat(item.get("title", ""))
+            if key not in title_slot:
+                title_slot[key] = len(unique_titles)
+                unique_titles.append(key)
+
         if progress:
             progress(0, 0, "翻译章节标题…")
         analysis = store.load_analysis() or {}
@@ -769,7 +809,7 @@ class Orchestrator:
             "title_translator_system",
             src=self.config.source_lang,
             tgt=self.config.target_lang,
-            n=len(titles),
+            n=len(unique_titles),
         )
         user = prompts.render(
             "title_translator_user",
@@ -777,8 +817,8 @@ class Orchestrator:
             tgt=self.config.target_lang,
             book_synopsis=book_synopsis,
             glossary=prompts.render_glossary(glossary.all_terms()),
-            n=len(titles),
-            numbered_titles=prompts.numbered(titles),
+            n=len(unique_titles),
+            numbered_titles=prompts.numbered(unique_titles),
         )
         try:
             data = self.client.complete_json(
@@ -790,27 +830,31 @@ class Orchestrator:
         except Exception:
             return
         out = data.get("titles") if isinstance(data, dict) else data
-        if not isinstance(out, list) or len(out) != len(titles):
+        if not isinstance(out, list) or len(out) != len(unique_titles):
             store.log_event(
                 "titles_translation_rejected",
                 reason="count_mismatch",
-                expected=len(titles),
+                expected=len(unique_titles),
                 actual=len(out) if isinstance(out, list) else None,
             )
             return
         out = [str(t).strip() for t in out]
-        chapter_out = out[: len(llm_chapters)]
-        toc_out = out[len(llm_chapters) :]
-        for c, t in zip(llm_chapters, chapter_out):
-            c["title_translated"] = t or c.get("title")
-        for e, t in zip(toc_entries, toc_out):
-            e["title_translated"] = t or e.get("title")
+        for item in pending_items:
+            key = _flat(item.get("title", ""))
+            item["title_translated"] = out[title_slot[key]] or item.get("title")
+
+        # entry 译完后按 toc_entry_id 同步回章条目。
+        for c in toc_covered_chapters:
+            entry_translated = entries_by_id[c["toc_entry_id"]].get("title_translated")
+            if entry_translated:
+                c["title_translated"] = entry_translated
+
         store.save_manifest(m)
         store.log_event(
             "titles_translated",
             titles=[
-                {"index": i - 1, "source": src, "target": tgt}
-                for i, (src, tgt) in enumerate(zip(titles, out))
+                {"index": i, "source": src, "target": tgt}
+                for i, (src, tgt) in enumerate(zip(unique_titles, out))
             ],
         )
 

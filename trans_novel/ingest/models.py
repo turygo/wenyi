@@ -27,6 +27,7 @@ class Segment(BaseModel):
     kind: str = KIND_TEXT  # text | heading
     target: Optional[str] = None  # 译文（翻译/润色后填入）
     anchor: Optional[str] = None  # 回填定位标记（EPUB 用占位符 id）
+    resource_href: Optional[str] = None  # EPUB：Segment 所属的物理 XHTML 路径
     cont: bool = False  # 超长段被拆分后的续段：回填时并回上一段，不另起段落
     meta: dict[str, Any] = Field(default_factory=dict)
 

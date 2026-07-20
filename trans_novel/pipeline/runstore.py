@@ -96,6 +96,10 @@ class RunStore:
         return os.path.join(self.run_dir, "usage.json")
 
     @property
+    def resource_templates_path(self) -> str:
+        return os.path.join(self.run_dir, "resource_templates.json")
+
+    @property
     def event_log_path(self) -> str:
         return os.path.join(self.run_dir, "events.jsonl")
 
@@ -125,7 +129,15 @@ class RunStore:
 
         manifest 标志着本次运行已完成初始化；调用方应在分析结果、
         术语库和上下文全部落盘后再保存。
+
+        EPUB schema 2 文档把标注模板存在 doc.meta["epub_resource_templates"]
+        （键为物理资源 href）；这里先把它从 doc.meta 中移除，再以原子方式
+        单独写入 resource_templates.json，不写入 manifest。manifest 会频繁
+        重写，而模板体积较大；断点续跑时也不必在每次保存时重复写入。
         """
+        templates = doc.meta.pop("epub_resource_templates", None)
+        if isinstance(templates, dict) and templates:
+            self._write_json(self.resource_templates_path, templates)
         manifest = {
             "title": doc.title,
             "fmt": doc.fmt,
@@ -134,13 +146,25 @@ class RunStore:
             "target_lang": doc.target_lang,
             "meta": doc.meta,
             "chapters": [
-                {"index": c.index, "title": c.title, "href": c.href, "status": STATUS_PENDING}
+                {
+                    "index": c.index,
+                    "title": c.title,
+                    "href": c.href,
+                    "toc_entry_id": c.meta.get("toc_entry_id"),
+                    "status": STATUS_PENDING,
+                }
                 for c in doc.chapters
             ],
         }
         for c in doc.chapters:
             self.save_chapter(c)
         return manifest
+
+    def load_resource_templates(self) -> dict[str, str]:
+        """读取 EPUB 物理资源模板；文件缺失（非 EPUB 或旧 schema 1 run）返回空字典。"""
+        if not os.path.isfile(self.resource_templates_path):
+            return {}
+        return self._read_json(self.resource_templates_path)
 
     def save_manifest(self, manifest: dict) -> None:
         self._write_json(self.manifest_path, manifest)

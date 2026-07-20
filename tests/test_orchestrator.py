@@ -11,12 +11,18 @@ import time
 import unittest
 
 from tests.fake_llm import routing_handler
-from tests.sample_data import write_sample_txt
+from tests.sample_data import (
+    write_grouped_nav_epub,
+    write_nested_toc_epub,
+    write_sample_epub,
+    write_sample_txt,
+)
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
+from trans_novel.ingest.models import Chapter, Segment
 from trans_novel.llm.base import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator, _normalize_lang
-from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING
+from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING, RunStore
 from trans_novel.postprocess.punct import normalize_zh
 
 
@@ -47,6 +53,31 @@ def _config(state_dir: str):
             "paths": {"state_dir": state_dir},
         }
     )
+
+
+def _epub_config(state_dir: str):
+    """供英文源 EPUB 样书使用（write_nested_toc_epub / write_grouped_nav_epub 生成的内容均为英文）。"""
+    return Config.from_dict(
+        {
+            "language": {"source": "en", "target": "zh"},
+            "llm": {
+                "provider": "fake",
+                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
+            },
+            "segment": {"max_chars_per_batch": 1800},
+            "pipeline": {
+                "review": True,
+                "polish": True,
+                "backtranslate_sample": 0.0,
+                "consistency_qa": True,
+            },
+            "paths": {"state_dir": state_dir},
+        }
+    )
+
+
+def _title_calls(calls):
+    return [c for c in calls if "标题翻译" in c["messages"][0]["content"]]
 
 
 class TestOrchestrator(unittest.TestCase):
@@ -484,9 +515,6 @@ class TestTermMiningRobustness(unittest.TestCase):
 class TestTitleReuse(unittest.TestCase):
     """标题复用（正文 heading 段优先）+ 标题 prompt 注入全书概览。"""
 
-    def _title_calls(self, calls):
-        return [c for c in calls if "标题翻译" in c["messages"][0]["content"]]
-
     def test_heading_titles_reused_no_llm_call(self):
         """两章标题都来自已译 heading 段：title_translated 取自正文，零标题 LLM 请求。"""
         with tempfile.TemporaryDirectory() as d:
@@ -503,7 +531,7 @@ class TestTitleReuse(unittest.TestCase):
                 self.assertEqual(heading.kind, "heading")
                 self.assertEqual(c["title_translated"], " ".join(heading.target.split()))
             # 全部复用，标题 agent 一次都不该被调用
-            self.assertEqual(len(self._title_calls(client.calls)), 0)
+            self.assertEqual(len(_title_calls(client.calls)), 0)
 
     def test_non_heading_title_falls_back_to_llm_with_synopsis(self):
         """无可复用 heading 段的章 + toc_entries 仍走标题 agent；user prompt 含全书概览块，
@@ -522,7 +550,10 @@ class TestTitleReuse(unittest.TestCase):
             m = store.load_manifest()
             m["chapters"][0]["title_translated"] = None
             meta = m.setdefault("meta", {})
-            meta["toc_entries"] = [{"href": "extra.xhtml", "title": "特別編"}]
+            # 额外构造一条未映射到任何章节的 toc entry（如 depth > 0 的子节点），字段遵循 schema 2。
+            meta["toc_entries"] = [
+                {"entry_id": "extra.ncx:0", "title": "特別編", "external": False}
+            ]
             store.save_manifest(m)
 
             captured = {}
@@ -545,6 +576,186 @@ class TestTitleReuse(unittest.TestCase):
             m2 = store.load_manifest()
             self.assertTrue(m2["chapters"][0]["title_translated"])
             self.assertTrue(m2["meta"]["toc_entries"][0]["title_translated"])
+
+
+class TestEpubTitleTranslation(unittest.TestCase):
+    """schema 2 下，TOC entry 驱动标题翻译：先翻译 entry，再按 toc_entry_id 回填章节。"""
+
+    def test_toc_boundary_titles_synced_from_entry(self):
+        """所有章节均由 TOC 边界定义：每个 toc entry（包括不作为边界的子节点）都会写入
+        title_translated；边界章节的 title_translated 与对应 entry 完全一致。"""
+        with tempfile.TemporaryDirectory() as d:
+            epub = os.path.join(d, "nested.epub")
+            write_nested_toc_epub(epub)
+            cfg = _epub_config(os.path.join(d, "state"))
+
+            client = FakeClient(handler=routing_handler)
+            store = Orchestrator(cfg, client=client).run(epub)
+
+            m = store.load_manifest()
+            entries = m["meta"]["toc_entries"]
+            self.assertEqual(len(entries), 4)  # PART I / Section 1 / PART II / Section 2
+            for entry in entries:
+                self.assertTrue(entry.get("title_translated"))
+
+            entries_by_id = {e["entry_id"]: e for e in entries}
+            chapters = m["chapters"]
+            self.assertEqual(len(chapters), 2)
+            for c in chapters:
+                self.assertTrue(c["toc_entry_id"])
+                self.assertEqual(
+                    c["title_translated"], entries_by_id[c["toc_entry_id"]]["title_translated"]
+                )
+
+    def test_grouped_part_title_not_confused_with_child_heading(self):
+        """无 href 的“部”级 entry 会继承子节点边界，但保留自己的标题。即使章节首段是子标题
+        （文本与“部”标题不同），该章节的 title_translated 仍来自对应 entry 的翻译，
+        不会误用正文 heading 的译文。"""
+        with tempfile.TemporaryDirectory() as d:
+            epub = os.path.join(d, "grouped.epub")
+            write_grouped_nav_epub(epub)
+            cfg = _epub_config(os.path.join(d, "state"))
+
+            client = FakeClient(handler=routing_handler)
+            store = Orchestrator(cfg, client=client).run(epub)
+
+            m = store.load_manifest()
+            entries_by_id = {e["entry_id"]: e for e in m["meta"]["toc_entries"]}
+            for entry in entries_by_id.values():
+                self.assertTrue(entry.get("title_translated"))
+
+            chapters = m["chapters"]
+            self.assertEqual([c["title"] for c in chapters], ["PART I", "PART II"])
+            for c in chapters:
+                entry = entries_by_id[c["toc_entry_id"]]
+                self.assertEqual(entry["title"], c["title"])
+                self.assertEqual(c["title_translated"], entry["title_translated"])
+                # 章首段实为子章节标题（"Section N"），其正文译文不应等于部标题译文
+                # ——证明部标题没有被误当成正文 heading 复用。
+                first_seg = store.load_chapter(c["index"]).segments[0]
+                self.assertNotEqual(first_seg.source, c["title"])
+                self.assertNotEqual(c["title_translated"], first_seg.target)
+
+    def test_spine_fallback_reuses_heading_no_extra_llm_call(self):
+        """无目录的 spine-fallback EPUB：章标题与首个 heading 源文一致时直接复用
+        译文，标题 agent 零调用。"""
+        with tempfile.TemporaryDirectory() as d:
+            epub = os.path.join(d, "sample.epub")
+            write_sample_epub(epub)
+            cfg = _config(os.path.join(d, "state"))  # write_sample_epub 内容为日文
+
+            client = FakeClient(handler=routing_handler)
+            store = Orchestrator(cfg, client=client).run(epub)
+
+            m = store.load_manifest()
+            self.assertEqual(len(m["chapters"]), 2)
+            for c in m["chapters"]:
+                self.assertFalse(c.get("toc_entry_id"))
+                heading = store.load_chapter(c["index"]).segments[0]
+                self.assertEqual(heading.kind, "heading")
+                self.assertEqual(c["title_translated"], " ".join(heading.target.split()))
+            self.assertEqual(len(_title_calls(client.calls)), 0)
+
+    def test_title_translation_idempotent_on_rerun(self):
+        """全部标题已译（含 entry 同步）后重复调用 _translate_titles：零新增标题
+        请求，manifest 内容不变。"""
+        with tempfile.TemporaryDirectory() as d:
+            epub = os.path.join(d, "nested.epub")
+            write_nested_toc_epub(epub)
+            cfg = _epub_config(os.path.join(d, "state"))
+
+            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(epub)
+            m1 = store.load_manifest()
+            self.assertTrue(all(c.get("title_translated") for c in m1["chapters"]))
+            self.assertTrue(all(e.get("title_translated") for e in m1["meta"]["toc_entries"]))
+            chapters_snapshot = {c["index"]: c["title_translated"] for c in m1["chapters"]}
+            entries_snapshot = {
+                e["entry_id"]: e["title_translated"] for e in m1["meta"]["toc_entries"]
+            }
+
+            glossary = GlossaryStore(store.glossary_path)
+            client2 = FakeClient(handler=routing_handler)
+            Orchestrator(cfg, client=client2)._translate_titles(store, glossary)
+            glossary.close()
+
+            self.assertEqual(len(_title_calls(client2.calls)), 0)
+            m2 = store.load_manifest()
+            self.assertEqual(
+                {c["index"]: c["title_translated"] for c in m2["chapters"]}, chapters_snapshot
+            )
+            self.assertEqual(
+                {e["entry_id"]: e["title_translated"] for e in m2["meta"]["toc_entries"]},
+                entries_snapshot,
+            )
+
+    def test_dedup_shared_source_title_translated_once(self):
+        """两章 + 一个 toc entry 共享同一源标题文本：LLM 只收到一条唯一标题，
+        三者最终拿到同一份译文。"""
+        with tempfile.TemporaryDirectory() as d:
+            state_dir = os.path.join(d, "state")
+            cfg = _epub_config(state_dir)
+            store = RunStore(os.path.join(state_dir, "book"))
+
+            store.save_chapter(
+                Chapter(
+                    index=0, title="Same Title", segments=[Segment(index=0, source="Body one.")]
+                )
+            )
+            store.save_chapter(
+                Chapter(
+                    index=1, title="Same Title", segments=[Segment(index=0, source="Body two.")]
+                )
+            )
+            store.save_manifest(
+                {
+                    "title": "Book",
+                    "fmt": "epub",
+                    "source_path": "",
+                    "source_lang": "en",
+                    "target_lang": "zh",
+                    "meta": {
+                        "toc_entries": [
+                            {"entry_id": "toc.ncx:0", "title": "Same Title", "external": False}
+                        ]
+                    },
+                    "chapters": [
+                        {
+                            "index": 0,
+                            "title": "Same Title",
+                            "href": "a.xhtml",
+                            "toc_entry_id": None,
+                            "status": "done",
+                        },
+                        {
+                            "index": 1,
+                            "title": "Same Title",
+                            "href": "b.xhtml",
+                            "toc_entry_id": None,
+                            "status": "done",
+                        },
+                    ],
+                }
+            )
+
+            captured = {}
+
+            def handler(messages, tier, json_mode):
+                if "标题翻译" in messages[0]["content"]:
+                    captured["user"] = messages[-1]["content"]
+                return routing_handler(messages, tier, json_mode)
+
+            glossary = GlossaryStore(store.glossary_path)
+            Orchestrator(cfg, client=FakeClient(handler=handler))._translate_titles(store, glossary)
+            glossary.close()
+
+            self.assertIn("user", captured)
+            # 三处共享同一源标题，只应发一条
+            self.assertEqual(len(re.findall(r"^\[(\d+)\]", captured["user"], re.M)), 1)
+
+            m = store.load_manifest()
+            translated = {c["title_translated"] for c in m["chapters"]}
+            translated.add(m["meta"]["toc_entries"][0]["title_translated"])
+            self.assertEqual(len(translated), 1)
 
 
 class TestRunSteps(unittest.TestCase):

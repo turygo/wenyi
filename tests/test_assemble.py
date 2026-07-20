@@ -12,7 +12,14 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup, Tag
 
 from tests.fake_llm import routing_handler
-from tests.sample_data import write_inline_sample_epub, write_sample_epub, write_sample_txt
+from tests.sample_data import (
+    write_cross_resource_toc_epub,
+    write_epub_type_less_nav_epub,
+    write_inline_sample_epub,
+    write_nested_toc_epub,
+    write_sample_epub,
+    write_sample_txt,
+)
 from trans_novel.assemble.report import build_report
 from trans_novel.assemble.writer import (
     _inject_bilingual_style,
@@ -22,11 +29,12 @@ from trans_novel.assemble.writer import (
 )
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
-from trans_novel.ingest.epub_reader import _extract_chapter
+from trans_novel.ingest.epub_reader import annotate_epub_resource
 from trans_novel.ingest.models import Chapter
 from trans_novel.ingest.segmenter import load_document
 from trans_novel.llm.base import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator
+from trans_novel.pipeline.runstore import RunStore
 
 
 def _write_vertical_epub(path: str) -> None:
@@ -187,7 +195,7 @@ class TestAssembleEpub(unittest.TestCase):
 <p class="Textbody"><img src="before.jpg"/>Avant<br/>Après<img src="after.jpg"/></p>
 <p class="illustration"><img src="standalone.jpg"/></p>
 </body></html>"""
-        title, segments, template = _extract_chapter(
+        title, segments, template = annotate_epub_resource(
             html,
             0,
             "chapter.xhtml",
@@ -232,7 +240,7 @@ class TestAssembleEpub(unittest.TestCase):
         html = """<html><body>
 <p><img src="illustration.jpg"/>Texte original.</p>
 </body></html>"""
-        title, segments, template = _extract_chapter(
+        title, segments, template = annotate_epub_resource(
             html,
             0,
             "chapter.xhtml",
@@ -451,6 +459,245 @@ class TestConsistency(unittest.TestCase):
             g.close()
             self.assertEqual(len(issues), 1)
             self.assertEqual(issues[0]["type"], "terminology")
+
+
+class TestAssembleEpubPhysicalResourceGrouping(unittest.TestCase):
+    """schema 2：物理资源按 href 聚合渲染，覆盖“一文件多逻辑章”和“一章跨多文件”。"""
+
+    def test_two_logical_chapters_sharing_one_physical_file_both_translated(self):
+        with tempfile.TemporaryDirectory() as d:
+            ep = os.path.join(d, "nested.epub")
+            write_nested_toc_epub(ep, toc_kind="ncx")
+            store, _ = _run(ep, os.path.join(d, "state"))
+            m = store.load_manifest()
+            self.assertEqual(len(m["chapters"]), 2)
+            chapters = [store.load_chapter(c["index"]) for c in m["chapters"]]
+            # 两个逻辑章共享同一物理资源
+            self.assertEqual({ch.href for ch in chapters}, {"OEBPS/body.xhtml"})
+
+            out = assemble(store, ep, out_format="epub")
+            with zipfile.ZipFile(out) as z:
+                names = z.namelist()
+                self.assertEqual(names.count("OEBPS/body.xhtml"), 1)  # 该物理文件只写一次
+                html = z.read("OEBPS/body.xhtml").decode("utf-8")
+            # 两章的全部译文都必须出现在这一份文件里，不能互相覆盖
+            for ch in chapters:
+                for seg in ch.segments:
+                    self.assertIn(seg.target, html)
+            self.assertNotIn("Part I intro.", html)
+            self.assertNotIn("Part II intro.", html)
+            self.assertNotIn("data-tn-id", html)
+
+    def test_chapter_spanning_two_files_backfills_both(self):
+        with tempfile.TemporaryDirectory() as d:
+            ep = os.path.join(d, "cross.epub")
+            write_cross_resource_toc_epub(ep)
+            store, _ = _run(ep, os.path.join(d, "state"))
+            m = store.load_manifest()
+            self.assertEqual(len(m["chapters"]), 2)
+            first_chapter = store.load_chapter(m["chapters"][0]["index"])
+            resources_touched = {seg.resource_href for seg in first_chapter.segments}
+            # 第一个逻辑章跨 one.xhtml 与 two.xhtml 两个物理文件
+            self.assertEqual(resources_touched, {"OEBPS/one.xhtml", "OEBPS/two.xhtml"})
+
+            out = assemble(store, ep, out_format="epub")
+            with zipfile.ZipFile(out) as z:
+                one_html = z.read("OEBPS/one.xhtml").decode("utf-8")
+                two_html = z.read("OEBPS/two.xhtml").decode("utf-8")
+            for seg in first_chapter.segments:
+                target_html = one_html if seg.resource_href == "OEBPS/one.xhtml" else two_html
+                self.assertIn(seg.target, target_html)
+            self.assertNotIn("One.", one_html)
+            self.assertNotIn("Two.", two_html)
+
+
+class TestRewriteTocExactMode(unittest.TestCase):
+    """`_rewrite_toc` 精确模式：按 toc_path + node_index 定位，同一文件中的多个 fragment 分别使用对应译名。"""
+
+    def test_ncx_multi_fragment_nodes_get_distinct_titles(self):
+        from trans_novel.assemble.writer import _rewrite_toc
+
+        ncx = (
+            b'<?xml version="1.0"?><ncx><navMap>'
+            b"<navPoint><navLabel><text>old-a</text></navLabel>"
+            b'<content src="chapter.xhtml#a"/></navPoint>'
+            b"<navPoint><navLabel><text>old-b</text></navLabel>"
+            b'<content src="chapter.xhtml#b"/></navPoint>'
+            b"</navMap></ncx>"
+        )
+        entries = [
+            {
+                "toc_path": "OEBPS/toc.ncx",
+                "node_index": 0,
+                "raw_href": "chapter.xhtml#a",
+                "title": "old-a",
+                "title_translated": "译名甲",
+            },
+            {
+                "toc_path": "OEBPS/toc.ncx",
+                "node_index": 1,
+                "raw_href": "chapter.xhtml#b",
+                "title": "old-b",
+                "title_translated": "译名乙",
+            },
+        ]
+        out = _rewrite_toc(ncx, entries, is_ncx=True, toc_path="OEBPS/toc.ncx")
+        soup = BeautifulSoup(out, "xml")
+        nav_points = soup.find_all("navPoint")
+        labels = [np.find("text").get_text() for np in nav_points]
+        self.assertEqual(labels, ["译名甲", "译名乙"])
+        # src 属性原样保留
+        srcs = [np.find("content").get("src") for np in nav_points]
+        self.assertEqual(srcs, ["chapter.xhtml#a", "chapter.xhtml#b"])
+
+    def test_nav_multi_fragment_nodes_get_distinct_titles_and_href_mismatch_is_skipped(self):
+        from trans_novel.assemble.writer import _rewrite_toc
+
+        nav = (
+            b'<html xmlns:epub="http://www.idpf.org/2007/ops"><body>'
+            b'<nav epub:type="toc"><ol>'
+            b'<li><a href="chapter.xhtml#a">old-a</a></li>'
+            b'<li><a href="chapter.xhtml#b">old-b</a></li>'
+            b"</ol></nav></body></html>"
+        )
+        entries = [
+            {
+                "toc_path": "OEBPS/nav.xhtml",
+                "node_index": 0,
+                "raw_href": "chapter.xhtml#a",
+                "title_translated": "译名甲",
+            },
+            {
+                # raw_href 与源文件实际 href 不一致，回填时须跳过，不能改错节点
+                "toc_path": "OEBPS/nav.xhtml",
+                "node_index": 1,
+                "raw_href": "other.xhtml#b",
+                "title_translated": "译名乙",
+            },
+        ]
+        out = _rewrite_toc(nav, entries, is_ncx=False, toc_path="OEBPS/nav.xhtml")
+        html = out.decode("utf-8")
+        self.assertIn("译名甲", html)
+        self.assertIn("old-b", html)
+        self.assertNotIn("译名乙", html)
+
+
+class TestAssembleEpubLegacySchema(unittest.TestCase):
+    """schema 1 旧状态（章内嵌 template、无 resource_templates.json）导出兼容性。"""
+
+    def test_legacy_chapter_template_without_resource_templates_still_exports(self):
+        with tempfile.TemporaryDirectory() as d:
+            ep = os.path.join(d, "legacy.epub")
+            write_sample_epub(ep)
+            html = (
+                "<html><body>"
+                '<h1 data-tn-id="tn0_0">占位标题</h1>'
+                '<p data-tn-id="tn0_1">占位正文</p>'
+                "</body></html>"
+            )
+            title, segments, template = annotate_epub_resource(html, 0, "OEBPS/ch1.xhtml")
+            segments[0].target = "旧状态标题"
+            segments[1].target = "旧状态正文"
+            chapter = Chapter(
+                index=0,
+                title=title,
+                segments=segments,
+                href="OEBPS/ch1.xhtml",
+                template=template,
+            )
+            store = RunStore(os.path.join(d, "state"))
+            store.save_chapter(chapter)
+            manifest = {
+                "title": "Legacy",
+                "fmt": "epub",
+                "source_path": ep,
+                "source_lang": "ja",
+                "target_lang": "zh",
+                "meta": {},  # 无 epub_schema：模拟 schema 1 旧状态
+                "chapters": [
+                    {"index": 0, "title": chapter.title, "href": chapter.href, "status": "done"}
+                ],
+            }
+            store.save_manifest(manifest)
+            self.assertEqual(store.load_resource_templates(), {})  # 无 resource_templates.json
+
+            out = assemble(store, ep, out_format="epub")
+            with zipfile.ZipFile(out) as z:
+                out_html = z.read("OEBPS/ch1.xhtml").decode("utf-8")
+            self.assertIn("旧状态标题", out_html)
+            self.assertIn("旧状态正文", out_html)
+            self.assertNotIn("data-tn-id", out_html)
+
+
+class TestTocRoutingAndSchemaFindings(unittest.TestCase):
+    """评审修复：schema 2 缺少模板时须立即报错；目录回填须按 toc_entries 路由，不能只靠后缀或内容探测。"""
+
+    def test_schema2_without_resource_templates_raises(self):
+        """schema 2 状态缺少 resource_templates.json 或文件内容为空时，必须立即报错，不能静默回退并导出未翻译的原书。"""
+        with tempfile.TemporaryDirectory() as d:
+            ep = os.path.join(d, "novel.epub")
+            write_sample_epub(ep)
+            chapter = Chapter(index=0, title="第一章", href="OEBPS/ch1.xhtml")
+            store = RunStore(os.path.join(d, "state"))
+            store.save_chapter(chapter)
+            manifest = {
+                "title": "Schema2NoTemplates",
+                "fmt": "epub",
+                "source_path": ep,
+                "source_lang": "ja",
+                "target_lang": "zh",
+                "meta": {
+                    "epub_schema": 2,
+                    "toc_entries": [],
+                },  # schema 2 状态，但缺少 resource_templates.json
+                "chapters": [
+                    {"index": 0, "title": chapter.title, "href": chapter.href, "status": "done"}
+                ],
+            }
+            store.save_manifest(manifest)
+            self.assertEqual(store.load_resource_templates(), {})
+
+            with self.assertRaises(ValueError):
+                assemble(store, ep, out_format="epub")
+
+    def test_ncx_named_with_non_ncx_extension_still_backfills(self):
+        """NCX 文件名不是 .ncx（如 toc.xml）时，须按 toc_entries 中的 toc_path + kind 路由并回填；
+        否则，仅按后缀判断会漏掉该文件（解析端已能根据根节点将其识别为 NCX 目录）。"""
+        with tempfile.TemporaryDirectory() as d:
+            ep = os.path.join(d, "toc-xml.epub")
+            write_nested_toc_epub(ep, ncx_filename="toc.xml")
+            store, _ = _run(ep, os.path.join(d, "state"))
+            m = store.load_manifest()
+            meta = m.setdefault("meta", {})
+            for entry in meta["toc_entries"]:
+                entry["title_translated"] = f"译-{entry['title']}"
+            store.save_manifest(m)
+
+            out = assemble(store, ep, out_format="epub")
+            with zipfile.ZipFile(out) as z:
+                toc_xml = z.read("OEBPS/toc.xml").decode("utf-8")
+            self.assertIn("译-PART I", toc_xml)
+            self.assertIn("译-PART II", toc_xml)
+            self.assertNotIn(">PART I<", toc_xml)
+
+    def test_nav_without_epub_type_attribute_still_backfills(self):
+        """NAV 缺少 epub:type="toc"（解析端 nav_toc_scopes 可兼容此情况）时，只要 toc_entries 中有
+        toc_path 与该文件精确匹配的目录项，就必须执行精确回填，不能因 _is_nav 未识别出 NAV 而跳过。"""
+        with tempfile.TemporaryDirectory() as d:
+            ep = os.path.join(d, "navtypeless.epub")
+            write_epub_type_less_nav_epub(ep)
+            store, _ = _run(ep, os.path.join(d, "state"))
+            m = store.load_manifest()
+            meta = m.setdefault("meta", {})
+            for entry in meta["toc_entries"]:
+                entry["title_translated"] = "译-One"
+            store.save_manifest(m)
+
+            out = assemble(store, ep, out_format="epub")
+            with zipfile.ZipFile(out) as z:
+                nav_html = z.read("OEBPS/nav.xhtml").decode("utf-8")
+            self.assertIn("译-One", nav_html)
+            self.assertNotIn(">One<", nav_html)
 
 
 if __name__ == "__main__":
