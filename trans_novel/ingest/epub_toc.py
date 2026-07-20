@@ -5,13 +5,16 @@ NCX/NAV 是逻辑目录，spine 中的 XHTML 是物理资源：一个 XHTML
 保留每个目录节点的顺序、层级、原始 href 和 fragment，避免过早压成
 ``href -> title`` 字典后丢失同文件的子标题。
 
-``select_top_level_boundaries`` 是唯一的切章策略：只取 depth == 0
-的可定位节点作为章边界，不做策略注册表（YAGNI，本地设计决策）。
+``select_boundaries`` 是唯一的切章策略：依次试算各候选目录层级对应切片的
+字符数中位数，选择达到 ``MIN_CHAPTER_CHARS`` 的最深层级；该模块不设置策略
+注册表（YAGNI，本地设计决策）。``select_top_level_boundaries`` 是固定选择
+depth == 0 的特例，供既有调用和测试沿用。
 """
 
 from __future__ import annotations
 
 import posixpath
+import statistics
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
@@ -259,24 +262,32 @@ def parse_toc_entries(zf: zipfile.ZipFile, toc_paths: list[str]) -> list[dict[st
     return entries
 
 
-def select_top_level_boundaries(toc_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """从已定位的目录节点中选出章边界（等价上游 TopLevelTocStrategy.select）。
+MIN_CHAPTER_CHARS = 3000
+"""章节切片字符数中位数的下限。对 8 本真实 EPUB 的实测结果显示：
+采用“部—章”两级目录的书（Thinking Fast and Slow、Price of Time、
+Chip War、Atomic Habits、Wedding People）在 depth 1 时，切片字符数
+中位数为 9.6k–31.5k；目录扁平的书（How Not to Get Rich、Psychology
+of Money）在 depth 0 时约为 11k；两者均远高于该值。采用三级目录的
+中文书《经济运行的逻辑》在 depth 2 时仅为 0.8k，切片明显过碎。因此，
+以 3000 个字符作为正常章节与过碎切片的分界。
+"""
 
-    只使用 ``depth == 0``、非外部、已关联到 Segment 位置
-    （``boundary_position`` 为非负 int）的节点。同一位置冲突时优先保留
-    带 ``segment_anchor`` 的节点：空标题页与下一个真实章节可能对应同一个
-    Segment 位置，此时优先用带正文锚点的真实章节作为边界；若连续空资源
-    均无正文可切分，则采用更靠近后续正文的目录节点。
+
+def _dedupe_boundaries_by_position(
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """按 ``boundary_position`` 去重候选边界节点。
+
+    只保留 ``boundary_position`` 为非负 int 的节点。同一位置冲突时
+    优先保留带 ``segment_anchor`` 的节点：空标题页与下一个真实章节
+    可能对应同一个 Segment 位置，此时优先用带正文锚点的真实章节作为
+    边界；若连续空资源均无正文可切分，则采用更靠近后续正文的目录
+    节点。
     """
     by_position: dict[int, dict[str, Any]] = {}
-    for entry in toc_entries:
+    for entry in entries:
         position = entry.get("boundary_position")
-        if (
-            entry.get("depth") != 0
-            or entry.get("external")
-            or not isinstance(position, int)
-            or position < 0
-        ):
+        if not isinstance(position, int) or position < 0:
             continue
         previous = by_position.get(position)
         if previous is None:
@@ -289,3 +300,84 @@ def select_top_level_boundaries(toc_entries: list[dict[str, Any]]) -> list[dict[
         elif not current_is_anchored and not previous_is_anchored:
             by_position[position] = entry
     return list(by_position.values())
+
+
+def select_top_level_boundaries(toc_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """从已定位的目录节点中选出章边界（等价于上游 TopLevelTocStrategy.select）。
+
+    只使用 ``depth == 0`` 的非外部节点，去重规则见
+    ``_dedupe_boundaries_by_position``。其行为等同于 ``select_boundaries``
+    固定选择 depth == 0。
+    """
+    candidates = [
+        entry for entry in toc_entries if entry.get("depth") == 0 and not entry.get("external")
+    ]
+    return _dedupe_boundaries_by_position(candidates)
+
+
+def _slice_median_chars(positions: list[int], segment_lengths: list[int]) -> float:
+    """给定一组边界位置，根据累积字符数计算各非空切片的字符数中位数。
+
+    若首个边界之前仍有正文，则隐式补上位置为 0 的边界，并将这部分正文
+    计入模拟切片，使中位数能反映实际切章后的章节粒度。
+    """
+    bounds = sorted(set(positions))
+    if not bounds:
+        return 0.0
+    if bounds[0] > 0:
+        bounds = [0, *bounds]
+    total = len(segment_lengths)
+    prefix = [0] * (total + 1)
+    for index, length in enumerate(segment_lengths):
+        prefix[index + 1] = prefix[index] + length
+    chars = [
+        prefix[end] - prefix[start]
+        for start, end in zip(bounds, [*bounds[1:], total])
+        if end > start
+    ]
+    return statistics.median(chars) if chars else 0.0
+
+
+def select_boundaries(
+    toc_entries: list[dict[str, Any]], segment_lengths: list[int]
+) -> tuple[list[dict[str, Any]], int]:
+    """按切片粒度自动选择目录层级，返回 (选中的边界节点, 选定的 depth)。
+
+    先收集所有可定位节点中互不重复的 depth，并按升序试算；可定位节点
+    须满足 ``boundary_position`` 为非负 int 且 external 为假。对每个
+    候选深度 d，将 ``depth <= d`` 的边界去重后模拟切片，选择切片字符数
+    中位数达到 ``MIN_CHAPTER_CHARS`` 的最深层级。若所有层级均未达标，
+    则退回最浅层级，与历史上固定使用 depth == 0 的行为一致。
+    """
+    locatable_depths = sorted(
+        {
+            entry.get("depth")
+            for entry in toc_entries
+            if isinstance(entry.get("depth"), int)
+            and not entry.get("external")
+            and isinstance(entry.get("boundary_position"), int)
+            and entry.get("boundary_position") >= 0
+        }
+    )
+    if not locatable_depths:
+        return [], 0
+
+    def boundaries_at_depth(depth: int) -> list[dict[str, Any]]:
+        candidates = [
+            entry
+            for entry in toc_entries
+            if isinstance(entry.get("depth"), int)
+            and entry["depth"] <= depth
+            and not entry.get("external")
+        ]
+        return _dedupe_boundaries_by_position(candidates)
+
+    selected_depth = locatable_depths[0]
+    for depth in locatable_depths:
+        boundaries = boundaries_at_depth(depth)
+        positions = [int(entry["boundary_position"]) for entry in boundaries]
+        median_chars = _slice_median_chars(positions, segment_lengths)
+        if median_chars >= MIN_CHAPTER_CHARS:
+            selected_depth = depth
+
+    return boundaries_at_depth(selected_depth), selected_depth

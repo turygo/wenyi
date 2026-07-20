@@ -5,8 +5,9 @@ EPUB 即一个 zip：
   OPF → manifest（资源清单）+ spine（阅读顺序）
 
 读取时先按 spine 逐个物理 XHTML 标注 Segment（锚点按物理资源序号生成，
-与逻辑章号无关），再依据 NCX/NAV 的顶层目录边界把整书 Segment 流切成
-逻辑 Chapter。因此 Chapter 与 XHTML 不再是一对一：切章之后，每个
+与逻辑章号无关），再根据切片粒度自动选择 NCX/NAV 的目录层级（见
+``select_boundaries``），将整书的 Segment 流切分为逻辑 Chapter。因此 Chapter 与
+XHTML 不再是一对一：切章之后，每个
 Segment 的 ``resource_href`` 仍记录它所属的物理资源，写回时据此按
 物理文件聚合。标注模板不再随 Chapter 持久化，而是统一放进
 ``Document.meta["epub_resource_templates"]``（键为物理资源 href），
@@ -27,7 +28,7 @@ from .epub_toc import (
     nav_toc_scopes,
     parse_toc_entries,
     resolve_epub_href,
-    select_top_level_boundaries,
+    select_boundaries,
 )
 from .models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
 
@@ -63,7 +64,6 @@ _ATOMIC_INLINE_TAGS = {
     "svg",
     "video",
 }
-_STRATEGY_TOP_LEVEL_TOC = "top-level-toc"
 _STRATEGY_SPINE_FALLBACK = "spine-fallback"
 
 
@@ -490,15 +490,19 @@ def _logical_chapters(
             if isinstance(entry.get("toc_path"), str) and entry.get("toc_path")
         )
     )
+    segment_lengths = [len(segment.source) for segment in all_segments]
     canonical_toc_path = ""
     boundaries: list[dict[str, object]] = []
+    selected_depth = 0
     for toc_path in ordered_toc_paths:
-        candidates = select_top_level_boundaries(
-            [entry for entry in toc_entries if entry.get("toc_path") == toc_path]
+        candidates, depth = select_boundaries(
+            [entry for entry in toc_entries if entry.get("toc_path") == toc_path],
+            segment_lengths,
         )
         if candidates:
             canonical_toc_path = toc_path
             boundaries = candidates
+            selected_depth = depth
             break
     boundaries.sort(key=lambda item: int(item["boundary_position"]))
 
@@ -543,6 +547,7 @@ def _logical_chapters(
         if end > start:
             slices.append((start, end, boundary))
 
+    strategy = f"toc-depth-{selected_depth}"
     chapters = []
     for start, end, boundary in slices:
         segments = all_segments[start:end]
@@ -556,7 +561,7 @@ def _logical_chapters(
             first_href = segments[0].resource_href or ""
             title = segments[0].source if segments[0].kind == KIND_HEADING else ""
             toc_entry_id = None
-        meta: dict[str, object] = {"epub_split_strategy": _STRATEGY_TOP_LEVEL_TOC}
+        meta: dict[str, object] = {"epub_split_strategy": strategy}
         if isinstance(toc_entry_id, str):
             meta["toc_entry_id"] = toc_entry_id
         chapters.append(
@@ -569,11 +574,11 @@ def _logical_chapters(
                 meta=meta,
             )
         )
-    return chapters, _STRATEGY_TOP_LEVEL_TOC, canonical_toc_path
+    return chapters, strategy, canonical_toc_path
 
 
 def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
-    """按 spine 读取物理资源，再按顶层目录边界生成逻辑章节（schema 2）。"""
+    """按 spine 读取物理资源，再根据切片粒度自动选择目录层级并生成逻辑章节（schema 2）。"""
     with zipfile.ZipFile(path, "r") as zf:
         names = set(zf.namelist())
         opf_path = _find_opf_path(zf)

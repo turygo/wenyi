@@ -13,6 +13,7 @@ from tests.sample_data import (
     write_cross_resource_toc_epub,
     write_grouped_nav_epub,
     write_nested_toc_epub,
+    write_part_chapter_epub,
     write_sample_epub,
     write_sample_txt,
 )
@@ -581,7 +582,7 @@ class TestEpubIngest(unittest.TestCase):
 
         chapters, strategy, toc_path = _logical_chapters([resource], toc_entries)
 
-        self.assertEqual(strategy, "top-level-toc")
+        self.assertEqual(strategy, "toc-depth-0")
         self.assertEqual(toc_path, "toc.ncx")
         # tail 边界正确定位在资源末尾（=段落数），但其后没有更多正文，
         # 因此不产生额外章节——这正是它与“损坏 fragment”的可观察区别。
@@ -953,6 +954,31 @@ class TestEpubIngest(unittest.TestCase):
                         for segment in chapter.segments
                     )
                 )
+
+    def test_part_chapter_toc_selects_chapter_depth_when_chapter_slices_are_large(self):
+        """select_boundaries：章级（depth 1）切片的字符数中位数达标时，选择更细的粒度。"""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "part_chapter_large.epub")
+            write_part_chapter_epub(path, chapter_body_chars=3500)
+
+            doc = load_document(path, "en", "zh")
+
+        self.assertEqual(doc.meta["epub_split_strategy"], "toc-depth-1")
+        self.assertEqual(
+            [chapter.title for chapter in doc.chapters],
+            ["第1部", "第1章", "第2章", "第3章", "第2部", "第4章", "第5章", "第6章"],
+        )
+
+    def test_part_chapter_toc_falls_back_to_part_depth_when_chapter_slices_are_too_small(self):
+        """select_boundaries：章级（depth 1）切片的字符数中位数低于 3000 时，退回部级（depth 0）粒度。"""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "part_chapter_small.epub")
+            write_part_chapter_epub(path, chapter_body_chars=1200)
+
+            doc = load_document(path, "en", "zh")
+
+        self.assertEqual(doc.meta["epub_split_strategy"], "toc-depth-0")
+        self.assertEqual([chapter.title for chapter in doc.chapters], ["第1部", "第2部"])
 
 
 if __name__ == "__main__":

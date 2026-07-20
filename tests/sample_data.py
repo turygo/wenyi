@@ -310,3 +310,79 @@ def write_inline_sample_epub(path: str) -> None:
         zf.writestr("OEBPS/content.opf", _INLINE_OPF)
         zf.writestr("OEBPS/ch1.xhtml", _INLINE_CH1)
         zf.writestr("OEBPS/image.jpg", b"inline-image")
+
+
+def _cjk_filler(chars: int) -> str:
+    """生成指定字符数的中文正文占位内容，用于测试 select_boundaries 是否会根据切片字符数选择相应层级。"""
+    unit = "正文正文正文正文正文正文正文正文正文正文"
+    return (unit * (chars // len(unit) + 1))[:chars]
+
+
+def write_part_chapter_epub(path: str, *, chapter_body_chars: int) -> None:
+    """生成“部（part）→章（chapter）”两层目录的 EPUB：2 部，每部 3 章。
+
+    每部有独立标题页资源（只含标题，无正文），每章是独立资源（标题 +
+    一段 ``chapter_body_chars`` 字符的正文）。用于验证 ``select_boundaries``
+    根据切片字符数的中位数，在 depth 0（部）与 depth 1（章）之间自动选择层级。
+    """
+    manifest_items: list[str] = []
+    spine_itemrefs: list[str] = []
+    resources: dict[str, str] = {}
+    ncx_points: list[str] = []
+    for part_index in range(1, 3):
+        part_id = f"part{part_index}"
+        part_href = f"{part_id}.xhtml"
+        part_title = f"第{part_index}部"
+        manifest_items.append(
+            f'<item id="{part_id}" href="{part_href}" media-type="application/xhtml+xml"/>'
+        )
+        spine_itemrefs.append(f'<itemref idref="{part_id}"/>')
+        resources[part_href] = (
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            f'<h1 id="{part_id}">{part_title}</h1>'
+            "</body></html>"
+        )
+        child_points: list[str] = []
+        for chapter_index in range(1, 4):
+            global_index = (part_index - 1) * 3 + chapter_index
+            chapter_id = f"p{part_index}c{chapter_index}"
+            chapter_href = f"{chapter_id}.xhtml"
+            chapter_title = f"第{global_index}章"
+            manifest_items.append(
+                f'<item id="{chapter_id}" href="{chapter_href}" media-type="application/xhtml+xml"/>'
+            )
+            spine_itemrefs.append(f'<itemref idref="{chapter_id}"/>')
+            resources[chapter_href] = (
+                '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+                f'<h2 id="{chapter_id}">{chapter_title}</h2>'
+                f"<p>{_cjk_filler(chapter_body_chars)}</p>"
+                "</body></html>"
+            )
+            child_points.append(
+                f'<navPoint id="{chapter_id}"><navLabel><text>{chapter_title}</text></navLabel>'
+                f'<content src="{chapter_href}#{chapter_id}"/></navPoint>'
+            )
+        ncx_points.append(
+            f'<navPoint id="{part_id}"><navLabel><text>{part_title}</text></navLabel>'
+            f'<content src="{part_href}#{part_id}"/>' + "".join(child_points) + "</navPoint>"
+        )
+    opf = f"""<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>PartChapter</dc:title></metadata>
+<manifest>
+  <item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  {"".join(manifest_items)}
+</manifest>
+<spine toc="toc">{"".join(spine_itemrefs)}</spine>
+</package>"""
+    ncx = f"""<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>
+{"".join(ncx_points)}
+</navMap></ncx>"""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", "application/epub+zip", zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", _CONTAINER)
+        zf.writestr("OEBPS/content.opf", opf)
+        zf.writestr("OEBPS/toc.ncx", ncx)
+        for href, content in resources.items():
+            zf.writestr(f"OEBPS/{href}", content)
