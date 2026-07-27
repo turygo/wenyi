@@ -17,6 +17,7 @@ from tests.sample_data import (
     write_sample_epub,
     write_sample_txt,
 )
+from trans_novel.agents.reviewer import ReviewOutputError
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.models import Chapter, Segment
@@ -791,6 +792,7 @@ class TestReviewReporting(unittest.TestCase):
             sys = messages[0]["content"]
             user = messages[-1]["content"]
             if "译文审校" in sys:
+                n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
                 return json.dumps(
                     {
                         "issues": [
@@ -800,7 +802,9 @@ class TestReviewReporting(unittest.TestCase):
                                 "detail": "漏了一句",
                                 "suggestion": "补上",
                             }
-                        ]
+                        ],
+                        "reviewed_segments": n,
+                        "complete": True,
                     },
                     ensure_ascii=False,
                 )
@@ -861,9 +865,22 @@ class TestReviewReporting(unittest.TestCase):
         """整章多块审校时，块内 index 正确映射回章内段号。"""
 
         def handler(messages, tier, json_mode):
+            user = messages[-1]["content"]
             if "译文审校" in messages[0]["content"]:
+                n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
                 return json.dumps(
-                    {"issues": [{"index": 0, "type": "missing", "detail": "x", "suggestion": ""}]},
+                    {
+                        "issues": [
+                            {
+                                "index": 0,
+                                "type": "missing",
+                                "detail": "x",
+                                "suggestion": "修正",
+                            }
+                        ],
+                        "reviewed_segments": n,
+                        "complete": True,
+                    },
                     ensure_ascii=False,
                 )
             return routing_handler(messages, tier, json_mode)
@@ -884,12 +901,21 @@ class TestReviewReporting(unittest.TestCase):
 
     def test_review_accepts_numeric_string_index(self):
         def handler(messages, tier, json_mode):
+            user = messages[-1]["content"]
             if "译文审校" in messages[0]["content"]:
+                n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
                 return json.dumps(
                     {
                         "issues": [
-                            {"index": "0", "type": "missing", "detail": "x", "suggestion": ""}
-                        ]
+                            {
+                                "index": "0",
+                                "type": "missing",
+                                "detail": "x",
+                                "suggestion": "修正",
+                            }
+                        ],
+                        "reviewed_segments": n,
+                        "complete": True,
                     },
                     ensure_ascii=False,
                 )
@@ -907,15 +933,25 @@ class TestReviewReporting(unittest.TestCase):
             self.assertTrue(issues)
             self.assertEqual(issues[0]["index"], 0)
 
-    def test_review_warns_when_index_is_invalid(self):
+    def test_review_rejects_invalid_index_and_keeps_pending(self):
         def handler(messages, tier, json_mode):
+            user = messages[-1]["content"]
             if "译文审校" in messages[0]["content"]:
+                n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
                 return json.dumps(
                     {
                         "issues": [
-                            {"index": "unknown", "type": "missing", "detail": "x", "suggestion": ""}
-                        ]
-                    }
+                            {
+                                "index": "unknown",
+                                "type": "missing",
+                                "detail": "x",
+                                "suggestion": "修正",
+                            }
+                        ],
+                        "reviewed_segments": n,
+                        "complete": True,
+                    },
+                    ensure_ascii=False,
                 )
             return routing_handler(messages, tier, json_mode)
 
@@ -924,17 +960,24 @@ class TestReviewReporting(unittest.TestCase):
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
             cfg.pipeline.autofix_severe = False
+            cfg.pipeline.review_output_retries = 0
+            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
 
-            with self.assertWarnsRegex(RuntimeWarning, "无效审校索引"):
-                store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(
-                    txt, only_chapter=0
-                )
-
-            # 本地 lint 层（确定性检查）也会写入 review_issues；此处只关心审校通道
+            self.assertIn(0, store.review_pending_chapters())
             review_issues = [
-                i for i in store.load_chapter(0).meta["review_issues"] if i.get("stage") != "lint"
+                i
+                for i in store.load_chapter(0).meta.get("review_issues", [])
+                if i.get("stage") == "review"
             ]
             self.assertEqual(review_issues, [])
+            with open(store.event_log_path, encoding="utf-8") as f:
+                failed = [
+                    json.loads(line)
+                    for line in f
+                    if line.strip() and json.loads(line).get("event") == "chapter_review_failed"
+                ]
+            self.assertTrue(failed)
+            self.assertEqual(failed[-1]["reason"], "invalid_issue_index")
 
 
 class TestStyleAnalysis(unittest.TestCase):
@@ -1154,7 +1197,11 @@ class TestGlossaryScope(unittest.TestCase):
                 )
             if "译文审校" in system:
                 self.assertIn("夏帆ちゃん → 小夏帆", user)
-                return json.dumps({"issues": []}, ensure_ascii=False)
+                n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
+                return json.dumps(
+                    {"issues": [], "reviewed_segments": n, "complete": True},
+                    ensure_ascii=False,
+                )
             return routing_handler(messages, tier, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
@@ -1444,6 +1491,8 @@ class TestReviewAsync(unittest.TestCase):
     def _issue_handler(messages, tier, json_mode):
         # 无共享可变状态：每次调用构造新 dict，可被线程池并发调用
         if "译文审校" in messages[0]["content"]:
+            user = messages[-1]["content"]
+            n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
             return json.dumps(
                 {
                     "issues": [
@@ -1453,7 +1502,9 @@ class TestReviewAsync(unittest.TestCase):
                             "detail": "术语不一致",
                             "suggestion": "改用对照表",
                         }
-                    ]
+                    ],
+                    "reviewed_segments": n,
+                    "complete": True,
                 },
                 ensure_ascii=False,
             )
@@ -1606,6 +1657,106 @@ class TestReviewAsync(unittest.TestCase):
             self.assertEqual(len(translate_calls), 0, "续跑只补审校，绝不重译")
 
 
+class TestReviewRecovery(unittest.TestCase):
+    def test_malformed_multi_segment_chunk_splits_and_maps_indexes(self):
+        def handler(messages, tier, json_mode):
+            user = messages[-1]["content"]
+            n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
+            if n > 1:
+                return '{"issues":['
+            match = re.search(r"^\[0\] 原文：SRC(\d+)$", user, re.M)
+            assert match
+            i = int(match.group(1))
+            return json.dumps(
+                {
+                    "issues": [
+                        {
+                            "index": 0,
+                            "type": "missing",
+                            "detail": f"segment{i}",
+                            "suggestion": "修正",
+                        }
+                    ],
+                    "reviewed_segments": 1,
+                    "complete": True,
+                },
+                ensure_ascii=False,
+            )
+
+        cfg = _config("state")
+        cfg.segment.max_chars_per_batch = 100
+        cfg.pipeline.review_output_retries = 0
+        orch = Orchestrator(cfg, client=FakeClient(handler=handler))
+        pairs = [(f"SRC{i}", f"TGT{i}") for i in range(4)]
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=4) as review_executor:
+            issues = orch._review_chapter(pairs, [], review_executor)
+        self.assertEqual([it["index"] for it in issues], list(range(4)))
+        self.assertEqual([it["detail"] for it in issues], [f"segment{i}" for i in range(4)])
+
+    def test_singleton_retries_after_protocol_error(self):
+        calls = 0
+
+        def handler(messages, tier, json_mode):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return '{"issues":['
+            return json.dumps(
+                {"issues": [], "reviewed_segments": 1, "complete": True},
+                ensure_ascii=False,
+            )
+
+        cfg = _config("state")
+        cfg.pipeline.review_output_retries = 2
+        orch = Orchestrator(cfg, client=FakeClient(handler=handler))
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2) as review_executor:
+            self.assertEqual(
+                orch._review_chapter([("SRC", "TGT")], [], review_executor),
+                [],
+            )
+        self.assertEqual(calls, 2)
+
+    def test_singleton_exhaustion_raises_after_bounded_attempts(self):
+        calls = 0
+
+        def handler(messages, tier, json_mode):
+            nonlocal calls
+            calls += 1
+            return '{"issues":['
+
+        cfg = _config("state")
+        cfg.pipeline.review_output_retries = 2
+        orch = Orchestrator(cfg, client=FakeClient(handler=handler))
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2) as review_executor:
+            with self.assertRaises(ReviewOutputError):
+                orch._review_chapter([("SRC", "TGT")], [], review_executor)
+        self.assertEqual(calls, 3)
+
+    def test_provider_exception_propagates_without_retry(self):
+        calls = 0
+
+        def handler(messages, tier, json_mode):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("provider down")
+
+        cfg = _config("state")
+        cfg.pipeline.review_output_retries = 2
+        orch = Orchestrator(cfg, client=FakeClient(handler=handler))
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2) as review_executor:
+            with self.assertRaisesRegex(RuntimeError, "provider down"):
+                orch._review_chapter([("SRC", "TGT")], [], review_executor)
+        self.assertEqual(calls, 1)
+
+
 class TestReviewChunkConcurrency(unittest.TestCase):
     """Reviewer chunk 预热 + 并发：chunk 0 先单独完成（预热 provider 前缀缓存），
     其余 chunk 随后真正并发；合并结果严格保持原 chunk 顺序。"""
@@ -1630,7 +1781,18 @@ class TestReviewChunkConcurrency(unittest.TestCase):
                     completion_order.append(c)
                 chunk0_done.set()
                 return json.dumps(
-                    {"issues": [{"index": 0, "type": "missing", "detail": "chunk0"}]},
+                    {
+                        "issues": [
+                            {
+                                "index": 0,
+                                "type": "missing",
+                                "detail": "chunk0",
+                                "suggestion": "修正",
+                            }
+                        ],
+                        "reviewed_segments": 1,
+                        "complete": True,
+                    },
                     ensure_ascii=False,
                 )
             assert chunk0_done.is_set(), "chunk 0 应先完成预热，其余 chunk 才可提交"
@@ -1643,7 +1805,18 @@ class TestReviewChunkConcurrency(unittest.TestCase):
             with order_lock:
                 completion_order.append(c)
             return json.dumps(
-                {"issues": [{"index": 0, "type": "missing", "detail": f"chunk{c}"}]},
+                {
+                    "issues": [
+                        {
+                            "index": 0,
+                            "type": "missing",
+                            "detail": f"chunk{c}",
+                            "suggestion": "修正",
+                        }
+                    ],
+                    "reviewed_segments": 1,
+                    "complete": True,
+                },
                 ensure_ascii=False,
             )
 
@@ -1677,7 +1850,12 @@ class TestReviewChunkConcurrency(unittest.TestCase):
                 time.sleep(0.01)
                 with lock:
                     current -= 1
-                return json.dumps({"issues": []}, ensure_ascii=False)
+                user = messages[-1]["content"]
+                n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
+                return json.dumps(
+                    {"issues": [], "reviewed_segments": n, "complete": True},
+                    ensure_ascii=False,
+                )
             return routing_handler(messages, tier, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
@@ -1878,6 +2056,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
                 sys = messages[0]["content"]
                 user = messages[-1]["content"]
                 if "译文审校" in sys:
+                    n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
                     return json.dumps(
                         {
                             "issues": [
@@ -1887,7 +2066,9 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
                                     "detail": "漏了一句",
                                     "suggestion": "补上",
                                 }
-                            ]
+                            ],
+                            "reviewed_segments": n,
+                            "complete": True,
                         },
                         ensure_ascii=False,
                     )

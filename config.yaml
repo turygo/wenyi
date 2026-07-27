@@ -51,6 +51,8 @@ pipeline:
   autofix_severe: true
   # 译文与原文对不齐时的重试上限
   align_retry_limit: 2
+  # 完整回执无效时对单段额外重试次数（0-5）
+  review_output_retries: 2
   # 润色（用 strong 档）：相当于用 pro 把全书再翻一遍，最费钱，默认关
   polish: true
   # 回译抽检的比例（0 表示关闭）

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..llm.base import parse_json_loose
 from . import langprofile, prompts
 from .base import Agent
 
@@ -21,11 +22,71 @@ def _backtrans_compare_system(src: str) -> str:
     )
 
 
+class ReviewOutputError(ValueError):
+    """模型返回无法安全审校的结果；reason 是稳定的协议错误标识。"""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+_REVIEW_TYPES = frozenset({"missing", "added", "mistranslation", "terminology", "pronoun"})
+
+
+def _validate_review_output(data: Any, segment_count: int) -> list[dict[str, Any]]:
+    if not isinstance(data, dict):
+        raise ReviewOutputError("invalid_outer_schema")
+    keys = list(data)
+    if keys[-2:] != ["reviewed_segments", "complete"] or keys[:-2] != ["issues"]:
+        raise ReviewOutputError("invalid_outer_schema")
+    reviewed_segments = data.get("reviewed_segments")
+    if (
+        isinstance(reviewed_segments, bool)
+        or not isinstance(reviewed_segments, int)
+        or reviewed_segments != segment_count
+    ):
+        raise ReviewOutputError("invalid_receipt")
+    if data.get("complete") is not True:
+        raise ReviewOutputError("invalid_receipt")
+    issues = data.get("issues")
+    if not isinstance(issues, list):
+        raise ReviewOutputError("invalid_issues")
+
+    validated: list[dict[str, Any]] = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            raise ReviewOutputError("invalid_issue")
+        index = issue.get("index")
+        if isinstance(index, bool):
+            raise ReviewOutputError("invalid_issue_index")
+        if isinstance(index, str):
+            try:
+                index = int(index.strip())
+            except (TypeError, ValueError):
+                raise ReviewOutputError("invalid_issue_index") from None
+        if not isinstance(index, int) or not 0 <= index < segment_count:
+            raise ReviewOutputError("invalid_issue_index")
+        if issue.get("type") not in _REVIEW_TYPES:
+            raise ReviewOutputError("invalid_issue_type")
+        detail = issue.get("detail")
+        suggestion = issue.get("suggestion")
+        if (
+            not isinstance(detail, str)
+            or not detail.strip()
+            or not isinstance(suggestion, str)
+            or not suggestion.strip()
+        ):
+            raise ReviewOutputError("invalid_issue_text")
+        issue["index"] = index
+        validated.append(issue)
+    return validated
+
+
 class Reviewer(Agent):
     def review(
         self, sources: list[str], targets: list[str], glossary_terms=None
     ) -> list[dict[str, Any]]:
-        """返回问题列表：[{index,type,detail,suggestion}]。"""
+        """返回通过完整回执和字段校验的问题列表。"""
         if not sources:
             return []
         system = prompts.render("reviewer_system", src=self.src, tgt=self.tgt)
@@ -37,11 +98,20 @@ class Reviewer(Agent):
             n=len(sources),
             pairs=prompts.numbered_pairs(sources, targets),
         )
-        return self.dict_items(
-            self._ask_json(
-                system, user, tier="cheap", key="issues", default=[], operation="review.chapter"
-            )
+        # 直接调用 complete，让 provider 异常原样冒泡；只有后续解析/协议错误
+        # 转换为 ReviewOutputError，供编排器进行可恢复拆分。
+        raw = self.client.complete(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            tier="cheap",
+            json_mode=True,
+            stage=type(self).__name__,
+            operation="review.chapter",
         )
+        try:
+            data = parse_json_loose(raw)
+        except Exception as exc:
+            raise ReviewOutputError("invalid_json") from exc
+        return _validate_review_output(data, len(sources))
 
 
 class BackTranslator(Agent):

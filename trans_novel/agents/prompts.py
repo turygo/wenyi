@@ -129,9 +129,10 @@ REVIEWER_SYSTEM = Template("""\
 只报实质性错误：合理的语序调整、自然意译、风格润色**不算问题**，不要报。
 对照表可能收录了不该统一的普通词组，或其译法本身有误：普通名词短语的措辞差异（如"我妈/我母亲"）不算问题；
 若译文用法明显更符合通行规范、而对照表存疑，不要报 terminology，可在 detail 里注明存疑。
-拿不准是否为错就不报，宁缺毋滥。每条须给出可直接采纳的 suggestion。仅输出 JSON：
-{"issues":[{"index":整数段号,"type":"...","detail":"简述","suggestion":"修改后的译文或具体改法"}]}
-没有问题则输出 {"issues":[]}。\
+拿不准是否为错就不报，宁缺毋滥。每条须给出可直接采纳的 suggestion。
+仅输出 JSON 对象，键顺序必须为 issues、reviewed_segments、complete，且 reviewed_segments 与 complete 必须是最后两个键：
+{"issues":[{"index":整数段号,"type":"...","detail":"简述","suggestion":"修改后的译文或具体改法"}],"reviewed_segments":段落总数,"complete":true}
+没有问题也必须输出完整回执，例如：{"issues":[],"reviewed_segments":段落总数,"complete":true}。\
 """)
 
 REVIEWER_USER = Template("""\
@@ -141,7 +142,8 @@ $glossary
 【逐段对照】（共 $n 段）
 $pairs
 
-请审校并输出 JSON：{"issues":[...]}。\
+请审校并输出 JSON。必须完整审校全部 $n 段；键顺序必须严格为 issues、reviewed_segments、complete，最后两个键分别为 reviewed_segments=$n 和 complete=true：
+{"issues":[...],"reviewed_segments":$n,"complete":true}。\
 """)
 
 POLISHER_SYSTEM = Template("""\

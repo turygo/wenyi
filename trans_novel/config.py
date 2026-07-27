@@ -37,6 +37,7 @@ class PipelineConfig(BaseModel):
     review: bool = True
     autofix_severe: bool = True  # 章末审校后自动重译严重项（漏译/误译）；关闭则仅上报留人工
     align_retry_limit: int = 2  # 批次翻译段数不符时的整批重试次数，超限后逐段兜底
+    review_output_retries: int = Field(default=2, ge=0, le=5)
     polish: bool = False  # 默认关：润色=用强档把全书再翻一遍，最烧钱；需要时显式开
     backtranslate_sample: float = 0.05
     consistency_qa: bool = True

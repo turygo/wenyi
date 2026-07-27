@@ -25,7 +25,6 @@ from __future__ import annotations
 import os
 import random
 import re
-import warnings
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Optional
 
@@ -34,7 +33,7 @@ from ..agents.analyzer import Analyzer
 from ..agents.namer import CastNamer
 from ..agents.naturalizer import Naturalizer, naturalize_chapter
 from ..agents.polisher import Polisher
-from ..agents.reviewer import BackTranslator, Reviewer
+from ..agents.reviewer import BackTranslator, Reviewer, ReviewOutputError
 from ..agents.synopsis import Synopsizer
 from ..agents.translator import Translator
 from ..config import Config
@@ -469,7 +468,8 @@ class Orchestrator:
         blocking=False：只处理已完成的（每章结束时机会性排干，不阻塞下一章翻译）；
         blocking=True：阻塞等全部剩余完成（run() 收尾必须调用，防止异步审校结果丢失）。
         审校本身只做 LLM 调用（worker 线程跑），落盘、发事件统一回主线程做。
-        异常：记一条失败事件后跳过该章，不中断整个 run。
+        协议错误和 provider/runtime 错误都只记失败事件；manifest 中的
+        review_pending 保持不变，供下一次 run() 续跑。
         """
         remaining: list[tuple[int, Future]] = []
         for ci, fut in pending_reviews:
@@ -478,8 +478,23 @@ class Orchestrator:
                 continue
             try:
                 new_issues = fut.result()
+            except ReviewOutputError as exc:
+                chapter = store.load_chapter(ci)
+                store.log_event(
+                    "chapter_review_failed",
+                    chapter=ci,
+                    reason=exc.reason,
+                    segment_count=len(chapter.text_segments),
+                )
+                continue
             except Exception:
-                store.log_event("chapter_review_failed", chapter=ci)
+                chapter = store.load_chapter(ci)
+                store.log_event(
+                    "chapter_review_failed",
+                    chapter=ci,
+                    reason="provider_error",
+                    segment_count=len(chapter.text_segments),
+                )
                 continue
             for it in new_issues:
                 it["chapter"] = ci
@@ -1588,26 +1603,11 @@ class Orchestrator:
     def _review_chapter(
         self, pairs: list[tuple[str, str]], terms, review_executor: ThreadPoolExecutor
     ) -> list[dict]:
-        """整章分块审校（章末统一做）。review=true 且 autofix_severe=false 时在
-        worker 线程里跑（只做 LLM 调用，不碰 store）；autofix_severe=true 时同步跑。
+        """整章分块审校，并在协议错误时递归拆分或重试单段。
 
-        pairs：章内段的 (source, target) 纯数据副本，与 Segment 对象解耦，可安全跨线程传递。
-        块 = 连续段序列（约 3 倍翻译批大小，减少调用次数与重复注入的输入 token）；
-        块内 reviewer 返回的 index 是块内下标，加块首段偏移映射回章内段号；
-        越界 index 直接丢弃（模型幻觉防御）。
-
-        各 chunk 的 review 调用提交进 review_executor（全书共享、有界 4-worker，
-        与本方法运行所在的线程池分开——本方法自身可能就跑在另一个 executor 的
-        worker 线程上，若两者共用同一个池，chunk 调用会在等自己的父任务腾位置，
-        造成嵌套死锁）。按提交顺序（=chunk 原始顺序）合并结果，而非按完成顺序，
-        保证合并结果严格保持原 chunk 顺序；chunk 内 issue 顺序由单次 reviewer.review
-        调用本身决定，不受并发影响。
-
-        预热：chunk 数量大于 1 时，先提交 chunk 0 并等待结果。章内各 chunk 共享由
-        system prompt 和术语表组成的前缀；若同时发起所有请求，其余 chunk 可能在该前缀
-        写入缓存前发出，因而无法命中 provider 的前缀缓存（实测命中率仅 30%）。待 chunk 0
-        完成并写入缓存后，再并发提交其余 chunk，即可利用缓存降低成本。chunk 数量不超过 1
-        时无需预热，行为不变。
+        顶层块仍按源文字符预算连续打包；chunk 0 先完成以预热 provider 前缀缓存，
+        其余顶层块再并发提交，并按源文顺序合并结果。协议错误只在对应块内恢复：
+        多段块递归拆成连续两半，单段块按配置额外重试；provider/runtime 异常原样冒泡。
         """
         budget = self.config.segment.max_chars_per_batch * 3
         chunks = self._pack_contiguous(pairs, budget)
@@ -1615,17 +1615,10 @@ class Orchestrator:
         results: list[list[dict]] = [[] for _ in chunks]
         if warm:
             first = chunks[0]
-            results[0] = review_executor.submit(
-                self.reviewer.review, [s for s, _ in first], [t for _, t in first], terms
-            ).result()
+            results[0] = review_executor.submit(self._review_chunk, first, terms).result()
         pending = chunks[1:] if warm else chunks
         offset = 1 if warm else 0
-        futures = [
-            review_executor.submit(
-                self.reviewer.review, [s for s, _ in chunk], [t for _, t in chunk], terms
-            )
-            for chunk in pending
-        ]
+        futures = [review_executor.submit(self._review_chunk, chunk, terms) for chunk in pending]
         for i, fut in enumerate(futures):
             results[offset + i] = fut.result()
 
@@ -1634,22 +1627,42 @@ class Orchestrator:
         for chunk, result in zip(chunks, results):
             for it in result:
                 idx = it.get("index")
-                if isinstance(idx, str):
-                    try:
-                        idx = int(idx.strip())
-                    except ValueError:
-                        idx = None
-                if isinstance(idx, int) and 0 <= idx < len(chunk):
-                    it["index"] = base + idx
-                    issues.append(it)
-                else:
-                    warnings.warn(
-                        f"忽略无效审校索引 {it.get('index')!r}；当前审校块长度为 {len(chunk)}",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
+                if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx < len(chunk):
+                    raise ReviewOutputError("invalid_issue_index")
+                it["index"] = base + idx
+                issues.append(it)
             base += len(chunk)
         return issues
+
+    def _review_chunk(self, chunk: list[tuple[str, str]], terms) -> list[dict]:
+        """审校一个顶层块；仅协议错误进入递归恢复。"""
+        try:
+            return self.reviewer.review([s for s, _ in chunk], [t for _, t in chunk], terms)
+        except ReviewOutputError as exc:
+            return self._recover_review_chunk(chunk, terms, exc)
+
+    def _recover_review_chunk(
+        self,
+        chunk: list[tuple[str, str]],
+        terms,
+        first_error: ReviewOutputError,
+    ) -> list[dict]:
+        """恢复一个已失败的块，返回相对该块起点的本地索引。"""
+        if len(chunk) > 1:
+            middle = len(chunk) // 2
+            left = self._review_chunk(chunk[:middle], terms)
+            right = self._review_chunk(chunk[middle:], terms)
+            for issue in right:
+                issue["index"] += middle
+            return left + right
+
+        last_error = first_error
+        for _ in range(self.config.pipeline.review_output_retries):
+            try:
+                return self.reviewer.review([s for s, _ in chunk], [t for _, t in chunk], terms)
+            except ReviewOutputError as exc:
+                last_error = exc
+        raise last_error
 
     @staticmethod
     def _pack_contiguous(pairs: list[tuple[str, str]], budget: int) -> list[list]:

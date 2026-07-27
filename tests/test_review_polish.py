@@ -6,7 +6,7 @@ import json
 import unittest
 
 from trans_novel.agents.polisher import Polisher
-from trans_novel.agents.reviewer import BackTranslator, Reviewer
+from trans_novel.agents.reviewer import BackTranslator, Reviewer, ReviewOutputError
 from trans_novel.config import Config
 from trans_novel.llm.base import FakeClient
 
@@ -27,15 +27,83 @@ class TestReviewer(unittest.TestCase):
     def test_review_reports_issues(self):
         issues = {
             "issues": [
-                {"index": 0, "type": "missing", "detail": "漏了后半句"},
-                {"index": 1, "type": "terminology", "detail": "人名译法不符"},
-            ]
+                {
+                    "index": 0,
+                    "type": "missing",
+                    "detail": "漏了后半句",
+                    "suggestion": "补译后半句",
+                },
+                {
+                    "index": 1,
+                    "type": "terminology",
+                    "detail": "人名译法不符",
+                    "suggestion": "改用对照表译法",
+                },
+            ],
+            "reviewed_segments": 2,
+            "complete": True,
         }
         client = FakeClient(handler=lambda m, t, j: json.dumps(issues, ensure_ascii=False))
         r = Reviewer(client, _cfg())
         out = r.review(["あ", "い"], ["甲", "乙"])
         self.assertEqual(len(out), 2)
         self.assertEqual(client.calls[-1]["tier"], "cheap")  # 审校走廉价档
+
+    def _review_with(self, payload):
+        client = FakeClient(handler=lambda m, t, j: json.dumps(payload, ensure_ascii=False))
+        return Reviewer(client, _cfg())
+
+    def test_review_rejects_invalid_outer_schema(self):
+        reviewer = self._review_with(
+            {
+                "issues": [],
+                "unexpected": "field",
+                "reviewed_segments": 1,
+                "complete": True,
+            }
+        )
+        with self.assertRaises(ReviewOutputError):
+            reviewer.review(["あ"], ["甲"])
+
+    def test_review_rejects_bare_list(self):
+        reviewer = self._review_with([])
+        with self.assertRaises(ReviewOutputError):
+            reviewer.review(["あ"], ["甲"])
+
+    def test_review_rejects_wrong_receipt_count(self):
+        reviewer = self._review_with({"issues": [], "reviewed_segments": 0, "complete": True})
+        with self.assertRaises(ReviewOutputError):
+            reviewer.review(["あ"], ["甲"])
+
+    def test_review_rejects_non_integer_receipt(self):
+        for receipt in (True, 1.0):
+            with self.subTest(receipt=receipt):
+                reviewer = self._review_with(
+                    {"issues": [], "reviewed_segments": receipt, "complete": True}
+                )
+                with self.assertRaises(ReviewOutputError):
+                    reviewer.review(["あ"], ["甲"])
+
+    def test_review_rejects_parseable_partial_object_without_receipt(self):
+        reviewer = self._review_with({"issues": []})
+        with self.assertRaises(ReviewOutputError):
+            reviewer.review(["あ"], ["甲"])
+
+    def test_review_empty_requires_valid_receipt(self):
+        reviewer = self._review_with({"issues": [], "reviewed_segments": 2, "complete": True})
+        self.assertEqual(reviewer.review(["あ", "い"], ["甲", "乙"]), [])
+
+    def test_review_rejects_malformed_json(self):
+        client = FakeClient(handler=lambda m, t, j: '{"issues":[')
+        with self.assertRaises(ReviewOutputError):
+            Reviewer(client, _cfg()).review(["あ", "い"], ["甲", "乙"])
+
+    def test_review_propagates_provider_exception(self):
+        def boom(messages, tier, json_mode):
+            raise RuntimeError("provider down")
+
+        with self.assertRaisesRegex(RuntimeError, "provider down"):
+            Reviewer(FakeClient(handler=boom), _cfg()).review(["あ"], ["甲"])
 
 
 class TestPolisher(unittest.TestCase):
