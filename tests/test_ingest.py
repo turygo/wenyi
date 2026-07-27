@@ -401,6 +401,100 @@ class TestEpubIngest(unittest.TestCase):
             ["Cell A", "Cell B", "Term", "Definition"],
         )
 
+    def test_ruby_reading_is_not_included_in_translatable_source(self):
+        html = """<html><body>
+<p><ruby>漢字<rp>（</rp><rt>かんじ</rt><rp>）</rp></ruby>です</p>
+</body></html>"""
+
+        _title, segments, template = annotate_epub_resource(html, 0, "chapter.xhtml")
+
+        self.assertEqual([segment.source for segment in segments], ["漢字です"])
+        self.assertIn("<rt>かんじ</rt>", template)
+        self.assertIn("<rp>（</rp>", template)
+
+    def test_leaf_div_paragraphs_are_extracted_without_layout_duplicates(self):
+        html = """<html><body>
+<div class="layout"><p>Nested paragraph.</p></div>
+<div class="calibre8">First <i>div</i> paragraph.</div>
+<div class="outer"><div class="calibre8">Second div paragraph.</div></div>
+</body></html>"""
+
+        _title, segments, template = annotate_epub_resource(
+            html,
+            0,
+            "chapter.xhtml",
+        )
+
+        self.assertEqual(
+            [segment.source for segment in segments],
+            ["Nested paragraph.", "First div paragraph.", "Second div paragraph."],
+        )
+        self.assertEqual(template.count("data-tn-id"), 3)
+
+    def test_nested_lists_and_blockquotes_use_leaf_translation_targets(self):
+        html = """<html><body>
+<ul><li><a href="#author">Author</a><ul>
+<li><a href="chapter.xhtml#one">Chapter One</a></li>
+<li><a href="chapter.xhtml#two">Chapter Two</a></li>
+</ul></li></ul>
+<blockquote><div>Dedication One</div><div>Dedication Two</div></blockquote>
+</body></html>"""
+
+        _title, segments, template = annotate_epub_resource(
+            html,
+            0,
+            "contents.xhtml",
+        )
+
+        self.assertEqual(
+            [segment.source for segment in segments],
+            [
+                "Author",
+                "Chapter One",
+                "Chapter Two",
+                "Dedication One",
+                "Dedication Two",
+            ],
+        )
+        rendered = BeautifulSoup(template, "html.parser")
+        self.assertTrue(all(not item.has_attr("data-tn-id") for item in rendered.find_all("li")))
+        self.assertTrue(
+            all(not quote.has_attr("data-tn-id") for quote in rendered.find_all("blockquote"))
+        )
+        self.assertEqual(len(rendered.select("a[data-tn-id]")), 3)
+        self.assertEqual(len(rendered.select("blockquote div[data-tn-id]")), 2)
+
+    def test_nested_link_with_block_descendant_uses_leaf_target(self):
+        html = """<html><body>
+<ul><li><a href="#author"><div>Author</div></a></li></ul>
+</body></html>"""
+
+        _title, segments, template = annotate_epub_resource(
+            html,
+            0,
+            "contents.xhtml",
+        )
+
+        self.assertEqual([segment.source for segment in segments], ["Author"])
+        rendered = BeautifulSoup(template, "html.parser")
+        self.assertEqual(len(rendered.select("a[data-tn-id]")), 0)
+        self.assertEqual(len(rendered.select("a div[data-tn-id]")), 1)
+        self.assertEqual(rendered.select_one("a").get("href"), "#author")
+
+    def test_inline_offsets_fold_layout_whitespace(self):
+        html = """<html><body>
+<p>A
+    <img src="inline.jpg"/>B</p>
+</body></html>"""
+
+        _title, segments, template = annotate_epub_resource(html, 0, "chapter.xhtml")
+
+        self.assertEqual([segment.source for segment in segments], ["A B"])
+        inline = segments[0].meta["epub_inline"]
+        self.assertEqual(inline["source_length"], len("A B"))
+        self.assertEqual([node["offset"] for node in inline["nodes"]], [2])
+        self.assertIn('src="inline.jpg"', template)
+
     def test_declared_legacy_xhtml_encoding_is_honored(self):
         markup = (
             '<?xml version="1.0" encoding="Shift_JIS"?><html><body><p>日本語</p></body></html>'
@@ -444,20 +538,21 @@ class TestEpubIngest(unittest.TestCase):
 
         _title, segments, template = annotate_epub_resource(html, 2, "chapter.xhtml")
 
-        self.assertEqual(len(segments), 1)
-        segment = segments[0]
-        self.assertEqual(segment.source, "AvantAprès")
-        inline = segment.meta["epub_inline"]
-        self.assertEqual(inline["source_length"], len(segment.source))
+        self.assertEqual([segment.source for segment in segments], ["Avant", "Après"])
+        first_inline = segments[0].meta["epub_inline"]
+        second_inline = segments[1].meta["epub_inline"]
+        self.assertEqual(first_inline["source_length"], len(segments[0].source))
+        self.assertEqual(second_inline["source_length"], len(segments[1].source))
         self.assertEqual(
-            [node["placement"] for node in inline["nodes"]],
-            ["before", "inline", "after"],
+            [node["placement"] for node in first_inline["nodes"]],
+            ["before"],
         )
         self.assertEqual(
-            [node["offset"] for node in inline["nodes"]],
-            [0, len("Avant"), len(segment.source)],
+            [node["placement"] for node in second_inline["nodes"]],
+            ["after"],
         )
-        self.assertEqual(template.count("data-tn-inline-id"), 3)
+        self.assertEqual(template.count("data-tn-inline-id"), 2)
+        self.assertEqual(template.count("data-tn-line"), 2)
         self.assertIn('<img src="standalone.jpg"/>', template)
 
     def test_nested_fragment_anchor_survives_template_flattening(self):
