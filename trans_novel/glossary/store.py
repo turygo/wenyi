@@ -109,6 +109,48 @@ def _match_text(text: str) -> str:
     return unicodedata.normalize("NFKC", text).casefold()
 
 
+def _source_edge_is_word(source: str, index: int, step: int) -> bool:
+    """Treat combining marks at a source edge as part of the nearest base."""
+    while 0 <= index < len(source) and unicodedata.category(source[index]).startswith("M"):
+        index += step
+    if not 0 <= index < len(source):
+        return False
+    char = source[index]
+    return char.isalnum() or char == "_"
+
+
+def _matches_source(normalized_text: str, source: str) -> bool:
+    """Match a normalized source term with script-aware word boundaries."""
+    normalized_source = _match_text(source)
+    if not normalized_source:
+        return False
+
+    alphabetic = [char for char in normalized_source if char.isalpha()]
+    has_word_boundaries = all(ord(char) < 128 for char in normalized_source) or (
+        bool(alphabetic)
+        and all(
+            unicodedata.name(char, "").startswith(("LATIN ", "GREEK ", "CYRILLIC "))
+            for char in alphabetic
+        )
+    )
+    if not has_word_boundaries:
+        return normalized_source in normalized_text
+
+    source_starts_word = _source_edge_is_word(normalized_source, 0, 1)
+    source_ends_word = _source_edge_is_word(normalized_source, len(normalized_source) - 1, -1)
+    start = normalized_text.find(normalized_source)
+    while start >= 0:
+        end = start + len(normalized_source)
+        before_is_word = _source_edge_is_word(normalized_text, start - 1, -1)
+        after_is_word = _source_edge_is_word(normalized_text, end, 1)
+        before_is_boundary = not source_starts_word or not before_is_word
+        after_is_boundary = not source_ends_word or not after_is_word
+        if before_is_boundary and after_is_boundary:
+            return True
+        start = normalized_text.find(normalized_source, start + 1)
+    return False
+
+
 class GlossaryStore:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -269,7 +311,7 @@ class GlossaryStore:
             keys = (
                 [term.source] if term.type in _SOURCE_ONLY_TYPES else [term.source] + term.aliases
             )
-            if any(k and _match_text(k) in normalized_text for k in keys):
+            if any(k and _matches_source(normalized_text, k) for k in keys):
                 out.append(term)
         return out
 

@@ -63,6 +63,68 @@ class TestGlossary(unittest.TestCase):
             {"OpenAI", "ＡＢＣ"},
         )
 
+    def test_terms_in_text_matches_ascii_term_at_word_boundary(self):
+        self.store.upsert_term(GlossaryTerm(source="Ann", target="安"))
+
+        self.assertEqual(
+            [term.source for term in self.store.terms_in_text("ann opened.")],
+            ["Ann"],
+        )
+        self.assertEqual(
+            [term.source for term in self.store.terms_in_text("(ANN), she said.")],
+            ["Ann"],
+        )
+        self.assertEqual(self.store.terms_in_text("Anna opened."), [])
+
+    def test_terms_in_text_respects_punctuation_at_source_edges(self):
+        self.store.upsert_term(GlossaryTerm(source="Mr.", target="先生"))
+        self.store.upsert_term(GlossaryTerm(source="@Ann", target="@安"))
+
+        self.assertEqual(
+            [term.source for term in self.store.terms_in_text("Mr.Smith arrived.")],
+            ["Mr."],
+        )
+        self.assertEqual(
+            [term.source for term in self.store.terms_in_text("foo@Ann")],
+            ["@Ann"],
+        )
+
+    def test_terms_in_text_handles_combining_mark_at_source_edge(self):
+        self.store.upsert_term(GlossaryTerm(source="İ", target="İ"))
+        self.store.upsert_term(GlossaryTerm(source="i", target="i"))
+
+        self.assertEqual(self.store.terms_in_text("İstanbul"), [])
+        self.assertEqual(
+            {term.source for term in self.store.terms_in_text("İ arrived.")},
+            {"İ", "i"},
+        )
+
+    def test_terms_in_text_does_not_match_inside_cyrillic_word(self):
+        self.store.upsert_term(GlossaryTerm(source="гад", target="混蛋"))
+
+        self.assertEqual(
+            [term.source for term in self.store.terms_in_text("Этот гад пришёл.")],
+            ["гад"],
+        )
+        self.assertEqual(self.store.terms_in_text("гадкий человек"), [])
+
+    def test_terms_in_text_keeps_cjk_substring_matching(self):
+        self.store.upsert_term(GlossaryTerm(source="東京", target="东京"))
+
+        self.assertEqual(
+            [term.source for term in self.store.terms_in_text("東京都へ行く。")],
+            ["東京"],
+        )
+
+    def test_terms_in_text_applies_boundaries_to_aliases(self):
+        self.store.upsert_term(GlossaryTerm(source="Elizabeth", target="伊丽莎白", aliases=["Liz"]))
+
+        self.assertEqual(
+            [term.source for term in self.store.terms_in_text("Liz arrived.")],
+            ["Elizabeth"],
+        )
+        self.assertEqual(self.store.terms_in_text("Blitz arrived."), [])
+
     def test_appellation_does_not_match_bare_name_alias(self):
         self.store.upsert_term(
             GlossaryTerm(
