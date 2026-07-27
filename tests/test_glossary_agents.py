@@ -300,10 +300,6 @@ class TestLatinResidueFix(unittest.TestCase):
         ch = self.store.load_chapter(0)
         self.assertEqual(ch.segments[0].target, "致利亚")
 
-    def test_tm_synced_for_fixed_segment(self):
-        GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
-        self.assertEqual(self.glossary.tm_lookup("To Liya."), "致利亚")
-
 
 class TestGlossaryAuditGuards(unittest.TestCase):
     """五道确定性防线单测（2026-07-11 事故后新增）：

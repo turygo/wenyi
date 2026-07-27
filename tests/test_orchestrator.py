@@ -131,7 +131,7 @@ class TestOrchestrator(unittest.TestCase):
             g = GlossaryStore(store.glossary_path)
             self.assertIsNotNone(g.get_term("綾小路"))
             self.assertIsNotNone(g.get_term("堀北"))
-            self.assertGreater(g.stats()["tm_entries"], 0)  # 翻译记忆库已写入
+            self.assertGreater(g.stats()["terms"], 0)  # 术语库已写入
             g.close()
             extractor_calls = [
                 c

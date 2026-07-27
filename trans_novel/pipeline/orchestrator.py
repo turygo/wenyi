@@ -8,7 +8,7 @@
         全章术语兜底抽取（在润色后的最终文本上，仍在审校前）→ 整章分块审校
         （review=true 且 autofix_severe=false 时提交线程池异步跑，不阻塞下一章；
           autofix_severe=true 时因重译要写回正文而保持同步，含严重项定向重译）→
-        回译抽检（从最终文本抽样）→ 写 TM → 落盘标记 done。
+        回译抽检（从最终文本抽样）→ 落盘标记 done。
   run() 起一个 4-worker 共享线程池（润色 + 各章异步审校复用同一个池；术语抽取因主线程要立即
   用新词，改为主线程同步、不入池，避免被在飞 future 占满时拖回翻译关键路径）。SQLite 术语库与
   RunStore 的读写全部留在主线程，worker 线程只做 LLM 调用；异步审校在 manifest 记 review_pending
@@ -1433,11 +1433,6 @@ class Orchestrator:
                 issue_count=len(bt_issues),
                 issues=bt_issues,
             )
-
-        # 翻译记忆库（仅作记录/参考，不用于跨位置复用译文）
-        for s in text_segs:
-            if s.target:
-                glossary.add_tm(s.source, s.target, ci)
 
         chapter.meta["review_issues"] = review_issues + lint_review_issues
         chapter.meta["backtranslation_issues"] = bt_issues

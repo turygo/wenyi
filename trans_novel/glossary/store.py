@@ -1,15 +1,13 @@
-"""SQLite 术语库 + 翻译记忆库。
+"""SQLite 术语库。
 
-三张表：
+两张表：
 - glossary：专有名词对照表（source 唯一）。冲突检测：同 source 出现不同 target 时，
   若现有条目已锁定/高置信度则保留并记入 term_conflicts，否则更新。
 - term_conflicts：待裁决的译法冲突日志，供人工复核。
-- translation_memory：句群级译文对，供一致性参考与重译复用。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import time
@@ -90,18 +88,7 @@ CREATE TABLE IF NOT EXISTS term_conflicts (
     resolved        INTEGER DEFAULT 0,
     created_at      REAL
 );
-CREATE TABLE IF NOT EXISTS translation_memory (
-    source_hash TEXT PRIMARY KEY,
-    source_text TEXT NOT NULL,
-    target_text TEXT NOT NULL,
-    chapter     INTEGER,
-    updated_at  REAL
-);
 """
-
-
-def _hash(text: str) -> str:
-    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 
 def _match_text(text: str) -> str:
@@ -335,26 +322,7 @@ class GlossaryStore:
         ).fetchall()
         return [GlossaryTerm.from_row(r) for r in rows]
 
-    # ── 翻译记忆库 ──────────────────────────────────────────────────────
-    def add_tm(self, source_text: str, target_text: str, chapter: Optional[int] = None) -> None:
-        self.conn.execute(
-            """INSERT INTO translation_memory (source_hash,source_text,target_text,chapter,updated_at)
-               VALUES (?,?,?,?,?)
-               ON CONFLICT(source_hash) DO UPDATE SET target_text=excluded.target_text,
-                   chapter=excluded.chapter, updated_at=excluded.updated_at""",
-            (_hash(source_text), source_text, target_text, chapter, time.time()),
-        )
-        self.conn.commit()
-
-    def tm_lookup(self, source_text: str) -> Optional[str]:
-        row = self.conn.execute(
-            "SELECT target_text FROM translation_memory WHERE source_hash=?",
-            (_hash(source_text),),
-        ).fetchone()
-        return row["target_text"] if row else None
-
     def stats(self) -> dict[str, int]:
         g = self.conn.execute("SELECT COUNT(*) FROM glossary").fetchone()[0]
         c = self.conn.execute("SELECT COUNT(*) FROM term_conflicts WHERE resolved=0").fetchone()[0]
-        t = self.conn.execute("SELECT COUNT(*) FROM translation_memory").fetchone()[0]
-        return {"terms": g, "open_conflicts": c, "tm_entries": t}
+        return {"terms": g, "open_conflicts": c}

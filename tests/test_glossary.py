@@ -1,8 +1,9 @@
-"""术语库 + 翻译记忆库测试。"""
+"""术语库测试。"""
 
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -189,17 +190,68 @@ class TestGlossary(unittest.TestCase):
         assert term is not None
         self.assertEqual(term.target, "新译")
 
-    def test_translation_memory(self):
-        self.store.add_tm("風が強かった。", "风很大。", chapter=1)
-        self.assertEqual(self.store.tm_lookup("風が強かった。"), "风很大。")
-        self.assertIsNone(self.store.tm_lookup("未登録"))
-
     def test_stats(self):
         self.store.upsert_term(GlossaryTerm(source="A", target="甲"))
-        self.store.add_tm("a", "甲译")
         s = self.store.stats()
         self.assertEqual(s["terms"], 1)
-        self.assertEqual(s["tm_entries"], 1)
+        self.assertEqual(s["open_conflicts"], 0)
+        self.assertEqual(set(s), {"terms", "open_conflicts"})
+
+    def test_fresh_schema_omits_translation_memory(self):
+        tables = {
+            row[0]
+            for row in self.store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        self.assertNotIn("translation_memory", tables)
+
+    def test_legacy_translation_memory_is_preserved(self):
+        path = os.path.join(self.tmp.name, "legacy.db")
+        conn = sqlite3.connect(path)
+        conn.execute(
+            """CREATE TABLE translation_memory (
+                source_hash TEXT PRIMARY KEY,
+                source_text TEXT NOT NULL,
+                target_text TEXT NOT NULL,
+                chapter INTEGER,
+                updated_at REAL
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO translation_memory "
+            "(source_hash, source_text, target_text, chapter, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("legacy-hash", "風が強かった。", "风很大。", 1, 123.0),
+        )
+        conn.commit()
+        conn.close()
+
+        store = GlossaryStore(path)
+        try:
+            self.assertIsNotNone(
+                store.conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='translation_memory'"
+                ).fetchone()
+            )
+            row = store.conn.execute(
+                "SELECT source_hash, source_text, target_text, chapter, updated_at "
+                "FROM translation_memory"
+            ).fetchone()
+            self.assertEqual(
+                tuple(row),
+                ("legacy-hash", "風が強かった。", "风很大。", 1, 123.0),
+            )
+            self.assertEqual(
+                store.upsert_term(GlossaryTerm(source="A", target="甲")),
+                "inserted",
+            )
+            self.assertIsNotNone(store.get_term("A"))
+            preserved = store.conn.execute(
+                "SELECT source_hash, source_text, target_text, chapter, updated_at "
+                "FROM translation_memory"
+            ).fetchone()
+            self.assertEqual(tuple(preserved), tuple(row))
+        finally:
+            store.close()
 
 
 class TestResolve(unittest.TestCase):

@@ -5,7 +5,7 @@
   chapters/ch{n}.json  各章（含 source/target 的 Segment）
   context.json      滚动上下文（梗概 + 前文尾段）
   analysis.json     全局分析结果
-  glossary.db       术语库 + 翻译记忆库
+  glossary.db       术语库
   report.json       QA 报告
   usage.json        本书跨 translate/resume 累计的 LLM token 用量
   events.jsonl      追加式行为 / 改写 / 翻译结果日志

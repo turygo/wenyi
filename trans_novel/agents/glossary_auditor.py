@@ -6,7 +6,6 @@
 1. 候选侦测：取术语表 + 已记录的译法冲突 + 在各章译文里扫描"与术语译法形近(汉字编辑距离 1)"的变体；
 2. 强档模型裁定每个原文词的【规范译法 canonical】与应被替换的变体；
 3. 落地：锁定术语表 canonical、变体并入别名、标记冲突已解决；
-   并**改写各章已译正文**（变体→canonical），同步翻译记忆库。
 """
 
 from __future__ import annotations
@@ -185,7 +184,7 @@ class GlossaryAuditor(Agent):
     def _rewrite_targets(
         store: RunStore, glossary: GlossaryStore, replace_map: dict[str, str]
     ) -> int:
-        """把各章 target 里的变体替换为规范译法，并同步 TM。返回改动段数。"""
+        """把各章 target 里的变体替换为规范译法。返回改动段数。"""
         # 长变体优先替换，避免短串先替导致嵌套问题
         variants_sorted = sorted(replace_map, key=len, reverse=True)
 
@@ -211,7 +210,6 @@ class GlossaryAuditor(Agent):
                     seg.target = new
                     dirty = True
                     changed += 1
-                    glossary.add_tm(seg.source, new, c["index"])
                     store.log_event(
                         "glossary_rewrite_applied",
                         chapter=c["index"],
@@ -303,7 +301,6 @@ class GlossaryAuditor(Agent):
                     seg.target = new
                     dirty = True
                     touched = True
-                    glossary.add_tm(seg.source, new, c["index"])
                     store.log_event(
                         "glossary_latin_residue_fixed",
                         chapter=c["index"],
