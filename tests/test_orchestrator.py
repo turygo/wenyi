@@ -284,6 +284,28 @@ class TestBookUnderstanding(unittest.TestCase):
             self.assertIn("全书概览", user)  # fake 概览正文
             self.assertIn("本章梗概", user)  # fake 逐章梗概正文
 
+    def test_prepare_for_translation_stops_before_body_translation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            text_path = os.path.join(directory, "novel.txt")
+            write_sample_txt(text_path)
+            config = _config(os.path.join(directory, "state"))
+            client = FakeClient(handler=routing_handler)
+
+            store = Orchestrator(config, client=client).prepare_for_translation(text_path)
+
+            manifest = store.load_manifest()
+            self.assertTrue((store.load_analysis() or {}).get("book_synopsis"))
+            glossary = GlossaryStore(store.glossary_path)
+            try:
+                self.assertGreater(glossary.stats()["terms"], 0)
+            finally:
+                glossary.close()
+            for item in manifest["chapters"]:
+                chapter = store.load_chapter(item["index"])
+                self.assertTrue(chapter.meta.get("source_digest"))
+                self.assertTrue(all(segment.target is None for segment in chapter.segments))
+            self.assertEqual(_translated_para_count(client.calls), 0)
+
     def test_prescan_parallel(self):
         """并行预扫：多线程 digest 后各章梗概按章序落盘，翻译注入正常。"""
         with tempfile.TemporaryDirectory() as d:

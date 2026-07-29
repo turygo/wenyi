@@ -368,6 +368,30 @@ class Orchestrator:
         with store.lock():
             return self._run_locked(store, only_chapter=only_chapter, progress=progress)
 
+    def prepare_for_translation(
+        self,
+        input_path: str,
+        *,
+        progress: Optional[ProgressFn] = None,
+    ) -> RunStore:
+        """完成文档解析、全书预扫和术语定名，但不翻译正文。"""
+        store = self.prepare(input_path, progress=progress)
+        with store.lock():
+            manifest = store.load_manifest()
+            self._apply_language(manifest.get("source_lang") or self.config.source_lang)
+            glossary = GlossaryStore(store.glossary_path)
+            try:
+                self._build_understanding(store, glossary, progress=progress)
+                store.log_event(
+                    "translation_prepared",
+                    input_path=input_path,
+                    book_understanding=self.config.pipeline.book_understanding,
+                )
+            finally:
+                glossary.close()
+                self._flush_usage(store, scope="prepare")
+        return store
+
     def _run_locked(
         self,
         store: RunStore,

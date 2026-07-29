@@ -102,6 +102,74 @@ class TestCliConfig(unittest.TestCase):
         self.assertFalse(captured["polish"])
         self.assertTrue(captured["run_all"]["do_qa"])
 
+    def test_translate_prepare_stops_before_translation(self):
+        config = Config.from_dict(
+            {
+                "llm": {"provider": "fake", "tiers": {"strong": {"model": "p"}}},
+            }
+        )
+        captured = {}
+
+        class PreparedStore(FakeStore):
+            run_dir = "state/novel"
+
+            @staticmethod
+            def load_manifest():
+                return {"chapters": [{"index": 0}, {"index": 1}]}
+
+            @staticmethod
+            def load_analysis():
+                return {"book_synopsis": "overview"}
+
+            @staticmethod
+            def load_chapter(index):
+                class PreparedChapter:
+                    meta = {"source_digest": f"digest-{index}"}
+
+                return PreparedChapter()
+
+        class FakeOrchestrator:
+            def __init__(self, loaded_config):
+                captured["config"] = loaded_config
+
+            def prepare_for_translation(self, input_path, **kwargs):
+                captured["input_path"] = input_path
+                captured["prepare"] = kwargs
+                return PreparedStore()
+
+            def run_all(self, input_path, **kwargs):
+                raise AssertionError("--prepare must not start translation")
+
+        with (
+            patch("trans_novel.cli._load_config", return_value=config),
+            patch("trans_novel.pipeline.orchestrator.Orchestrator", FakeOrchestrator),
+            patch("trans_novel.cli.os.path.isfile", return_value=True),
+        ):
+            result = CliRunner().invoke(app, ["translate", "input.txt", "--prepare"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(captured["input_path"], "input.txt")
+        self.assertIn("准备完成", result.output)
+        self.assertIn("预扫 2/2 章", result.output)
+
+    def test_translate_prepare_rejects_chapter(self):
+        config = Config.from_dict(
+            {
+                "llm": {"provider": "fake", "tiers": {"strong": {"model": "p"}}},
+            }
+        )
+        with (
+            patch("trans_novel.cli._load_config", return_value=config),
+            patch("trans_novel.cli.os.path.isfile", return_value=True),
+        ):
+            result = CliRunner().invoke(
+                app,
+                ["translate", "input.txt", "--prepare", "--chapter", "0"],
+            )
+
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("--prepare 不能与 --chapter", result.output)
+
     def test_resume_delegates_to_translate_without_audit_argument(self):
         cfg = Config.from_dict(
             {

@@ -101,6 +101,7 @@ def _translate_impl(
     qa: Optional[bool] = None,
     mono: Optional[bool] = None,
     bilingual: Optional[bool] = None,
+    prepare: bool = False,
 ) -> None:
     """translate/resume 共享实现，避免 CLI 参数转发漂移。"""
     from .pipeline.orchestrator import Orchestrator
@@ -114,6 +115,9 @@ def _translate_impl(
         config.output.mono = mono
     if bilingual is not None:
         config.output.bilingual = bilingual
+    if prepare and chapter is not None:
+        console.print("[red]--prepare 不能与 --chapter 同时使用。[/]")
+        raise typer.Exit(2)
     orch = Orchestrator(config)
 
     with Progress(
@@ -128,6 +132,25 @@ def _translate_impl(
 
         def cb(done: int, total: int, label: str) -> None:
             prog.update(task, completed=done, total=total or None, description=label)
+
+        if prepare:
+            store = orch.prepare_for_translation(input_path, progress=cb)
+            manifest = store.load_manifest()
+            chapters = manifest.get("chapters", [])
+            analysis = store.load_analysis() or {}
+            digests = sum(
+                bool(store.load_chapter(item["index"]).meta.get("source_digest"))
+                for item in chapters
+            )
+            console.print(
+                f"[bold green]准备完成[/]：解析 {len(chapters)} 章，"
+                f"预扫 {digests}/{len(chapters)} 章，"
+                f"全书概览{'已生成' if analysis.get('book_synopsis') else '未生成'}。"
+            )
+            console.print(f"状态目录：[bold]{store.run_dir}[/]")
+            console.print("再次运行 translate 命令（不带 --prepare）即可开始翻译。")
+            _print_usage({"usage": store.load_usage() or {}})
+            return
 
         if chapter is not None:
             try:
@@ -233,6 +256,11 @@ def translate(
         "--bilingual/--no-bilingual",
         help="覆盖配置文件中的双语版产出开关",
     ),
+    prepare: bool = typer.Option(
+        False,
+        "--prepare",
+        help="只完成解析、全书预扫和术语定名，不翻译正文",
+    ),
 ):
     """翻译（连续全流程；可断点续跑）。"""
     _translate_impl(
@@ -244,6 +272,7 @@ def translate(
         qa=qa,
         mono=mono,
         bilingual=bilingual,
+        prepare=prepare,
     )
 
 
