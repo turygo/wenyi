@@ -25,6 +25,7 @@ http://www.gribuser.ru/xml/fictionbook/2.0；部分文件使用 2.1 或省略命
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -49,13 +50,26 @@ def _strip_markup(el: ET.Element) -> str:
 _CONTAINER_BLOCKS = {"epigraph", "cite", "poem", "stanza", "title", "annotation"}
 
 
-def _direct_segments(section: ET.Element, chapter_index: int) -> tuple[str, list[Segment]]:
+def _image_id(el: ET.Element) -> str:
+    """返回 `<image>` 元素通过 `xlink:href` 或普通 `href` 引用的 `<binary>` ID。"""
+    for name, value in el.attrib.items():
+        if name.rsplit("}", 1)[-1] == "href":
+            return value.removeprefix("#").strip()
+    return ""
+
+
+def _direct_segments(
+    section: ET.Element,
+    chapter_index: int,
+) -> tuple[str, list[Segment], list[dict[str, int | str]]]:
     """提取本 <section> 的【直接】内容，不下钻子 <section>。
 
     覆盖 p / subtitle / epigraph / cite / poem(stanza/v) / text-author 等正文块，
-    避免诗歌、引文、小标题被丢字。返回 (标题文本, segments)；标题作为 heading 排首。
+    避免诗歌、引文、小标题被丢字。记录图片相对于段落的位置，导出时再从原 FB2
+    的 `<binary>` 元素恢复图片资源。返回 (标题文本, segments, images)；标题作为 heading 排首。
     """
     segments: list[Segment] = []
+    images: list[dict[str, int | str]] = []
     idx = 0
     title_text = ""
 
@@ -70,14 +84,21 @@ def _direct_segments(section: ET.Element, chapter_index: int) -> tuple[str, list
 
     def emit_block(el: ET.Element) -> None:
         tag = _local(el)
-        if tag == "subtitle":
+        if tag == "image":
+            image_id = _image_id(el)
+            if image_id:
+                images.append({"id": image_id, "position": len(segments)})
+        elif tag == "subtitle":
             add(_strip_markup(el), KIND_HEADING)  # 节内小标题
         elif tag in ("p", "v", "text-author"):  # 段落 / 诗行 / 署名
+            for image in el.iter():
+                if image is not el and _local(image) == "image":
+                    emit_block(image)
             add(_strip_markup(el), KIND_TEXT)
         elif tag in _CONTAINER_BLOCKS:  # 容器：下钻
             for sub in el:
                 emit_block(sub)
-        # empty-line / image / 其它 → 跳过
+        # empty-line / 其它 → 跳过
 
     for child in section:
         tag = _local(child)
@@ -88,7 +109,7 @@ def _direct_segments(section: ET.Element, chapter_index: int) -> tuple[str, list
             add(title_text, KIND_HEADING)
         else:
             emit_block(child)
-    return title_text, segments
+    return title_text, segments, images
 
 
 def _walk_sections(section: ET.Element, chapters: list[Chapter]) -> None:
@@ -98,26 +119,32 @@ def _walk_sections(section: ET.Element, chapters: list[Chapter]) -> None:
     故此处递归展开为扁平章列表，确保无损。
     """
     ci = len(chapters)
-    title_text, segs = _direct_segments(section, ci)
+    title_text, segs, images = _direct_segments(section, ci)
     child_sections = [c for c in section if _local(c) == "section"]
 
     if child_sections:
         # 容器节：若有自身正文（标题之外的段落）或仅有部标题，都先成一章保留，避免丢失
         has_body = any(s.kind == KIND_TEXT for s in segs)
         if has_body or title_text:
-            chapters.append(_make_chapter(ci, title_text, segs))
+            chapters.append(_make_chapter(ci, title_text, segs, images))
         for cs in child_sections:
             _walk_sections(cs, chapters)
     elif segs:
-        chapters.append(_make_chapter(ci, title_text, segs))
+        chapters.append(_make_chapter(ci, title_text, segs, images))
 
 
-def _make_chapter(ci: int, title_text: str, segments: list[Segment]) -> Chapter:
+def _make_chapter(
+    ci: int,
+    title_text: str,
+    segments: list[Segment],
+    images: list[dict[str, int | str]],
+) -> Chapter:
     if not title_text and segments:
         title_text = segments[0].source[:80]
     elif not title_text:
         title_text = f"第{ci + 1}章"
-    return Chapter(index=ci, title=title_text, segments=segments)
+    meta = {"fb2_images": images} if images else {}
+    return Chapter(index=ci, title=title_text, segments=segments, meta=meta)
 
 
 def _body_title_chapter(body: ET.Element) -> Chapter | None:
@@ -162,6 +189,31 @@ def read_fb2(path: str, source_lang: str, target_lang: str) -> Document:
         text = raw.decode("utf-8", errors="replace")
 
     root = ET.fromstring(text)
+
+    resources: list[dict[str, str]] = []
+    for binary in root.iter():
+        if _local(binary) != "binary":
+            continue
+        resource_id = binary.attrib.get("id", "").strip()
+        if resource_id:
+            resources.append(
+                {
+                    "id": resource_id,
+                    "content_type": binary.attrib.get("content-type", "application/octet-stream"),
+                }
+            )
+
+    cover_image = ""
+    for coverpage in root.iter():
+        if _local(coverpage) != "coverpage":
+            continue
+        image = next(
+            (element for element in coverpage.iter() if _local(element) == "image"),
+            None,
+        )
+        if image is not None:
+            cover_image = _image_id(image)
+        break
 
     # ── 书名 ──
     title = os.path.splitext(os.path.basename(path))[0]
@@ -212,6 +264,12 @@ def read_fb2(path: str, source_lang: str, target_lang: str) -> Document:
         if segments:
             chapters.append(Chapter(index=0, title=title, segments=segments))
 
+    meta: dict[str, object] = {}
+    if resources:
+        meta["fb2_resources"] = resources
+    if cover_image:
+        meta["fb2_cover_image"] = cover_image
+
     return Document(
         title=title,
         source_lang=source_lang,
@@ -219,4 +277,29 @@ def read_fb2(path: str, source_lang: str, target_lang: str) -> Document:
         fmt="fb2",
         source_path=os.path.abspath(path),
         chapters=chapters,
+        meta=meta,
     )
+
+
+def read_fb2_binaries(path: str) -> dict[str, tuple[str, bytes]]:
+    """按需读取 FB2 的内嵌资源，避免将 `<binary>` 元素中的大段数据写入断点状态。"""
+    with open(path, "rb") as file:
+        root = ET.fromstring(file.read())
+
+    resources: dict[str, tuple[str, bytes]] = {}
+    for binary in root.iter():
+        if _local(binary) != "binary":
+            continue
+        resource_id = binary.attrib.get("id", "").strip()
+        encoded = "".join((binary.text or "").split())
+        if not resource_id or not encoded:
+            continue
+        try:
+            payload = base64.b64decode(encoded, validate=False)
+        except (ValueError, TypeError):
+            continue
+        resources[resource_id] = (
+            binary.attrib.get("content-type", "application/octet-stream"),
+            payload,
+        )
+    return resources

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import tempfile
 import unittest
@@ -26,6 +27,7 @@ from trans_novel.ingest.epub_reader import (
     annotate_epub_resource,
 )
 from trans_novel.ingest.epub_toc import parse_toc_entries, resolve_epub_href
+from trans_novel.ingest.fb2_reader import read_fb2_binaries
 from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
 from trans_novel.ingest.segmenter import (
     _split_text,
@@ -137,6 +139,26 @@ _FB2_BLOCKS = """\
 """
 
 
+_FB2_IMAGES = """\
+<?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"
+             xmlns:xlink="http://www.w3.org/1999/xlink">
+<description><title-info>
+  <book-title>插图之书</book-title>
+  <coverpage><image xlink:href="#cover.jpg"/></coverpage>
+</title-info></description>
+<body>
+  <section><title><p>第一章</p></title>
+    <image xlink:href="#inside.png"/>
+    <p>带插图的正文。</p>
+  </section>
+</body>
+<binary id="cover.jpg" content-type="image/jpeg">Y292ZXItYnl0ZXM=</binary>
+<binary id="inside.png" content-type="image/png">aW5zaWRlLWJ5dGVz</binary>
+</FictionBook>
+"""
+
+
 class TestFb2Ingest(unittest.TestCase):
     def _load(self, content: str):
         with tempfile.TemporaryDirectory() as d:
@@ -243,6 +265,31 @@ class TestFb2Ingest(unittest.TestCase):
         self.assertIn("一章首段。", all_text)
         self.assertIn("一章次段。", all_text)
         self.assertIn("二章仅一段。", all_text)
+
+    def test_images_and_cover_are_recorded_without_persisting_binary_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "images.fb2")
+            with open(path, "w", encoding="utf-8") as file:
+                file.write(_FB2_IMAGES)
+
+            document = load_document(path, "ru", "zh")
+            binaries = read_fb2_binaries(path)
+
+        self.assertEqual(document.meta["fb2_cover_image"], "cover.jpg")
+        self.assertEqual(
+            document.meta["fb2_resources"],
+            [
+                {"id": "cover.jpg", "content_type": "image/jpeg"},
+                {"id": "inside.png", "content_type": "image/png"},
+            ],
+        )
+        self.assertEqual(
+            document.chapters[0].meta["fb2_images"],
+            [{"id": "inside.png", "position": 1}],
+        )
+        self.assertNotIn(base64.b64encode(b"cover-bytes").decode(), str(document.meta))
+        self.assertEqual(binaries["cover.jpg"], ("image/jpeg", b"cover-bytes"))
+        self.assertEqual(binaries["inside.png"], ("image/png", b"inside-bytes"))
 
 
 class TestSplitLongSegments(unittest.TestCase):
