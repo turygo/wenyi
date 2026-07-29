@@ -20,6 +20,7 @@ from trans_novel.assemble.writer import (
 )
 from trans_novel.cli import app
 from trans_novel.config import Config
+from trans_novel.ingest.epub_reader import annotate_epub_resource
 from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
 from trans_novel.llm.base import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator
@@ -81,6 +82,62 @@ class TestRenderChapterHtmlBilingual(unittest.TestCase):
         html = _render_chapter_html(ch)  # 默认单语，不应引入 tn-source
         self.assertNotIn("tn-source", html)
         self.assertNotIn("data-tn-id", html)
+
+    def test_japanese_source_keeps_ruby_in_bilingual_output(self):
+        title, segments, template = annotate_epub_resource(
+            "<html><body><p><ruby>漢字<rt>かんじ</rt></ruby>です</p></body></html>",
+            0,
+            "chapter.xhtml",
+        )
+        segments[0].target = "是汉字"
+        chapter = Chapter(
+            index=0,
+            title=title,
+            segments=segments,
+            href="chapter.xhtml",
+            template=template,
+        )
+
+        soup = BeautifulSoup(
+            _render_chapter_html(chapter, bilingual=True, source_lang="ja"),
+            "html.parser",
+        )
+        source = soup.find("p", class_="tn-source")
+        self.assertIsNotNone(source)
+        assert source is not None
+        ruby = source.find("ruby")
+        self.assertIsNotNone(ruby)
+        assert ruby is not None
+        reading = ruby.find("rt")
+        self.assertIsNotNone(reading)
+        assert reading is not None
+        self.assertEqual(reading.get_text(), "かんじ")
+        self.assertIn("です", source.get_text())
+
+    def test_non_japanese_source_still_flattens_ruby(self):
+        title, segments, template = annotate_epub_resource(
+            "<html><body><p><ruby>漢字<rt>かんじ</rt></ruby>です</p></body></html>",
+            0,
+            "chapter.xhtml",
+        )
+        segments[0].target = "Chinese characters"
+        chapter = Chapter(
+            index=0,
+            title=title,
+            segments=segments,
+            href="chapter.xhtml",
+            template=template,
+        )
+
+        soup = BeautifulSoup(
+            _render_chapter_html(chapter, bilingual=True, source_lang="en"),
+            "html.parser",
+        )
+        source = soup.find("p", class_="tn-source")
+        self.assertIsNotNone(source)
+        assert source is not None
+        self.assertEqual(source.get_text(), "漢字です")
+        self.assertIsNone(source.find("ruby"))
 
 
 def _config(state_dir: str, output: dict | None = None):

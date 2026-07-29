@@ -14,7 +14,7 @@ import os
 import re
 import zipfile
 
-from bs4 import BeautifulSoup, Tag, UnicodeDammit
+from bs4 import BeautifulSoup, Comment, Tag, UnicodeDammit
 
 from ..ingest.epub_toc import nav_root_list, nav_toc_scopes
 from ..ingest.fb2_reader import read_fb2_binaries
@@ -172,6 +172,60 @@ _INLINE_ID_ATTR = "data-tn-inline-id"
 _LINE_WRAPPER_ATTR = "data-tn-line"
 
 
+def _japanese_ruby_source(element: Tag, source_lang: str) -> str:
+    """日语双语原文保留 ruby 注音，同时拍平其它文本内联标签。"""
+    normalized_lang = source_lang.strip().replace("_", "-").lower()
+    if not (normalized_lang == "ja" or normalized_lang.startswith("ja-")):
+        return ""
+    if element.find("ruby") is None:
+        return ""
+
+    fragment = BeautifulSoup(str(element), "html.parser")
+    root = fragment.find(element.name)
+    if not isinstance(root, Tag):
+        return ""
+    for comment in list(root.find_all(string=lambda node: isinstance(node, Comment))):
+        comment.extract()
+    for tag in list(
+        root.find_all(
+            [
+                "audio",
+                "canvas",
+                "embed",
+                "hr",
+                "iframe",
+                "img",
+                "math",
+                "object",
+                "script",
+                "source",
+                "style",
+                "svg",
+                "video",
+            ]
+        )
+    ):
+        tag.decompose()
+    ruby_tags = {"ruby", "rb", "rt", "rp", "rtc", "br"}
+    for tag in list(root.find_all(True)):
+        if tag.name not in ruby_tags:
+            tag.unwrap()
+            continue
+        for attr in ("id", "name", "data-tn-id", _INLINE_ID_ATTR, _LINE_WRAPPER_ATTR):
+            tag.attrs.pop(attr, None)
+    return root.decode_contents()
+
+
+def _append_source(element: Tag, source: str, markup: str) -> None:
+    """向双语原文块写入纯文本，或写入已清理的日语 ruby 片段。"""
+    if not markup:
+        element.append(source)
+        return
+    fragment = BeautifulSoup(markup, "html.parser")
+    for child in list(fragment.contents):
+        element.append(child.extract())
+
+
 def _append_text_with_breaks(soup: BeautifulSoup, element: Tag, text: str) -> None:
     """向元素追加文本，并把译文换行转换为 XHTML ``br``。"""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -236,6 +290,7 @@ def _render_segments_html(
     *,
     bilingual: bool = False,
     order: str = "target_first",
+    source_lang: str = "",
 ) -> str:
     """把同一物理 HTML 资源内的译文按锚点一次性回填。
 
@@ -267,11 +322,14 @@ def _render_segments_html(
         line_wrapper = el.has_attr(_LINE_WRAPPER_ATTR)
         if kind_by_anchor.get(anchor) == KIND_HEADING:
             text = normalize_heading_numbering(text)
+        src = (
+            _bilingual_source(src_by_anchor.get(anchor, ""), text)
+            if bilingual and kind_by_anchor.get(anchor) != KIND_HEADING
+            else ""
+        )
+        source_markup = _japanese_ruby_source(el, source_lang) if src else ""
         _replace_block_content(soup, el, text, meta_by_anchor.get(anchor, {}))
         del el["data-tn-id"]
-        if not bilingual or kind_by_anchor.get(anchor) == KIND_HEADING:
-            continue
-        src = _bilingual_source(src_by_anchor.get(anchor, ""), text)
         if not src:
             continue
         # p 的原文可作为相邻段落插入；li/blockquote 则必须留在原容器内，
@@ -280,7 +338,7 @@ def _render_segments_html(
         nested_source = el.name in {"li", "blockquote"}
         src_el = soup.new_tag("span" if line_wrapper else "div" if nested_source else "p")
         src_el["class"] = ["tn-source", "ibooks-dark-theme-use-custom-text-color"]
-        src_el.append(src)
+        _append_source(src_el, src, source_markup)
         if line_wrapper and order == "source_first":
             el.insert_before(src_el)
             src_el.insert_after(soup.new_tag("br"))
@@ -306,6 +364,7 @@ def _render_chapter_html(
     *,
     bilingual: bool = False,
     order: str = "target_first",
+    source_lang: str = "",
 ) -> str:
     """回填旧版“每章一个模板”的 HTML/EPUB 章节（仅用于 schema 1 状态）。
 
@@ -313,7 +372,11 @@ def _render_chapter_html(
     Segment 一次性回填，见 ``_assemble_epub``。
     """
     return _render_segments_html(
-        chapter.template or "", chapter.segments, bilingual=bilingual, order=order
+        chapter.template or "",
+        chapter.segments,
+        bilingual=bilingual,
+        order=order,
+        source_lang=source_lang,
     )
 
 
@@ -632,6 +695,8 @@ def _assemble_epub(
     """
     m = store.load_manifest()
     target_lang = _epub_lang(m.get("target_lang", "zh"))
+    raw_source_lang = m.get("source_lang", "")
+    source_lang = raw_source_lang if isinstance(raw_source_lang, str) else ""
     raw_meta = m.get("meta")
     meta = raw_meta if isinstance(raw_meta, dict) else {}
     raw_toc_entries = meta.get("toc_entries", [])
@@ -657,14 +722,21 @@ def _assemble_epub(
             raise ValueError("EPUB 翻译状态引用了未登记的正文资源：" + ", ".join(undeclared[:3]))
         for href, segments in grouped.items():
             rendered[href] = _render_segments_html(
-                resource_templates[href], segments, bilingual=bilingual, order=order
+                resource_templates[href],
+                segments,
+                bilingual=bilingual,
+                order=order,
+                source_lang=source_lang,
             )
     else:
         # schema 1 旧状态：模板仍随 Chapter 存储，逐章渲染。
         for chapter in chapters:
             if chapter.href and chapter.template:
                 rendered[chapter.href] = _render_chapter_html(
-                    chapter, bilingual=bilingual, order=order
+                    chapter,
+                    bilingual=bilingual,
+                    order=order,
+                    source_lang=source_lang,
                 )
 
     # 目录标题：兼容旧状态的 basename 映射（用于旧状态导出，以及精确模式未命中时的回退）。
