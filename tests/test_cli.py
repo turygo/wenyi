@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,14 @@ from typer.testing import CliRunner
 
 from trans_novel.cli import _configure_windows_console, app
 from trans_novel.config import Config
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(output: str) -> str:
+    """去掉富文本转义，避免 CI 强制彩色输出时断言被 ANSI 序列截断。"""
+
+    return _ANSI_RE.sub("", output)
 
 
 class FakeStore:
@@ -168,7 +177,7 @@ class TestCliConfig(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 2, result.output)
-        self.assertIn("--prepare 不能与 --chapter", result.output)
+        self.assertIn("--prepare 不能与 --chapter", plain(result.output))
 
     def test_resume_delegates_to_translate_without_audit_argument(self):
         cfg = Config.from_dict(
@@ -254,7 +263,7 @@ class TestCliConfig(unittest.TestCase):
                 isinstance(result.exception, ValueError),
                 "非法 --chapters 不应以未捕获的 ValueError 泄漏",
             )
-            self.assertIn("--chapters", result.output)
+            self.assertIn("--chapters", plain(result.output))
 
     def test_translate_rejects_unknown_output_format_before_loading_config(self):
         with (
