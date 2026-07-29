@@ -17,7 +17,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def plain(output: str) -> str:
-    """去掉富文本转义，避免 CI 强制彩色输出时断言被 ANSI 序列截断。"""
+    """去除 ANSI 转义序列，避免 CI 环境强制启用彩色输出时干扰字符串断言。"""
 
     return _ANSI_RE.sub("", output)
 
