@@ -277,6 +277,51 @@ class TestAssembleEpub(unittest.TestCase):
         assert isinstance(standalone_image, Tag)
         self.assertEqual(standalone_image.get("src"), "standalone.jpg")
 
+    def test_epub_render_restores_footnote_markers_at_scaled_offsets(self):
+        html = """<html><body><p class="Textbody"><sup id="note-wrapper-1" class="native"><a href="../notes.xhtml?edition=1#note-1" id="note-link-1" name="n1"><i>1</i></a></sup>Source <span class="xref superscript" title="footnote two"><a href="#footnote-2" id="note-link-2"><em>2</em></a></span>text<span style="vertical-align: sub; color: red" aria-label="endnote 3"><a href="#endnote-3" name="n3"><b>3</b></a></span></p></body></html>"""
+        title, segments, template = annotate_epub_resource(html, 0, "chapter.xhtml")
+        segments[0].target = "甲乙丙丁"
+        chapter = Chapter(
+            index=0,
+            title=title,
+            segments=segments,
+            href="chapter.xhtml",
+            template=template,
+        )
+
+        rendered = BeautifulSoup(_render_chapter_html(chapter), "html.parser")
+
+        paragraph = rendered.find("p", class_="Textbody")
+        self.assertIsInstance(paragraph, Tag)
+        assert isinstance(paragraph, Tag)
+        self.assertEqual(paragraph.get_text(), "1甲乙丙2丁3")
+        self.assertEqual(
+            [child.name if isinstance(child, Tag) else str(child) for child in paragraph.children],
+            ["sup", "甲乙丙", "span", "丁", "span"],
+        )
+        native = paragraph.find("sup", id="note-wrapper-1")
+        self.assertIsInstance(native, Tag)
+        assert isinstance(native, Tag)
+        self.assertEqual(native.a.get("href"), "../notes.xhtml?edition=1#note-1")
+        self.assertEqual(native.a.get("id"), "note-link-1")
+        self.assertEqual(native.a.get("name"), "n1")
+        self.assertIsNotNone(native.a.find("i"))
+        inline = paragraph.find("span", class_="superscript")
+        self.assertIsInstance(inline, Tag)
+        assert isinstance(inline, Tag)
+        self.assertEqual(inline.get("title"), "footnote two")
+        self.assertEqual(inline.a.get("href"), "#footnote-2")
+        self.assertEqual(inline.a.get("id"), "note-link-2")
+        self.assertIsNotNone(inline.a.find("em"))
+        ending = paragraph.find("span", attrs={"aria-label": "endnote 3"})
+        self.assertIsInstance(ending, Tag)
+        assert isinstance(ending, Tag)
+        self.assertEqual(ending.get("style"), "vertical-align: sub; color: red")
+        self.assertEqual(ending.a.get("href"), "#endnote-3")
+        self.assertEqual(ending.a.get("name"), "n3")
+        self.assertIsNotNone(ending.a.find("b"))
+        self.assertIsNone(rendered.find(attrs={"data-tn-inline-id": True}))
+
     def test_epub_render_preserves_nested_list_links_and_blockquote_lines(self):
         html = """<html><body>
 <ul><li><a href="#author">Author</a><ul>

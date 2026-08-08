@@ -542,6 +542,61 @@ class TestEpubIngest(unittest.TestCase):
         self.assertEqual([node["offset"] for node in inline["nodes"]], [2])
         self.assertIn('src="inline.jpg"', template)
 
+    def test_footnote_markers_are_atomic_inline_nodes_with_exact_attributes(self):
+        html = """<html><body>
+<p><sup id="note-wrapper-1" class="native"><a href="../notes.xhtml?edition=1#note-1" id="note-link-1" name="n1"><i>1</i></a></sup>Before <span class="xref superscript" title="footnote two"><a href="#footnote-2" id="note-link-2"><em>2</em></a></span>middle <span style="color: red; VERTICAL-ALIGN : sub" aria-label="endnote 3"><a href="#endnote-3" name="n3"><b>3</b></a></span>after</p>
+<p>End<span class="sup"><a href="#fn_4" id="note-link-4">4</a></span></p>
+</body></html>"""
+
+        _title, segments, template = annotate_epub_resource(html, 0, "chapter.xhtml")
+
+        self.assertEqual([segment.source for segment in segments], ["Before middle after", "End"])
+        first_inline = segments[0].meta["epub_inline"]
+        self.assertEqual(
+            [(node["tag"], node["placement"], node["offset"]) for node in first_inline["nodes"]],
+            [("sup", "before", 0), ("span", "inline", 7), ("span", "inline", 14)],
+        )
+        self.assertEqual(
+            [
+                (node["placement"], node["offset"])
+                for node in segments[1].meta["epub_inline"]["nodes"]
+            ],
+            [("after", 3)],
+        )
+        rendered = BeautifulSoup(template, "html.parser")
+        native = rendered.find("sup", id="note-wrapper-1")
+        self.assertIsInstance(native, Tag)
+        assert isinstance(native, Tag)
+        self.assertEqual(native.a.get("href"), "../notes.xhtml?edition=1#note-1")
+        self.assertEqual(native.a.get("id"), "note-link-1")
+        self.assertEqual(native.a.get("name"), "n1")
+        self.assertIsNotNone(native.a.find("i"))
+        css_class = rendered.find("span", class_="superscript")
+        self.assertIsInstance(css_class, Tag)
+        assert isinstance(css_class, Tag)
+        self.assertEqual(css_class.get("title"), "footnote two")
+        self.assertEqual(css_class.a.get("id"), "note-link-2")
+        css_style = rendered.find("span", attrs={"aria-label": "endnote 3"})
+        self.assertIsInstance(css_style, Tag)
+        assert isinstance(css_style, Tag)
+        self.assertEqual(css_style.get("style"), "color: red; VERTICAL-ALIGN : sub")
+        self.assertEqual(css_style.a.get("name"), "n3")
+
+    def test_only_semantic_internal_hinted_links_are_footnote_markers(self):
+        html = """<html><body><p>
+<a href="#note-3">3</a>
+<span><a href="#footnote-4">4</a></span>
+<sup><a href="https://example.test/#footnote-5">5</a></sup>
+<sup><a href="mailto:reader@example.test#footnote-6">6</a></sup>
+<sup><a href="//example.test/notes.xhtml#footnote-7">7</a></sup>
+<sup><a href="#chapter-8">citation</a></sup>
+</p></body></html>"""
+
+        _title, segments, _template = annotate_epub_resource(html, 0, "chapter.xhtml")
+
+        self.assertEqual([segment.source for segment in segments], ["3 4 5 6 7 citation"])
+        self.assertEqual(segments[0].meta, {})
+
     def test_declared_legacy_xhtml_encoding_is_honored(self):
         markup = (
             '<?xml version="1.0" encoding="Shift_JIS"?><html><body><p>日本語</p></body></html>'

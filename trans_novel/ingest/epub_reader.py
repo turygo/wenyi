@@ -21,6 +21,7 @@ import posixpath
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
 
@@ -68,11 +69,114 @@ _ATOMIC_INLINE_TAGS = {
 _LINE_WRAPPER_ATTR = "data-tn-line"
 _STRATEGY_SPINE_FALLBACK = "spine-fallback"
 
+_FOOTNOTE_CLASS_TOKENS = {"sup", "super", "superscript", "sub", "subscript"}
+_FOOTNOTE_HINT_ATTRS = ("id", "name", "class", "title", "aria-label")
+_FOOTNOTE_HINT_RE = re.compile(
+    r"(?:^|[^a-z])(?:footnote|endnote|notes|note|fn)(?=$|[^a-z])",
+    re.IGNORECASE,
+)
+_SHORT_MARKER_RE = re.compile(r"[A-Za-z]?[-_]?\d+")
+
+
+def _is_internal_footnote_link(link: Tag) -> bool:
+    """仅接受带 fragment 的 EPUB 内部链接，保留原始 href 不做规范化。"""
+    href = link.get("href")
+    if not isinstance(href, str):
+        return False
+    parts = urlsplit(href)
+    return not parts.scheme and not parts.netloc and bool(parts.fragment)
+
+
+def _is_semantic_footnote_wrapper(node: Tag) -> bool:
+    """判断节点是否显式表达上标/下标脚注语义。"""
+    if node.name in {"sup", "sub"}:
+        return True
+    if node.name != "span":
+        return False
+    class_values = node.get("class", [])
+    if isinstance(class_values, str):
+        class_values = class_values.split()
+    if isinstance(class_values, list) and any(
+        token.lower() in _FOOTNOTE_CLASS_TOKENS
+        for value in class_values
+        if isinstance(value, str)
+        for token in value.split()
+    ):
+        return True
+    style = node.get("style")
+    if not isinstance(style, str):
+        return False
+    for declaration in style.split(";"):
+        property_name, separator, value = declaration.partition(":")
+        if (
+            separator
+            and property_name.strip().lower() == "vertical-align"
+            and value.strip().lower() in {"super", "sub"}
+        ):
+            return True
+    return False
+
+
+def _has_footnote_hint(link: Tag, wrapper: Tag) -> bool:
+    """判断内部链接及其语义包装是否带有脚注标识。"""
+    for node in (link, wrapper):
+        for attr in _FOOTNOTE_HINT_ATTRS:
+            value = node.get(attr)
+            values = value if isinstance(value, list) else [value]
+            if any(isinstance(item, str) and _FOOTNOTE_HINT_RE.search(item) for item in values):
+                return True
+
+    href = link.get("href")
+    if isinstance(href, str):
+        parts = urlsplit(href)
+        if _FOOTNOTE_HINT_RE.search(parts.path) or _FOOTNOTE_HINT_RE.search(parts.fragment):
+            return True
+
+    return any(
+        _SHORT_MARKER_RE.fullmatch(node.get_text(strip=True)) is not None
+        for node in (link, wrapper)
+    )
+
+
+def _footnote_marker_roots(block: Tag) -> list[Tag]:
+    """找出块内需要作为原子内联节点保留的脚注标记包装节点。"""
+    roots: list[Tag] = []
+    for link in block.find_all("a", href=True):
+        if not _is_internal_footnote_link(link):
+            continue
+        wrapper: Tag | None = link if _is_semantic_footnote_wrapper(link) else None
+        parent = link.parent
+        while wrapper is None and isinstance(parent, Tag) and parent is not block:
+            if _is_semantic_footnote_wrapper(parent):
+                wrapper = parent
+                break
+            parent = parent.parent
+        if wrapper is not None and _has_footnote_hint(link, wrapper):
+            roots.append(wrapper)
+    return roots
+
+
+def _outermost_nodes(block: Tag, candidates: list[Tag]) -> list[Tag]:
+    """按 DOM 顺序去重，并丢弃已包含在其他候选根中的内层节点。"""
+    candidate_ids = {id(node) for node in candidates}
+    roots: list[Tag] = []
+    for node in block.find_all(True):
+        if id(node) not in candidate_ids:
+            continue
+        if any(id(parent) in candidate_ids for parent in node.parents if isinstance(parent, Tag)):
+            continue
+        roots.append(node)
+    return roots
+
+
+def _inside_roots(node: Tag, roots: list[Tag]) -> bool:
+    """判断节点是否位于任一已识别的原子根内。"""
+    return any(node is root or any(parent is root for parent in node.parents) for root in roots)
+
 
 def _preserved_inline_roots(block: Tag) -> list[Tag]:
-    """返回需要原样回填的非文本节点，并尽量保留其无文字包装标签。"""
-    roots: list[Tag] = []
-    seen: set[int] = set()
+    """返回需要原样回填的非文本节点及带语义的脚注标记。"""
+    candidates = _footnote_marker_roots(block)
     for candidate in block.find_all(True):
         is_atomic = candidate.name in _ATOMIC_INLINE_TAGS
         is_empty_anchor = (
@@ -93,10 +197,8 @@ def _preserved_inline_roots(block: Tag) -> list[Tag]:
         ):
             root = parent
             parent = root.parent
-        if id(root) not in seen:
-            seen.add(id(root))
-            roots.append(root)
-    return roots
+        candidates.append(root)
+    return _outermost_nodes(block, candidates)
 
 
 def _segment_content(block: Tag, anchor: str) -> tuple[str, dict[str, object]]:
@@ -379,8 +481,10 @@ def annotate_epub_resource(
     ):
         # 带文字的内联 id/name 包装会在回填纯译文时被拍平。先把它
         # 改成同位置的空锚点，便可复用现有内联非文本节点恢复机制。
+        # 脚注标记是完整的原子节点，不能在这里拆走其原始属性。
+        footnote_roots = _footnote_marker_roots(el)
         for descendant in list(el.find_all(True)):
-            if not descendant.get_text(strip=True):
+            if _inside_roots(descendant, footnote_roots) or not descendant.get_text(strip=True):
                 continue
             anchor_attrs = {
                 key: descendant.attrs.pop(key) for key in ("id", "name") if key in descendant.attrs
