@@ -1,7 +1,7 @@
 """Agent 基类：统一 client/config/src/tgt 初始化，与带默认值的 LLM 调用帮助方法。
 
 各 agent 的"渲染 system/user → complete_json → 失败回退默认值"模式收敛到这里；
-默认值语义留在 agent 层（传输层 llm/base.py 不掺业务回退）。
+默认值语义留在 agent 层（LLM provider 层不掺业务回退）。
 orchestrator._apply_language 依赖每个 agent 都有 .src 属性——基类把该契约显式化。
 """
 
@@ -37,7 +37,7 @@ class Agent:
 
         异常时返回 default（未给 default 则照常抛出，如 Translator 交由重试逻辑处理）。
         key 给出时：结果为 dict 取 data[key]（缺失回退）；结果为非空 list 直接用；否则回退。
-        operation：稳定、可读的业务标签，驱动 llm/base.py 的 by_operation telemetry。
+        operation：稳定、可读的业务标签，用于按 by_operation 归因统计 LLM 用量。
         """
         try:
             data = self.client.complete_json(

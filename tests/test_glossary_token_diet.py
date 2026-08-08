@@ -26,7 +26,7 @@ import unittest
 from tests.fake_llm import routing_handler
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
-from trans_novel.llm.base import FakeClient
+from trans_novel.llm import FakeClient
 from trans_novel.pipeline.backmatter import is_back_matter
 from trans_novel.pipeline.orchestrator import Orchestrator
 

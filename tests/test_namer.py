@@ -11,7 +11,7 @@ import unittest
 from trans_novel.agents.namer import CastNamer
 from trans_novel.config import Config
 from trans_novel.glossary.miner import Candidate
-from trans_novel.llm.base import FakeClient
+from trans_novel.llm import FakeClient
 
 # 每个候选带一段超预算长 context → _group 里每候选单独成一组，组数 = 候选数。
 _LONG = "x" * 6001

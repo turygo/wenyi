@@ -7,14 +7,13 @@ language:
   # 译文语言
   target: zh
 
-# ── LLM：DeepSeek 三档（通过 OpenAI SDK 调用 https://api.deepseek.com）─────
-# strong / cheap 开思考（要动脑的判断类任务）；fast 关思考（机械任务，思考会多花
-# 推理 token 且按输出计费，关掉能明显省钱提速）。某档没配时按 fast→cheap→strong 找替补。
+# ── LLM ──────────────────────────────────────────────────────────────────
+# Provider 可选 deepseek、openai、openrouter、openai-compatible、ollama、vllm 或 fake。
+# OpenAI-compatible/custom 需要设置 base_url；Ollama/vLLM 使用各自本地默认 URL。
+# strong / cheap 开思考；fast 关思考。缺档时按 fast→cheap→strong 找替补。
 llm:
-  # 模型来源：deepseek 正常联网；fake 用于离线测试，不发任何网络请求
   provider: deepseek
   base_url: https://api.deepseek.com
-  # 从这个环境变量读取 API key
   api_key_env: DEEPSEEK_API_KEY
   # 单次请求超时（秒）；开思考时耗时较长，别设太小
   timeout: 600
@@ -24,17 +23,20 @@ llm:
     strong:
       # 翻译 / 润色 / 全局分析 / 起标题
       model: deepseek-v4-pro
-      reasoning_effort: high
-      thinking: true
+      options:
+        thinking: true
+        reasoning_effort: high
     cheap:
       # 审校 / 一致性检查 / 回译比对（都是判断类，保留思考）
       model: deepseek-v4-flash
-      reasoning_effort: high
-      thinking: true
+      options:
+        thinking: true
+        reasoning_effort: high
     fast:
       # 梗概 / 全书概览 / 术语抽取 / 回译（机械任务，不开思考）
       model: deepseek-v4-flash
-      thinking: false
+      options:
+        thinking: false
 
 # ── 切分 ─────────────────────────────────────────────────────────────────
 segment:

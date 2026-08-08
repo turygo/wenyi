@@ -2,30 +2,28 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TierConfig(BaseModel):
-    model: str
-    reasoning_effort: str = "high"
-    thinking: bool = True
+    """各 provider 通用的档位配置；options 中的专属参数由对应 provider 解析。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
 
 
 class LLMConfig(BaseModel):
     provider: str = "deepseek"
-    base_url: str = "https://api.deepseek.com"
-    api_key_env: str = "DEEPSEEK_API_KEY"
+    base_url: str | None = None
+    api_key_env: str | None = None
     timeout: int = 600
     max_retries: int = 4
     tiers: dict[str, TierConfig] = Field(default_factory=dict)
-
-    @property
-    def api_key(self) -> str | None:
-        return os.environ.get(self.api_key_env)
 
 
 class SegmentConfig(BaseModel):
@@ -99,8 +97,8 @@ class Config(BaseModel):
         }
         llm = LLMConfig(
             provider=llm_raw.get("provider", "deepseek"),
-            base_url=llm_raw.get("base_url", "https://api.deepseek.com"),
-            api_key_env=llm_raw.get("api_key_env", "DEEPSEEK_API_KEY"),
+            base_url=llm_raw.get("base_url"),
+            api_key_env=llm_raw.get("api_key_env"),
             timeout=llm_raw.get("timeout", 600),
             max_retries=llm_raw.get("max_retries", 4),
             tiers=tiers,

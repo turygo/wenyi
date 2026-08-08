@@ -13,7 +13,7 @@ from trans_novel.config import Config
 from trans_novel.glossary.extractor import GlossaryExtractor
 from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
 from trans_novel.ingest.models import Chapter, Segment
-from trans_novel.llm.base import FakeClient
+from trans_novel.llm import FakeClient
 from trans_novel.pipeline.context import RollingContext
 from trans_novel.pipeline.runstore import RunStore
 

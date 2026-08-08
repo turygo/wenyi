@@ -8,7 +8,7 @@ import unittest
 from trans_novel.agents.polisher import Polisher
 from trans_novel.agents.reviewer import BackTranslator, Reviewer, ReviewOutputError
 from trans_novel.config import Config
-from trans_novel.llm.base import FakeClient
+from trans_novel.llm import FakeClient
 
 
 def _cfg():

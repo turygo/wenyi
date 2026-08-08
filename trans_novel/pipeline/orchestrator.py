@@ -42,7 +42,9 @@ from ..glossary.miner import mine_candidates
 from ..glossary.store import TYPE_PERSON, GlossaryStore
 from ..ingest.models import KIND_HEADING
 from ..ingest.segmenter import batch_segments, load_document
-from ..llm.base import LLMClient, build_client, merge_usage_summaries, usage_delta
+from ..llm.base import LLMClient
+from ..llm.factory import build_client
+from ..llm.usage import merge_usage_summaries, usage_delta
 from ..postprocess.punct import normalize_zh
 from . import checks, lint
 from .backmatter import is_back_matter

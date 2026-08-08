@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..llm.base import parse_json_loose
+from ..llm.json_parser import parse_json_loose
 from . import langprofile, prompts
 from .base import Agent
 

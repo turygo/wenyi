@@ -12,7 +12,7 @@ from tests.fake_llm import routing_handler
 from tests.sample_data import write_sample_txt
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
-from trans_novel.llm.base import FakeClient
+from trans_novel.llm import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator
 from trans_novel.postprocess.punct import normalize_heading_numbering, normalize_zh
 

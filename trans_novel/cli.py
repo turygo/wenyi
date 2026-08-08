@@ -345,7 +345,7 @@ def glossary(
                 )
         elif action == "audit":
             from .agents.glossary_auditor import GlossaryAuditor
-            from .llm.base import build_client
+            from .llm.factory import build_client
 
             applied = GlossaryAuditor(build_client(config), config).audit(store, g)
             console.print(f"已统一 {len(applied)} 组术语：")
@@ -431,7 +431,7 @@ def qa(input: str = typer.Argument(..., help="输入文件")):
     """全书跨章一致性扫描。"""
     from .agents.consistency import ConsistencyChecker
     from .glossary.store import GlossaryStore
-    from .llm.base import build_client
+    from .llm.factory import build_client
 
     config = _load_config()
     store = _runstore_for(config, input)
@@ -488,7 +488,7 @@ def naturalize(
     """
     from .agents.naturalizer import Naturalizer, run_naturalize
     from .glossary.store import GlossaryStore
-    from .llm.base import build_client
+    from .llm.factory import build_client
 
     config = _load_config()
     store = _runstore_for(config, input)

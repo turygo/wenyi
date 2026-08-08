@@ -66,7 +66,8 @@ uv run trans-novel translate book.epub --no-qa
 主要配置都在 `config.yaml`：
 
 - `language.source`: `auto` 由模型识别源语言，也可以写死语言代码，如 `ja`、`en`、`ko`、`ru`、`de` 等。
-- `llm.tiers`: 配置 `strong`、`cheap`、`fast` 三档模型。
+- `llm.provider`: `deepseek`、`openai`、`openrouter`、`openai-compatible`（或 `custom`）、`ollama`、`vllm` 或 `fake`。
+- `llm.tiers`: 配置 `strong`、`cheap`、`fast` 三档模型；provider 专属请求参数放在每档的 `options`。
 - `pipeline.review`: 章末审校。
 - `pipeline.autofix_severe`: 对严重问题自动重译并采纳通过校验的结果。
 - `pipeline.polish`: 翻译后再做中文润色。
@@ -124,20 +125,22 @@ uv run trans-novel tools assemble book.epub
 
 ## 模型档位
 
-默认配置使用 DeepSeek，并通过 OpenAI SDK 调用 `https://api.deepseek.com`。
+默认配置使用 DeepSeek，并通过 OpenAI SDK 调用 `https://api.deepseek.com`。其他 provider 也使用兼容
+Chat Completions 的接口：OpenAI 与 OpenRouter 使用各自默认的 API URL 和环境变量；Ollama 与 vLLM
+使用本地默认 URL；`openai-compatible`/`custom` 必须设置 `llm.base_url`。
 
 - `strong`: 翻译、润色、全书定名、全局分析、标题翻译。
 - `cheap`: 章末 review、一致性 QA、回译比对。
 - `fast`: 全书预扫、章节梗概、非英文源的术语候选挖掘、回译等机械任务（英文候选挖掘与 lint 为纯本地计算，零 token）。
 
-如果模型 ID 变化，直接改 `config.yaml` 里的 `llm.tiers`。
+如果模型 ID 变化，直接改 `config.yaml` 里的 `llm.tiers.<tier>.model`；provider 专属请求参数配置在 `llm.tiers.<tier>.options`。
 
 ## 项目结构
 
 ```text
 trans_novel/
   ingest/       输入解析、EPUB/FB2/TXT 切分
-  llm/          LLM 抽象接口、DeepSeek provider、FakeClient
+  llm/          LLM 抽象接口、provider factory、内置 providers、FakeClient
   glossary/     SQLite 术语库、源文候选挖掘、译后抽取（可选）、冲突处理
   agents/       分析、翻译、审校、润色、定名、一致性、提示词
   pipeline/     编排器、断点状态、滚动上下文、确定性 lint、校验

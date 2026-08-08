@@ -18,7 +18,7 @@ from trans_novel.agents.naturalizer import (
 )
 from trans_novel.config import Config
 from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
-from trans_novel.llm.base import FakeClient
+from trans_novel.llm import FakeClient
 from trans_novel.pipeline.runstore import RunStore
 from trans_novel.postprocess.punct import normalize_zh
 

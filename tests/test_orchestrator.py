@@ -21,7 +21,7 @@ from trans_novel.agents.reviewer import ReviewOutputError
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.models import Chapter, Segment
-from trans_novel.llm.base import FakeClient
+from trans_novel.llm import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator, _normalize_lang
 from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING, RunStore
 from trans_novel.postprocess.punct import normalize_zh
@@ -1044,7 +1044,7 @@ class TestStyleAnalysis(unittest.TestCase):
     def test_style_brief_new_fields(self):
         """style_brief 渲染新风格维度；旧 analysis（缺新字段）不报错不输出。"""
         from trans_novel.agents.analyzer import Analyzer
-        from trans_novel.llm.base import FakeClient as FC
+        from trans_novel.llm import FakeClient as FC
 
         cfg = _config("state")
         ana = Analyzer(FC(), cfg)

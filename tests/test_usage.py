@@ -11,16 +11,15 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+from tenacity import wait_none
+
 from tests.fake_llm import routing_handler
 from tests.sample_data import write_sample_txt
 from trans_novel.config import Config, LLMConfig, TierConfig
-from trans_novel.llm.base import (
-    DeepSeekClient,
-    FakeClient,
-    UsageTracker,
-    merge_usage_summaries,
-    usage_delta,
-)
+from trans_novel.llm.providers.deepseek import DeepSeekClient
+from trans_novel.llm.providers.fake import FakeClient
+from trans_novel.llm.retrying import EmptyResponseError
+from trans_novel.llm.usage import UsageTracker, merge_usage_summaries, usage_delta
 from trans_novel.pipeline.orchestrator import Orchestrator
 from trans_novel.pipeline.runstore import RunStore
 
@@ -45,7 +44,7 @@ def _make_usage(
     return u
 
 
-def _make_response(content: str, usage: Any) -> Any:
+def _make_response(content: Any, usage: Any) -> Any:
     msg = SimpleNamespace(content=content)
     choice = SimpleNamespace(message=msg)
     return SimpleNamespace(choices=[choice], usage=usage)
@@ -97,8 +96,11 @@ class TestThinkingFlagWiring(unittest.TestCase):
 
     def test_thinking_tiers_send_explicit_enable_or_disable(self):
         cfg = _minimal_deepseek_cfg()
-        cfg.tiers["strong"] = TierConfig(model="m1", thinking=True, reasoning_effort="high")
-        cfg.tiers["fast"] = TierConfig(model="m2", thinking=False)
+        cfg.tiers["strong"] = TierConfig(
+            model="m1",
+            options={"thinking": True, "reasoning_effort": "high"},
+        )
+        cfg.tiers["fast"] = TierConfig(model="m2", options={"thinking": False})
         c = DeepSeekClient(cfg)
         stub = _ClientStub([_make_response("a", None), _make_response("b", None)])
         c._client = stub
@@ -619,6 +621,121 @@ class TestDeepSeekAttemptTelemetry(unittest.TestCase):
         op = c.usage_summary()["by_operation"]["translate.batch"]
         self.assertEqual(op["logical_calls"], 1)
         self.assertEqual(op["attempts"], 0)
+
+
+class TestDeepSeekEmptyResponseRetry(unittest.TestCase):
+    """Empty content must retry in the shared OpenAI-compatible transport."""
+
+    @staticmethod
+    def _client(responses: list[Any], *, max_retries: int = 1) -> tuple[Any, _ClientStub]:
+        cfg = _minimal_deepseek_cfg()
+        cfg.max_retries = max_retries
+        client = DeepSeekClient(cfg)
+        stub = _ClientStub(responses)
+        client._client = stub
+        return client, stub
+
+    def test_empty_then_success_preserves_usage_and_attribution(self):
+        client, stub = self._client(
+            [
+                _make_response(
+                    "",
+                    _make_usage(prompt_tokens=3, completion_tokens=1, total_tokens=4),
+                ),
+                _make_response(
+                    "  preserved output  ",
+                    _make_usage(prompt_tokens=5, completion_tokens=2, total_tokens=7),
+                ),
+            ]
+        )
+        with patch(
+            "trans_novel.llm.providers._openai_compatible.wait_exponential",
+            return_value=wait_none(),
+        ):
+            result = client.complete(
+                [{"role": "user", "content": "x"}],
+                stage="Translator",
+                operation="translate.batch",
+            )
+
+        self.assertEqual(result, "  preserved output  ")
+        self.assertEqual(len(stub.chat.completions.calls), 2)
+        summary = client.usage_summary()
+        self.assertEqual(summary["by_stage"]["Translator"]["calls"], 2)
+        self.assertEqual(summary["by_stage"]["Translator"]["total_tokens"], 11)
+        operation = summary["by_operation"]["translate.batch"]
+        self.assertEqual(operation["calls"], 2)
+        self.assertEqual(operation["total_tokens"], 11)
+        self.assertEqual(operation["attempts"], 2)
+        self.assertEqual(operation["failed_attempts"], 1)
+        self.assertEqual(operation["logical_calls"], 1)
+
+    def test_whitespace_then_success_retries(self):
+        client, stub = self._client(
+            [_make_response(" \n\t", None), _make_response("visible", None)]
+        )
+        with patch(
+            "trans_novel.llm.providers._openai_compatible.wait_exponential",
+            return_value=wait_none(),
+        ):
+            self.assertEqual(client.complete([{"role": "user", "content": "x"}]), "visible")
+        self.assertEqual(len(stub.chat.completions.calls), 2)
+
+    def test_json_empty_then_success_retries(self):
+        client, stub = self._client([_make_response("", None), _make_response('["visible"]', None)])
+        with patch(
+            "trans_novel.llm.providers._openai_compatible.wait_exponential",
+            return_value=wait_none(),
+        ):
+            self.assertEqual(client.complete_json([{"role": "user", "content": "x"}]), ["visible"])
+        self.assertEqual(len(stub.chat.completions.calls), 2)
+        self.assertEqual(stub.chat.completions.calls[0]["response_format"], {"type": "json_object"})
+
+    def test_exhaustion_raises_canonical_error_and_keeps_consumed_usage(self):
+        client, stub = self._client(
+            [
+                _make_response(
+                    None,
+                    _make_usage(prompt_tokens=2, completion_tokens=1, total_tokens=3),
+                ),
+                _make_response(
+                    123,
+                    _make_usage(prompt_tokens=4, completion_tokens=2, total_tokens=6),
+                ),
+            ]
+        )
+        with patch(
+            "trans_novel.llm.providers._openai_compatible.wait_exponential",
+            return_value=wait_none(),
+        ):
+            with self.assertRaises(EmptyResponseError):
+                client.complete(
+                    [{"role": "user", "content": "x"}],
+                    stage="Translator",
+                    operation="translate.batch",
+                )
+
+        self.assertEqual(len(stub.chat.completions.calls), 2)
+        summary = client.usage_summary()
+        self.assertEqual(summary["by_stage"]["Translator"]["calls"], 2)
+        self.assertEqual(summary["by_stage"]["Translator"]["total_tokens"], 9)
+        operation = summary["by_operation"]["translate.batch"]
+        self.assertEqual(operation["calls"], 2)
+        self.assertEqual(operation["total_tokens"], 9)
+        self.assertEqual(operation["attempts"], 2)
+        self.assertEqual(operation["failed_attempts"], 2)
+        self.assertEqual(operation["logical_calls"], 1)
+
+    def test_reasoning_content_does_not_replace_empty_content(self):
+        empty = _make_response("", None)
+        empty.choices[0].message.reasoning_content = "internal reasoning"
+        client, stub = self._client([empty, _make_response("visible", None)])
+        with patch(
+            "trans_novel.llm.providers._openai_compatible.wait_exponential",
+            return_value=wait_none(),
+        ):
+            self.assertEqual(client.complete([{"role": "user", "content": "x"}]), "visible")
+        self.assertEqual(len(stub.chat.completions.calls), 2)
 
 
 class TestFakeClientOperationTelemetry(unittest.TestCase):

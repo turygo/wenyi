@@ -32,7 +32,7 @@ from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.epub_reader import annotate_epub_resource
 from trans_novel.ingest.models import Chapter
 from trans_novel.ingest.segmenter import load_document
-from trans_novel.llm.base import FakeClient
+from trans_novel.llm import FakeClient
 from trans_novel.pipeline.orchestrator import Orchestrator
 from trans_novel.pipeline.runstore import RunStore
 
