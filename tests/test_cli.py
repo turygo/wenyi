@@ -45,6 +45,8 @@ class TestCliBootstrap(unittest.TestCase):
             self.assertIn("已生成配置文件", plain(result.output))
             config = Config.load(config_path)
             self.assertIn("deepseek", config.llm.providers)
+            with open(config_path, encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), Config.default_config_text())
 
     def test_init_does_not_overwrite_existing_config(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -59,19 +61,19 @@ class TestCliBootstrap(unittest.TestCase):
             with open(config_path, encoding="utf-8") as stream:
                 self.assertEqual(stream.read(), "keep-me")
 
-    def test_missing_config_has_actionable_error_without_traceback(self):
+    def test_translate_creates_missing_config_before_validating_input(self):
         with tempfile.TemporaryDirectory() as directory:
-            config_path = os.path.join(directory, "missing.yaml")
-            with patch("trans_novel.cli.os.path.isfile", return_value=True):
-                result = CliRunner().invoke(
-                    app,
-                    ["--config", config_path, "translate", "input.txt"],
-                )
+            config_path = os.path.join(directory, "config.yaml")
+            result = CliRunner().invoke(
+                app,
+                ["--config", config_path, "translate", "missing.txt"],
+            )
 
-        output = plain(result.output)
-        self.assertEqual(result.exit_code, 2, result.output)
-        self.assertIn("trans-novel init", output)
-        self.assertNotIn("Traceback", output)
+            output = plain(result.output)
+            self.assertEqual(result.exit_code, 1, result.output)
+            self.assertIn("已生成默认配置文件", output)
+            self.assertIn("输入文件不存在", output)
+            self.assertIn("deepseek", Config.load(config_path).llm.providers)
 
     def test_invalid_config_has_concise_error_without_traceback(self):
         with tempfile.TemporaryDirectory() as directory:

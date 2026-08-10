@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from importlib import resources
+from pathlib import Path
 from typing import Any, Literal
 
 import yaml
@@ -16,9 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 # 六个可配置的 Agent 路由键：AgentRouter 只按 Agent 选模型路由；内部
 # operation（业务标签）仅作用量/调试归因，不参与路由。每个生产 LLM 调用
-# 同时显式携带 agent 与 operation。Config.load 强制 llm.agents 恰好声明这六个
-# Agent（缺失/未知键在加载时即失败）；仓库随附的 config.yaml 由
-# tests/test_routing.py 的离线验收测试保证。
+# 同时显式携带 agent 与 operation。Config.load 强制 llm.agents 恰好声明以下六个
+# Agent（缺失或出现未知键时立即失败）。trans_novel/config.example.yaml 是包内
+# 唯一的默认配置，tests/test_routing.py 中的离线验收测试会校验其内容。
 PRODUCTION_AGENT_IDS: tuple[str, ...] = (
     "translator",
     "editor",
@@ -304,6 +306,31 @@ class Config(BaseModel):
     honorific_strategy: str = "keep_style"
     punctuation_normalize: bool = True  # 译文标点规范化为简体中文通用
     state_dir: str = "state"
+
+    @staticmethod
+    def default_config_text() -> str:
+        """读取随包分发的唯一默认配置。"""
+        return (
+            resources.files("trans_novel")
+            .joinpath("config.example.yaml")
+            .read_text(encoding="utf-8")
+        )
+
+    @classmethod
+    def create_default_file(cls, path: str = "config.yaml", *, overwrite: bool = False) -> bool:
+        """写出默认配置；文件已存在且未要求覆盖时返回 False。"""
+        target = Path(path).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        template = cls.default_config_text()
+        if overwrite:
+            target.write_text(template, encoding="utf-8")
+            return True
+        try:
+            with target.open("x", encoding="utf-8") as stream:
+                stream.write(template)
+        except FileExistsError:
+            return False
+        return True
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "Config":

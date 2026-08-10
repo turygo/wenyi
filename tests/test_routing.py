@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
+
+import yaml
 
 from trans_novel.config import (
     PRODUCTION_AGENT_IDS,
@@ -444,17 +445,10 @@ class TestAgentRouter(unittest.TestCase):
 
 
 class TestShippedConfigRouting(unittest.TestCase):
-    """针对仓库随附 config.yaml 的离线验收测试：恰好六个 Agent 路由，
-    每个 Agent 精确绑定 deepseek 模型别名。
-
-    直接从仓库根加载 config.yaml（不走 fake_llm_dict），漏配/错配任一
-    Agent 路由或 deepseek 模型别名时本测试失败。
-    """
-
-    CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.yaml"
+    """验证包内唯一的默认配置是否恰好声明六个 Agent 路由，并正确绑定模型别名。"""
 
     def setUp(self) -> None:
-        self.cfg = Config.load(str(self.CONFIG_PATH))
+        self.cfg = Config.from_dict(yaml.safe_load(Config.default_config_text()))
 
     def test_all_production_agent_ids_bound_exactly(self):
         self.assertEqual(set(self.cfg.llm.agents), set(PRODUCTION_AGENT_IDS))

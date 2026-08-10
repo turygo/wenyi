@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
-from importlib import resources
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +26,6 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from . import __version__
 from .config import Config
 from .ingest.segmenter import load_document
 from .pipeline.runstore import STATUS_DONE, RunStore, slugify
@@ -69,12 +68,13 @@ _CONFIG = {"path": "config.yaml"}
 
 def _show_version(value: bool) -> None:
     if value:
-        console.print(f"trans-novel {__version__}")
+        console.print(f"trans-novel {package_version('trans-novel')}")
         raise typer.Exit()
 
 
 @app.callback()
 def _root(
+    ctx: typer.Context,
     config: str = typer.Option("config.yaml", "--config", "-c", help="配置文件路径"),
     version: bool = typer.Option(
         False,
@@ -85,16 +85,28 @@ def _root(
     ),
 ):
     _CONFIG["path"] = config
+    if ctx.invoked_subcommand != "init":
+        _create_default_config(config)
+
+
+def _create_default_config(path: str) -> bool:
+    """若指定配置文件不存在，则从包内唯一的模板创建该文件。"""
+    target = Path(path).expanduser()
+    try:
+        created = Config.create_default_file(str(target))
+    except (OSError, UnicodeError) as error:
+        console.print(f"[red]无法生成配置文件：{target}[/]")
+        console.print(str(error))
+        raise typer.Exit(2) from None
+    if created:
+        console.print(f"[bold green]已生成默认配置文件：{target}[/]")
+    return created
 
 
 def _load_config() -> Config:
     path = Path(_CONFIG["path"]).expanduser()
     if not path.is_file():
-        console.print(f"[red]找不到配置文件：{path}[/]")
-        console.print(
-            "首次使用请运行 [bold]trans-novel init[/]，或使用 [bold]--config[/] 指定配置文件路径。"
-        )
-        raise typer.Exit(2)
+        _create_default_config(str(path))
     try:
         return Config.load(str(path))
     except (OSError, UnicodeError, TypeError, ValueError, yaml.YAMLError) as error:
@@ -123,18 +135,12 @@ def init_config(
 ) -> None:
     """生成一份可直接修改的配置文件。"""
     target = Path(_CONFIG["path"]).expanduser()
-    if target.exists() and not force:
-        console.print(f"[yellow]配置文件已存在：{target}[/]")
-        console.print("如需重建，请加 [bold]--force[/]。")
-        raise typer.Exit(1)
     try:
-        template = (
-            resources.files("trans_novel")
-            .joinpath("config.example.yaml")
-            .read_text(encoding="utf-8")
-        )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(template, encoding="utf-8")
+        created = Config.create_default_file(str(target), overwrite=force)
+        if not created:
+            console.print(f"[yellow]配置文件已存在：{target}[/]")
+            console.print("如需重建，请加 [bold]--force[/]。")
+            raise typer.Exit(1)
     except OSError as error:
         console.print(f"[red]无法写入配置文件：{target}[/]")
         console.print(str(error))

@@ -6,16 +6,25 @@
 
 ## 快速开始
 
+从 [GitHub Releases](https://github.com/turygo/wenyi/releases/latest) 下载与系统匹配的压缩包，并用同一页面的 `SHA256SUMS.txt` 校验文件：
+
+- Windows x64：`wenyi-windows-x64.zip`
+- Linux x64 / ARM64：`wenyi-linux-x64.tar.gz` / `wenyi-linux-arm64.tar.gz`
+- macOS Intel / Apple Silicon：`wenyi-macos-x64.tar.gz` / `wenyi-macos-arm64.tar.gz`
+
+解压后直接运行：
+
 ```bash
-uv tool install .
-trans-novel init
 export DEEPSEEK_API_KEY=sk-...
-trans-novel translate book.epub
+./wenyi translate book.epub
 ```
 
-在项目目录运行一次 `uv tool install .` 即可完成安装。`init` 会在当前工作目录生成
-可修改的 `config.yaml`；安装后可直接运行 `trans-novel`，无需再加 `uv run`。
-运行 `trans-novel --help` 可查看全部命令。
+在 Windows PowerShell 中，先运行 `$env:DEEPSEEK_API_KEY = "sk-..."` 设置环境变量，
+再运行 `.\wenyi.exe translate .\book.epub`。程序首次运行时会在当前目录自动生成可修改的
+`config.yaml`；`wenyi init --force` 可以将它重置为随当前版本发布的默认配置。
+
+从源码安装仍可使用 `uv tool install .`，命令名为 `trans-novel`。运行
+`trans-novel --help` 或 `wenyi --help` 可查看全部命令。
 
 翻译完成后，默认会在源文件目录下生成译文 EPUB。运行状态、章节 JSON、术语库和报告会放在 `state/` 目录下。
 
@@ -62,7 +71,7 @@ trans-novel translate book.epub --qa
 trans-novel translate book.epub --no-qa
 ```
 
-`--polish/--no-polish` 会覆盖 `config.yaml` 里的 `pipeline.polish`。当前仓库的 `config.yaml` 写的是 `polish: true`，所以不加参数时默认会润色；代码层面的缺省值是 `false`，只在配置文件没写该字段时生效。
+`--polish/--no-polish` 会覆盖 `config.yaml` 里的 `pipeline.polish`。随程序发布的默认配置写的是 `polish: true`，所以不加参数时默认会润色；代码层面的缺省值是 `false`，只在配置文件没写该字段时生效。
 
 润色会让每个翻译批次增加一次经 `editor` Agent 路由发起的模型调用；默认配置中，
 `editor` 与 `translator` 绑定同一模型（`deepseek:pro`）。质量可能更稳，但会明显增加
@@ -235,6 +244,7 @@ Chat Completions 的接口：OpenAI 与 OpenRouter 使用各自默认的 API URL
 
 ```text
 trans_novel/
+  config.example.yaml  默认配置的唯一来源，首次运行时复制到工作目录
   ingest/       输入解析、EPUB/FB2/TXT 切分
   llm/          LLM 抽象接口、provider factory、内置 providers、FakeClient
   glossary/     SQLite 术语库、源文候选挖掘、译后抽取（可选）、冲突处理

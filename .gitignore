@@ -2,9 +2,12 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+build/
+dist/
 state/
 *.db
 .DS_Store
+config.yaml
 *.zh.epub
 *.zh.txt
 *.txt
@@ -16,3 +19,4 @@ state/
 *.azw3
 
 .worktrees
+*.spec
