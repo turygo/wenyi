@@ -4,7 +4,7 @@
 
 流程：
 1. 候选侦测：取术语表 + 已记录的译法冲突 + 在各章译文里扫描"与术语译法形近(汉字编辑距离 1)"的变体；
-2. 强档模型裁定每个原文词的【规范译法 canonical】与应被替换的变体；
+2. 模型裁定每个原文词的【规范译法 canonical】与应被替换的变体；
 3. 落地：锁定术语表 canonical、变体并入别名、标记冲突已解决；
 """
 
@@ -121,7 +121,12 @@ class GlossaryAuditor(Agent):
         )
         system = prompts.render("glossary_audit_system", src=self.src, tgt=self.tgt)
         uni = self._ask_json(
-            system, user, tier="strong", key="unifications", default=[], operation="glossary.audit"
+            system,
+            user,
+            key="unifications",
+            default=[],
+            agent="analyst",
+            operation="glossary.audit",
         )
         result: list[dict[str, Any]] = []
         for u in self.dict_items(uni):

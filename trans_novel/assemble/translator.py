@@ -1,10 +1,14 @@
-"""翻译 Agent（强档）。
+"""翻译 Agent。
 
 核心保证：句段对齐——输入 N 段，输出必须是 N 段，一一对应。
 策略：
 1. 整批翻译并要求等长 JSON 数组；
 2. 段数不符则重试（最多 align_retry_limit 次）；
 3. 仍不符则逐段单独翻译兜底，从结构上保证 1:1，杜绝整段漏译。
+
+模型路由按功能 Agent 选择：正文走 translator（operation=translate.batch）；附属章
+旁路走 light-translator（operation=translate.back_matter，由调用方显式传 agent）。
+operation 只作用量/调试归因，不参与路由。
 """
 
 from __future__ import annotations
@@ -27,7 +31,9 @@ class Translator(Agent):
         context: str,
         book_synopsis: str = "",
         chapter_digest: str = "",
-        tier: str = "strong",
+        *,
+        agent: str,
+        operation: str = "translate.batch",
     ) -> list[str]:
         n = len(sources)
         system = prompts.render(
@@ -51,9 +57,7 @@ class Translator(Agent):
             numbered_source=prompts.numbered(sources),
         )
         # 不传 default：调用失败照常抛出，由 translate_batch 的重试/兜底逻辑处理
-        items = self._ask_json(
-            system, user, tier=tier, key="translations", operation="translate.batch"
-        )
+        items = self._ask_json(system, user, key="translations", agent=agent, operation=operation)
         if not isinstance(items, list):
             raise AlignmentError("模型未返回译文数组")
         if len(items) != n:
@@ -70,10 +74,19 @@ class Translator(Agent):
         context,
         book_synopsis,
         chapter_digest,
-        tier: str = "strong",
+        *,
+        agent: str,
+        operation: str = "translate.batch",
     ) -> str:
         out = self._call_batch(
-            [source], glossary_terms, style, context, book_synopsis, chapter_digest, tier=tier
+            [source],
+            glossary_terms,
+            style,
+            context,
+            book_synopsis,
+            chapter_digest,
+            agent=agent,
+            operation=operation,
         )
         return out[0]
 
@@ -118,7 +131,7 @@ class Translator(Agent):
             source=source,
         )
         items = self._ask_json(
-            system, user, tier="strong", key="translations", default=None, operation=operation
+            system, user, key="translations", default=None, agent="translator", operation=operation
         )
         if isinstance(items, list) and items:
             return str(items[0]).strip()
@@ -166,7 +179,7 @@ class Translator(Agent):
             items=prompts.numbered_feedback(items),
         )
         out = self._ask_json(
-            system, user, tier="strong", key="translations", default=None, operation=operation
+            system, user, key="translations", default=None, agent="translator", operation=operation
         )
         if (
             isinstance(out, list)
@@ -180,14 +193,20 @@ class Translator(Agent):
         self,
         sources: list[str],
         *,
+        agent: str,
+        operation: str = "translate.batch",
         glossary_terms: list[GlossaryTerm] | None = None,
         style: str = "",
         context: str = "",
         book_synopsis: str = "",
         chapter_digest: str = "",
-        tier: str = "strong",
     ) -> list[str]:
-        """翻译一批源段，返回与之等长的译文列表。"""
+        """翻译一批源段，返回与之等长的译文列表。
+
+        agent 选择功能 Agent 路由：正文 translator；附属章旁路 light-translator。
+        operation 只作用量/调试归因（正文 translate.batch；附属章 translate.back_matter），
+        不参与路由。
+        """
         glossary_terms = glossary_terms or []
         n = len(sources)
         if n == 0:
@@ -203,7 +222,8 @@ class Translator(Agent):
                     context,
                     book_synopsis,
                     chapter_digest,
-                    tier=tier,
+                    agent=agent,
+                    operation=operation,
                 )
             except Exception:
                 pass
@@ -221,7 +241,8 @@ class Translator(Agent):
                         context,
                         book_synopsis,
                         chapter_digest,
-                        tier=tier,
+                        agent=agent,
+                        operation=operation,
                     )
                 )
             except Exception as error:

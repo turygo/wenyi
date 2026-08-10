@@ -59,15 +59,17 @@ uv run trans-novel translate book.epub --no-qa
 
 `--polish/--no-polish` 会覆盖 `config.yaml` 里的 `pipeline.polish`。当前仓库的 `config.yaml` 写的是 `polish: true`，所以不加参数时默认会润色；代码层面的缺省值是 `false`，只在配置文件没写该字段时生效。
 
-润色会让每个翻译批次多一次 `strong` 档 LLM 请求，质量可能更稳，但会明显增加耗时和成本。已经翻译完成的批次会被断点续跑跳过，后来再开关润色不会自动重跑旧译文。
+润色会让每个翻译批次增加一次经 `editor` Agent 路由发起的模型调用；默认配置中，
+`editor` 与 `translator` 绑定同一模型（`deepseek:pro`）。质量可能更稳，但会明显增加
+耗时和成本。已经翻译完成的批次会被断点续跑跳过，后来再开关润色不会自动重跑旧译文。
 
 ## 配置
 
 主要配置都在 `config.yaml`：
 
 - `language.source`: `auto` 由模型识别源语言，也可以写死语言代码，如 `ja`、`en`、`ko`、`ru`、`de` 等。
-- `llm.provider`: `deepseek`、`openai`、`openrouter`、`openai-compatible`（或 `custom`）、`ollama`、`vllm` 或 `fake`。
-- `llm.tiers`: 配置 `strong`、`cheap`、`fast` 三档模型；provider 专属请求参数放在每档的 `options`。
+- `llm.providers`: Provider 别名 → 端点 / 凭据环境变量 / 超时 / 重试 / 命名模型目录。Provider 类型：`deepseek`、`openai`、`openrouter`、`openai-compatible`（或 `custom`）、`ollama`、`vllm`、`fake`。
+- `llm.agents`: 六个功能 Agent 路由（`translator` / `editor` / `reviewer` / `analyst` / `preparer` / `light-translator`），每个 Agent → `model`（primary）+ `fallback`（有序降级列表）。模型引用形如 `<provider-alias>:<model-alias>`，按**第一个冒号**切分，所以 `local:qwen3:32b` 解析为 provider=`local`、model=`qwen3:32b`。配置必须恰好声明这六个 Agent，缺失或未知键会在加载时直接报错。
 - `pipeline.review`: 章末审校。
 - `pipeline.autofix_severe`: 对严重问题自动重译并采纳通过校验的结果。
 - `pipeline.polish`: 翻译后再做中文润色。
@@ -78,7 +80,90 @@ uv run trans-novel translate book.epub --no-qa
 - `segment.max_chars_per_batch`: 每个翻译批次的大小。
 - `segment.max_chars_per_segment`: 超长段落的拆分阈值。
 
-离线测试或调试流程时，可以把 `llm.provider` 改成 `fake`，不会发网络请求。
+离线测试或调试流程时，可以把 provider 类型改成 `fake`，不会发网络请求。
+
+### Provider → 模型目录
+
+每个 Provider 别名代表一个端点/账号，`models` 里是它提供的命名模型；目录键是
+用户别名，`id` 是发给服务的精确模型 ID。同一个服务 ID 需要不同推理设置时必须
+拆成多个模型别名：
+
+```yaml
+llm:
+  providers:
+    deepseek:
+      type: deepseek
+      base_url: https://api.deepseek.com
+      api_key_env: DEEPSEEK_API_KEY
+      timeout: 600
+      max_retries: 4
+      models:
+        pro:
+          id: deepseek-v4-pro
+          reasoning: {enabled: true, effort: high}
+        flash-thinking:
+          id: deepseek-v4-flash
+          reasoning: {enabled: true, effort: high}
+        flash-fast:
+          id: deepseek-v4-flash
+          reasoning: {enabled: false}
+```
+
+`reasoning.enabled=true` 会按不同 Provider 的请求格式启用推理（DeepSeek/OpenAI 使用
+`reasoning_effort`，OpenRouter 使用 `extra_body.reasoning.effort`），并把请求的正数
+`max_tokens` 抬到至少 4096；`enabled=false` 则关闭推理、不抬上限。`request_overrides`
+可递归覆盖请求字段（`model`/`messages`/`stream` 由系统生成，不可覆盖）。
+
+### Agent → primary / fallback 路由
+
+路由键是六个功能 Agent 之一：每个 Agent 先调用 `model`。只有发生可重试、可切换
+候选的错误（空响应、限流、超时、连接错误、5xx 等），且当前候选的
+`max_retries + 1` 次实际请求均失败后，才会尝试 `fallback` 中的下一个候选；
+配置错误、凭据缺失、鉴权失败、请求被拒等不可重试错误会立即报错，不会切换候选。
+所有候选均失败后抛出 `AllModelsFailedError`（只包含 `<provider>:<model>` 与
+归一化原因）。内部 operation（业务标签，如 `translate.batch`）不参与路由，只做
+用量/调试归因。
+
+```yaml
+llm:
+  agents:
+    translator:
+      model: deepseek:pro
+      fallback: []
+    reviewer:
+      model: deepseek:flash-thinking
+      fallback: [deepseek:pro]   # 判断类任务的主模型失败时改用 pro
+```
+
+### 自定义 provider 示例
+
+Bailian（阿里云百炼）使用 OpenAI 兼容端点；OpenCode-Go 使用其兼容端点
+（`https://opencode-go.example.com/v1` 仅为占位示例 URL，请替换为你的实际网关地址）：
+
+```yaml
+llm:
+  providers:
+    bailian:
+      type: openai-compatible
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api_key_env: DASHSCOPE_API_KEY
+      models:
+        qwen-max:
+          id: qwen-max
+          reasoning: {enabled: false}
+    opencode-go:
+      type: openai-compatible
+      base_url: https://opencode-go.example.com/v1
+      api_key_env: OPENCODE_GO_API_KEY
+      models:
+        "qwen3:32b":
+          id: qwen3-32b
+          reasoning: {enabled: false}
+  agents:
+    translator:
+      model: bailian:qwen-max
+      fallback: [opencode-go:qwen3:32b]
+```
 
 ## 工作流程
 
@@ -103,7 +188,7 @@ uv run trans-novel translate book.epub --no-qa
 
 ## 一致性机制
 
-- **术语库**：翻译前从源文挖掘专名候选（英文走确定性统计，其他语言走 fast 档），由强档一次性统一定名后写入 SQLite 术语库，翻译期只读、按配置注入提示词；人物条目锁定后由 lint 硬校验。日文轻小说等需要译后确认称呼变体的场景可开 `pipeline.inflight_glossary` 保留旧的译后抽取。
+- **术语库**：翻译前从源文挖掘专名候选（英文走确定性统计，其他语言走 LLM 挖掘），由定名 Agent 一次性统一定名后写入 SQLite 术语库，翻译期只读、按配置注入提示词；人物条目锁定后由 lint 硬校验。日文轻小说等需要译后确认称呼变体的场景可开 `pipeline.inflight_glossary` 保留旧的译后抽取。
 - **全书理解**：翻译前预扫源文，生成全书概览和章节梗概，让早期章节也能参考全书走向。
 - **滚动上下文**：章内批次串行处理，后一个批次能看到前面最近几段译文。
 - **段数对齐**：每批输入 N 段，要求模型输出 N 段 JSON；段数不符会重试，仍失败则逐段兜底。
@@ -123,17 +208,23 @@ uv run trans-novel tools assemble book.epub
 
 这些工具主要用于查看术语库、检查一致性、生成报告或重新导出成品。QA 和报告默认只汇总问题，不会自动改正文。
 
-## 模型档位
+## 模型路由
 
 默认配置使用 DeepSeek，并通过 OpenAI SDK 调用 `https://api.deepseek.com`。其他 provider 也使用兼容
 Chat Completions 的接口：OpenAI 与 OpenRouter 使用各自默认的 API URL 和环境变量；Ollama 与 vLLM
-使用本地默认 URL；`openai-compatible`/`custom` 必须设置 `llm.base_url`。
+使用本地默认 URL；`openai-compatible`/`custom` 必须设置 `llm.providers.<别名>.base_url`。
 
-- `strong`: 翻译、润色、全书定名、全局分析、标题翻译。
-- `cheap`: 章末 review、一致性 QA、回译比对。
-- `fast`: 全书预扫、章节梗概、非英文源的术语候选挖掘、回译等机械任务（英文候选挖掘与 lint 为纯本地计算，零 token）。
+每个 Agent 的模型由 `llm.agents` 路由决定（六键之一，operation 不参与路由）：
 
-如果模型 ID 变化，直接改 `config.yaml` 里的 `llm.tiers.<tier>.model`；provider 专属请求参数配置在 `llm.tiers.<tier>.options`。
+- `translator` → `deepseek:pro`（开思考）：正文翻译、定向重译、标题翻译。
+- `editor` → `deepseek:pro`（开思考）：润色、去翻译腔改写。
+- `reviewer` → `deepseek:flash-thinking`（开思考）：章末 review、一致性 QA、回译比对、去翻译腔检测、语言识别。
+- `analyst` → `deepseek:pro`（开思考）：全局分析、一次性定名、术语审计。
+- `preparer` → `deepseek:flash-fast`（免思考）：全书预扫、章节梗概、术语候选挖掘/抽取等机械任务（英文候选挖掘与 lint 为纯本地计算，零 token）。
+- `light-translator` → `deepseek:flash-fast`（免思考）：回译、附属章粗翻。
+
+改模型只动 `config.yaml` 的 `llm.providers.<别名>.models`（改 `id` 或推理设置）与
+`llm.agents`（改路由）；provider 专属请求字段写在模型条目的 `request_overrides`。
 
 ## 项目结构
 

@@ -3,7 +3,7 @@
 经验事实（真书实验验证）：LLM 绝对检测轻度翻译腔召回低但精度高（只标有把握的，近似抽检）；
 成对判断（正反两序）可靠。因此检测只决定预算花在哪，**写回安全完全由三道关卡保证**：
 关卡①确定性 lint（不得引入原译没有的 issue 类型，零成本先跑）→
-关卡③双语忠实度判断（对照源文，防止改写偷改信息，cheap 档）→
+关卡③双语忠实度判断（对照源文，防止改写偷改信息）→
 关卡②成对判断（正反两序皆胜才采纳，两次调用最贵放最后）。
 
 作为主流水线章级环节接入（见 orchestrator._translate_chapter，config: pipeline.naturalize），
@@ -71,16 +71,21 @@ class Naturalizer(Agent):
         )
         return self.dict_items(
             self._ask_json(
-                system, user, tier="cheap", key="issues", default=[], operation="naturalize.screen"
+                system,
+                user,
+                key="issues",
+                default=[],
+                agent="reviewer",
+                operation="naturalize.screen",
             )
         )
 
     def rewrite(self, text: str, quote: str, reason: str) -> str:
-        """单语改写整段（strong 档）；失败或空结果回退原文。"""
+        """单语改写整段；失败或空结果回退原文。"""
         system = prompts.render("naturalize_rewrite_system")
         user = prompts.render("naturalize_rewrite_user", text=text, quote=quote, reason=reason)
         data = self._ask_json(
-            system, user, tier="strong", default={}, operation="naturalize.rewrite"
+            system, user, default={}, agent="editor", operation="naturalize.rewrite"
         )
         rewritten = data.get("rewritten") if isinstance(data, dict) else None
         return rewritten.strip() if isinstance(rewritten, str) and rewritten.strip() else text
@@ -89,7 +94,9 @@ class Naturalizer(Agent):
         """单次成对判断，返回 "A"/"B"/"tie"（异常或不合法输出保守视为 tie）。"""
         system = prompts.render("naturalize_pair_system")
         user = prompts.render("naturalize_pair_user", a=a, b=b)
-        data = self._ask_json(system, user, tier="cheap", default={}, operation="naturalize.pair")
+        data = self._ask_json(
+            system, user, default={}, agent="reviewer", operation="naturalize.pair"
+        )
         winner = data.get("winner") if isinstance(data, dict) else None
         return winner if winner in ("A", "B", "tie") else "tie"
 
@@ -120,9 +127,9 @@ class Naturalizer(Agent):
             self._ask_json(
                 system,
                 user,
-                tier="cheap",
                 key="faithful",
                 default=False,
+                agent="reviewer",
                 operation="naturalize.fidelity",
             )
         )
@@ -204,7 +211,9 @@ def naturalize_chapter(
                 before = seg.target or ""
                 rewritten = agent.rewrite(before, quote, reason)
                 if rewritten.strip() == before.strip():
-                    agent.client.usage.record_outcome("naturalize.rewrite", accepted=False)
+                    agent.client.usage.record_outcome(
+                        "editor", "naturalize.rewrite", accepted=False
+                    )
                     continue
                 stats["rewritten"] += 1
 
@@ -212,7 +221,9 @@ def naturalize_chapter(
                     seg.source, before, rewritten, locked_terms, config.source_lang
                 ):
                     stats["lint_rejected"] += 1
-                    agent.client.usage.record_outcome("naturalize.rewrite", accepted=False)
+                    agent.client.usage.record_outcome(
+                        "editor", "naturalize.rewrite", accepted=False
+                    )
                     if not dry_run:
                         store.log_event(
                             "naturalize_rejected",
@@ -227,7 +238,9 @@ def naturalize_chapter(
                 # 绝不在忠实度未确认前发出两次成对判断请求。
                 if agent.fidelity_check(seg.source, before, rewritten) is not True:
                     stats["fidelity_rejected"] += 1
-                    agent.client.usage.record_outcome("naturalize.rewrite", accepted=False)
+                    agent.client.usage.record_outcome(
+                        "editor", "naturalize.rewrite", accepted=False
+                    )
                     if not dry_run:
                         store.log_event(
                             "naturalize_rejected",
@@ -240,7 +253,9 @@ def naturalize_chapter(
 
                 if not agent.pairwise_accept(before, rewritten, pair_executor):
                     stats["pairwise_rejected"] += 1
-                    agent.client.usage.record_outcome("naturalize.rewrite", accepted=False)
+                    agent.client.usage.record_outcome(
+                        "editor", "naturalize.rewrite", accepted=False
+                    )
                     if not dry_run:
                         store.log_event(
                             "naturalize_rejected",
@@ -255,7 +270,7 @@ def naturalize_chapter(
                 if config.punctuation_normalize:
                     final = normalize_zh(final)
                 stats["applied"] += 1
-                agent.client.usage.record_outcome("naturalize.rewrite", accepted=True)
+                agent.client.usage.record_outcome("editor", "naturalize.rewrite", accepted=True)
                 stats["applied_entries"].append(
                     {"chapter": ci, "index": seg.index, "before": before, "after": final}
                 )

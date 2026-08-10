@@ -1,9 +1,29 @@
-"""线程安全的 Token 用量统计、增量计算与持久化合并。"""
+"""线程安全的 Token 用量统计、增量计算与持久化合并（schema v2）。
+
+归因维度（同一物理/逻辑事件在多个维度各计一次，totals 只计一次）：
+- totals：每个带 usage 的 provider 响应直接累加一次；各归因维度分别统计，
+  不再反向汇总到 totals，以免重复计数。
+- by_agent：按功能 Agent（translator/editor/reviewer/analyst/preparer/
+  light-translator），token 字段 + logical_calls/attempts/failed_attempts/
+  elapsed_ms/reasoning_tokens/accepted/rejected/fallbacks。
+- by_operation：按内部 operation（业务标签），字段集合与 by_agent 完全相同。
+- by_provider / by_model：token 字段 + attempts/failed_attempts（无逻辑/结果计数）。
+- by_stage：诊断维度，只记 token 字段。
+
+快照键严格为 schema_version / totals / by_agent / by_operation / by_provider /
+by_model / by_stage。merge_usage_summaries 只接受同 schema v2 的累计与增量：
+空 {} 允许作为全新累计快照的初始化，任何非空且 schema_version != 2 的快照
+直接抛 ValueError（不支持旧 schema 迁移/转换）。
+"""
 
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import Any, Optional
+
+from ..config import ModelRef
+
+SCHEMA_VERSION = 2
 
 _USAGE_FIELDS = (
     "calls",
@@ -13,7 +33,7 @@ _USAGE_FIELDS = (
     "cache_hit_tokens",
     "cache_miss_tokens",
 )
-_OPERATION_EXTRA_FIELDS = (
+_AGENT_EXTRA_FIELDS = (
     "logical_calls",
     "attempts",
     "failed_attempts",
@@ -21,8 +41,20 @@ _OPERATION_EXTRA_FIELDS = (
     "reasoning_tokens",
     "accepted",
     "rejected",
+    "fallbacks",
 )
-_OPERATION_FIELDS = _USAGE_FIELDS + _OPERATION_EXTRA_FIELDS
+_AGENT_FIELDS = _USAGE_FIELDS + _AGENT_EXTRA_FIELDS
+_PHYSICAL_FIELDS = _USAGE_FIELDS + ("attempts", "failed_attempts")
+_PROVIDER_FIELDS = _PHYSICAL_FIELDS
+_MODEL_FIELDS = _PHYSICAL_FIELDS
+
+_TOKEN_DELTAS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cache_hit_tokens",
+    "cache_miss_tokens",
+)
 
 
 def _has_field(usage: Any, name: str) -> bool:
@@ -65,31 +97,54 @@ def _normalize_slot(values: dict, fields: tuple[str, ...]) -> dict[str, int]:
     return {field: _usage_int(values, field) for field in fields}
 
 
+def _slot(fields: tuple[str, ...]) -> dict[str, int]:
+    return dict.fromkeys(fields, 0)
+
+
 def _usage_summary_from_parts(
-    by_tier: dict[str, dict[str, int]],
-    by_stage: dict[str, dict[str, int]],
-    by_operation: dict[str, dict[str, int]] | None = None,
+    *,
+    by_agent: dict[str, dict],
+    by_operation: dict[str, dict],
+    by_provider: dict[str, dict],
+    by_model: dict[str, dict],
+    by_stage: dict[str, dict],
+    totals: dict,
 ) -> dict[str, Any]:
-    """由各归因维度生成规范汇总，总计仅由 tier 求和。"""
-    tiers = {name: _normalize_slot(values, _USAGE_FIELDS) for name, values in by_tier.items()}
-    stages = {name: _normalize_slot(values, _USAGE_FIELDS) for name, values in by_stage.items()}
+    """由各归因维度生成规范汇总；cache_hit_rate 一律由 hit/miss 重算。"""
+    agents = {name: _normalize_slot(values, _AGENT_FIELDS) for name, values in by_agent.items()}
     operations = {
-        name: _normalize_slot(values, _OPERATION_FIELDS)
-        for name, values in (by_operation or {}).items()
+        name: _normalize_slot(values, _AGENT_FIELDS) for name, values in by_operation.items()
     }
-    totals: dict[str, Any] = dict.fromkeys(_USAGE_FIELDS, 0)
-    for values in tiers.values():
-        for field in _USAGE_FIELDS:
-            totals[field] += values[field]
-    for slot in (*tiers.values(), *stages.values(), *operations.values(), totals):
+    providers = {
+        name: _normalize_slot(values, _PROVIDER_FIELDS) for name, values in by_provider.items()
+    }
+    models = {name: _normalize_slot(values, _MODEL_FIELDS) for name, values in by_model.items()}
+    stages = {name: _normalize_slot(values, _USAGE_FIELDS) for name, values in by_stage.items()}
+    total = _normalize_slot(totals, _USAGE_FIELDS)
+    for slot in (
+        *agents.values(),
+        *operations.values(),
+        *providers.values(),
+        *models.values(),
+        *stages.values(),
+        total,
+    ):
         slot["cache_hit_rate"] = _hit_rate(slot["cache_hit_tokens"], slot["cache_miss_tokens"])
-    return {"totals": totals, "by_tier": tiers, "by_stage": stages, "by_operation": operations}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "totals": total,
+        "by_agent": agents,
+        "by_operation": operations,
+        "by_provider": providers,
+        "by_model": models,
+        "by_stage": stages,
+    }
 
 
 def _nonneg_delta(
-    current: dict[str, dict[str, int]],
-    previous: dict[str, dict[str, int]],
-    fields: tuple[str, ...] = _USAGE_FIELDS,
+    current: dict[str, dict],
+    previous: dict[str, dict],
+    fields: tuple[str, ...],
 ) -> dict[str, dict[str, int]]:
     delta: dict[str, dict[str, int]] = {}
     for key, values in current.items():
@@ -102,54 +157,171 @@ def _nonneg_delta(
     return delta
 
 
+def _totals_delta(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, int]:
+    return {
+        field: max(0, _usage_int(current, field) - _usage_int(previous, field))
+        for field in _USAGE_FIELDS
+    }
+
+
 def usage_delta(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
-    """计算累计快照的非负增量，避免重复落盘。"""
+    """计算两个 v2 快照间的非负增量，避免重复落盘。"""
     return _usage_summary_from_parts(
-        _nonneg_delta(current.get("by_tier") or {}, previous.get("by_tier") or {}),
-        _nonneg_delta(current.get("by_stage") or {}, previous.get("by_stage") or {}),
-        _nonneg_delta(
-            current.get("by_operation") or {},
-            previous.get("by_operation") or {},
-            _OPERATION_FIELDS,
+        by_agent=_nonneg_delta(
+            current.get("by_agent") or {}, previous.get("by_agent") or {}, _AGENT_FIELDS
         ),
+        by_operation=_nonneg_delta(
+            current.get("by_operation") or {}, previous.get("by_operation") or {}, _AGENT_FIELDS
+        ),
+        by_provider=_nonneg_delta(
+            current.get("by_provider") or {}, previous.get("by_provider") or {}, _PROVIDER_FIELDS
+        ),
+        by_model=_nonneg_delta(
+            current.get("by_model") or {}, previous.get("by_model") or {}, _MODEL_FIELDS
+        ),
+        by_stage=_nonneg_delta(
+            current.get("by_stage") or {}, previous.get("by_stage") or {}, _USAGE_FIELDS
+        ),
+        totals=_totals_delta(current.get("totals") or {}, previous.get("totals") or {}),
     )
 
 
-def merge_usage_summaries(accumulated: dict[str, Any], increment: dict[str, Any]) -> dict[str, Any]:
-    """将一次运行增量合并进历史累计用量。"""
+def _merge_slots(
+    target: dict[str, dict[str, int]], source: Optional[dict], fields: tuple[str, ...]
+) -> None:
+    for key, values in (source or {}).items():
+        slot = target.setdefault(key, dict.fromkeys(fields, 0))
+        for field in fields:
+            slot[field] += _usage_int(values, field)
 
-    def merge(field_name: str, fields: tuple[str, ...]) -> dict[str, dict[str, int]]:
-        merged: dict[str, dict[str, int]] = {}
-        for summary in (accumulated, increment):
-            for key, values in (summary.get(field_name) or {}).items():
-                slot = merged.setdefault(key, dict.fromkeys(fields, 0))
-                for field in fields:
-                    slot[field] += _usage_int(values, field)
-        return merged
+
+def _require_v2(summary: dict[str, Any], label: str) -> None:
+    """非空快照必须声明 schema_version == 2；不支持旧 schema 的迁移/转换。"""
+    if summary and summary.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            f"{label}：不支持的 usage 快照 schema（schema_version="
+            f"{summary.get('schema_version')!r}，需要 {SCHEMA_VERSION}；"
+            "旧版快照不再迁移，请从空累计重新开始）"
+        )
+
+
+def merge_usage_summaries(accumulated: dict[str, Any], increment: dict[str, Any]) -> dict[str, Any]:
+    """将一次运行增量合并进历史累计用量（同 schema v2，各维度分别求和）。
+
+    空 {} 允许作为全新累计快照的初始化；任何非空累计/增量缺少
+    schema_version == 2 时抛出 ValueError（不支持旧 schema 迁移）。
+    totals 按字段分别相加（每个带 usage 的响应在 totals 只计一次），
+    不反向从各归因维度推导。
+    """
+    _require_v2(accumulated, "accumulated usage")
+    _require_v2(increment, "usage increment")
+
+    agents: dict[str, dict[str, int]] = {}
+    _merge_slots(agents, accumulated.get("by_agent"), _AGENT_FIELDS)
+    _merge_slots(agents, increment.get("by_agent"), _AGENT_FIELDS)
+
+    operations: dict[str, dict[str, int]] = {}
+    _merge_slots(operations, accumulated.get("by_operation"), _AGENT_FIELDS)
+    _merge_slots(operations, increment.get("by_operation"), _AGENT_FIELDS)
+
+    providers: dict[str, dict[str, int]] = {}
+    _merge_slots(providers, accumulated.get("by_provider"), _PROVIDER_FIELDS)
+    _merge_slots(providers, increment.get("by_provider"), _PROVIDER_FIELDS)
+
+    models: dict[str, dict[str, int]] = {}
+    _merge_slots(models, accumulated.get("by_model"), _MODEL_FIELDS)
+    _merge_slots(models, increment.get("by_model"), _MODEL_FIELDS)
+
+    stages: dict[str, dict[str, int]] = {}
+    _merge_slots(stages, accumulated.get("by_stage"), _USAGE_FIELDS)
+    _merge_slots(stages, increment.get("by_stage"), _USAGE_FIELDS)
+
+    totals: dict[str, int] = dict.fromkeys(_USAGE_FIELDS, 0)
+    for source in (accumulated.get("totals"), increment.get("totals")):
+        for field in _USAGE_FIELDS:
+            totals[field] += _usage_int(source, field)
 
     return _usage_summary_from_parts(
-        merge("by_tier", _USAGE_FIELDS),
-        merge("by_stage", _USAGE_FIELDS),
-        merge("by_operation", _OPERATION_FIELDS),
+        by_agent=agents,
+        by_operation=operations,
+        by_provider=providers,
+        by_model=models,
+        by_stage=stages,
+        totals=totals,
     )
 
 
 class UsageTracker:
-    """线程安全的 token 用量累加器，按 tier、stage 与 operation 归因统计。"""
+    """线程安全的用量累加器；实际请求及响应的用量由 Provider 传输记账，
+    逻辑调用/结果/候选切换由 AgentRouter 与业务调用方记账。
+
+    每个物理/逻辑事件同时计入 by_agent（功能 Agent）与 by_operation（业务
+    标签）两个视图；totals 只在带 usage 的响应处累加一次。
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._by_tier: dict[str, dict[str, int]] = {}
-        self._by_stage: dict[str, dict[str, int]] = {}
+        self._totals = dict.fromkeys(_USAGE_FIELDS, 0)
+        self._by_agent: dict[str, dict[str, int]] = {}
         self._by_operation: dict[str, dict[str, int]] = {}
+        self._by_provider: dict[str, dict[str, int]] = {}
+        self._by_model: dict[str, dict[str, int]] = {}
+        self._by_stage: dict[str, dict[str, int]] = {}
 
-    def _op_slot_locked(self, operation: str) -> dict[str, int]:
-        return self._by_operation.setdefault(operation, dict.fromkeys(_OPERATION_FIELDS, 0))
-
-    def record(
-        self, tier: str, usage: Any, stage: str | None = None, operation: str | None = None
+    # ── 物理尝试（provider 传输调用）────────────────────────────────────
+    def record_attempt(
+        self,
+        *,
+        agent: str,
+        operation: str,
+        provider: Optional[str] = None,
+        model_ref: Optional[ModelRef] = None,
     ) -> None:
-        """累加一次响应的 usage；usage 缺失时不影响正常返回。"""
+        """物理请求开始时调用：attempts 计入 by_agent/by_operation/by_provider/by_model。"""
+        with self._lock:
+            self._by_agent.setdefault(agent, _slot(_AGENT_FIELDS))["attempts"] += 1
+            self._by_operation.setdefault(operation, _slot(_AGENT_FIELDS))["attempts"] += 1
+            if provider:
+                self._by_provider.setdefault(provider, _slot(_PROVIDER_FIELDS))["attempts"] += 1
+            if model_ref is not None:
+                self._by_model.setdefault(model_ref.full_name, _slot(_MODEL_FIELDS))[
+                    "attempts"
+                ] += 1
+
+    def record_attempt_failed(
+        self,
+        *,
+        agent: str,
+        operation: str,
+        provider: Optional[str] = None,
+        model_ref: Optional[ModelRef] = None,
+    ) -> None:
+        """请求异常或空响应时调用（每个物理尝试至多一次）：failed_attempts 同时计入
+        by_agent、by_operation、by_provider 和 by_model。"""
+        with self._lock:
+            self._by_agent.setdefault(agent, _slot(_AGENT_FIELDS))["failed_attempts"] += 1
+            self._by_operation.setdefault(operation, _slot(_AGENT_FIELDS))["failed_attempts"] += 1
+            if provider:
+                self._by_provider.setdefault(provider, _slot(_PROVIDER_FIELDS))[
+                    "failed_attempts"
+                ] += 1
+            if model_ref is not None:
+                self._by_model.setdefault(model_ref.full_name, _slot(_MODEL_FIELDS))[
+                    "failed_attempts"
+                ] += 1
+
+    # ── 响应用量（provider 传输调用，响应带 usage 时）────────────────────
+    def record(
+        self,
+        *,
+        agent: str,
+        operation: str,
+        provider: Optional[str] = None,
+        model_ref: Optional[ModelRef] = None,
+        usage: Any = None,
+        stage: Optional[str] = None,
+    ) -> None:
+        """累加一次带 usage 的响应：token 同时计入 totals 与各归因维度，且每处只计一次。"""
         if usage is None:
             return
         prompt_tokens = _usage_int(usage, "prompt_tokens")
@@ -158,56 +330,80 @@ class UsageTracker:
         cache_hit_tokens = _usage_int(usage, "prompt_cache_hit_tokens")
         cache_miss_tokens = _usage_int(usage, "prompt_cache_miss_tokens")
         reasoning_tokens = _reasoning_tokens(usage)
+        token_values = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "cache_hit_tokens": cache_hit_tokens,
+            "cache_miss_tokens": cache_miss_tokens,
+        }
         with self._lock:
-            slots = [self._by_tier.setdefault(tier, dict.fromkeys(_USAGE_FIELDS, 0))]
-            if stage:
-                slots.append(self._by_stage.setdefault(stage, dict.fromkeys(_USAGE_FIELDS, 0)))
-            for slot in slots:
+            self._totals["calls"] += 1
+            for field in _TOKEN_DELTAS:
+                self._totals[field] += token_values[field]
+            slot = self._by_agent.setdefault(agent, _slot(_AGENT_FIELDS))
+            slot["calls"] += 1
+            for field in _TOKEN_DELTAS:
+                slot[field] += token_values[field]
+            slot["reasoning_tokens"] += reasoning_tokens
+            slot = self._by_operation.setdefault(operation, _slot(_AGENT_FIELDS))
+            slot["calls"] += 1
+            for field in _TOKEN_DELTAS:
+                slot[field] += token_values[field]
+            slot["reasoning_tokens"] += reasoning_tokens
+            if provider:
+                slot = self._by_provider.setdefault(provider, _slot(_PROVIDER_FIELDS))
                 slot["calls"] += 1
-                slot["prompt_tokens"] += prompt_tokens
-                slot["completion_tokens"] += completion_tokens
-                slot["total_tokens"] += total_tokens
-                slot["cache_hit_tokens"] += cache_hit_tokens
-                slot["cache_miss_tokens"] += cache_miss_tokens
-            if operation:
-                operation_slot = self._op_slot_locked(operation)
-                operation_slot["calls"] += 1
-                operation_slot["prompt_tokens"] += prompt_tokens
-                operation_slot["completion_tokens"] += completion_tokens
-                operation_slot["total_tokens"] += total_tokens
-                operation_slot["cache_hit_tokens"] += cache_hit_tokens
-                operation_slot["cache_miss_tokens"] += cache_miss_tokens
-                operation_slot["reasoning_tokens"] += reasoning_tokens
+                for field in _TOKEN_DELTAS:
+                    slot[field] += token_values[field]
+            if model_ref is not None:
+                slot = self._by_model.setdefault(model_ref.full_name, _slot(_MODEL_FIELDS))
+                slot["calls"] += 1
+                for field in _TOKEN_DELTAS:
+                    slot[field] += token_values[field]
+            if stage:
+                slot = self._by_stage.setdefault(stage, _slot(_USAGE_FIELDS))
+                slot["calls"] += 1
+                for field in _TOKEN_DELTAS:
+                    slot[field] += token_values[field]
 
-    def record_attempt(self, operation: str | None) -> None:
-        if not operation:
-            return
+    # ── 逻辑调用 / 结果 / 降级（by_agent 与 by_operation 同时计入）────────
+    def record_logical_call(self, agent: str, operation: str, elapsed_ms: float) -> None:
         with self._lock:
-            self._op_slot_locked(operation)["attempts"] += 1
-
-    def record_attempt_failed(self, operation: str | None) -> None:
-        if not operation:
-            return
-        with self._lock:
-            self._op_slot_locked(operation)["failed_attempts"] += 1
-
-    def record_logical_call(self, operation: str | None, elapsed_ms: float) -> None:
-        if not operation:
-            return
-        with self._lock:
-            slot = self._op_slot_locked(operation)
+            slot = self._by_agent.setdefault(agent, _slot(_AGENT_FIELDS))
+            slot["logical_calls"] += 1
+            slot["elapsed_ms"] += int(round(elapsed_ms))
+            slot = self._by_operation.setdefault(operation, _slot(_AGENT_FIELDS))
             slot["logical_calls"] += 1
             slot["elapsed_ms"] += int(round(elapsed_ms))
 
-    def record_outcome(self, operation: str | None, *, accepted: bool) -> None:
-        if not operation:
-            return
+    def record_outcome(self, agent: str, operation: str, *, accepted: bool) -> None:
         with self._lock:
-            self._op_slot_locked(operation)["accepted" if accepted else "rejected"] += 1
+            self._by_agent.setdefault(agent, _slot(_AGENT_FIELDS))[
+                "accepted" if accepted else "rejected"
+            ] += 1
+            self._by_operation.setdefault(operation, _slot(_AGENT_FIELDS))[
+                "accepted" if accepted else "rejected"
+            ] += 1
+
+    def record_fallback(self, agent: str, operation: str) -> None:
+        with self._lock:
+            self._by_agent.setdefault(agent, _slot(_AGENT_FIELDS))["fallbacks"] += 1
+            self._by_operation.setdefault(operation, _slot(_AGENT_FIELDS))["fallbacks"] += 1
 
     def summary(self) -> dict[str, Any]:
         with self._lock:
-            by_tier = {name: dict(values) for name, values in self._by_tier.items()}
-            by_stage = {name: dict(values) for name, values in self._by_stage.items()}
+            by_agent = {name: dict(values) for name, values in self._by_agent.items()}
             by_operation = {name: dict(values) for name, values in self._by_operation.items()}
-        return _usage_summary_from_parts(by_tier, by_stage, by_operation)
+            by_provider = {name: dict(values) for name, values in self._by_provider.items()}
+            by_model = {name: dict(values) for name, values in self._by_model.items()}
+            by_stage = {name: dict(values) for name, values in self._by_stage.items()}
+            totals = dict(self._totals)
+        return _usage_summary_from_parts(
+            by_agent=by_agent,
+            by_operation=by_operation,
+            by_provider=by_provider,
+            by_model=by_model,
+            by_stage=by_stage,
+            totals=totals,
+        )

@@ -8,6 +8,7 @@ import re
 import time
 import unittest
 
+from tests.fake_llm import fake_llm_dict
 from trans_novel.agents.namer import CastNamer
 from trans_novel.config import Config
 from trans_novel.glossary.miner import Candidate
@@ -21,10 +22,7 @@ def _cfg() -> Config:
     return Config.from_dict(
         {
             "language": {"source": "en", "target": "zh"},
-            "llm": {
-                "provider": "fake",
-                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-            },
+            "llm": fake_llm_dict(),
         }
     )
 
@@ -46,7 +44,7 @@ class TestCastNamerConcurrency(unittest.TestCase):
         return CastNamer(FakeClient(handler=handler), _cfg())
 
     @staticmethod
-    def _one_term_per_group(messages, tier, json_mode):
+    def _one_term_per_group(messages, agent, operation, json_mode):
         """每组回一个 source=该组候选 surface、target=译<i> 的术语。"""
         i = int(_surface_of(messages[1]["content"])[4:])
         return json.dumps({"terms": [{"source": f"SURF{i}", "target": f"译{i}", "type": "术语"}]})
@@ -54,10 +52,10 @@ class TestCastNamerConcurrency(unittest.TestCase):
     def test_parallel_output_ordered_by_input_group(self):
         """乱序完成下仍按输入组序合并：让先提交的组睡得更久（完成顺序反转）。"""
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             i = int(_surface_of(messages[1]["content"])[4:])
             time.sleep((self.N - i) * 0.02)  # SURF0 最后完成
-            return self._one_term_per_group(messages, tier, json_mode)
+            return self._one_term_per_group(messages, agent, operation, json_mode)
 
         out = self._namer(handler).name_terms(
             _candidates(self.N), "brief", ["d1"], concurrency=self.N
@@ -93,10 +91,10 @@ class TestCastNamerConcurrency(unittest.TestCase):
     def test_single_group_failure_propagates(self):
         """一组抛异常 → name_terms 整体冒泡（交 orchestrator 放弃落 term_mining_done）。"""
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             if _surface_of(messages[1]["content"]) == "SURF2":
-                raise ValueError("strong tier boom")
-            return self._one_term_per_group(messages, tier, json_mode)
+                raise ValueError("routed model boom")
+            return self._one_term_per_group(messages, agent, operation, json_mode)
 
         with self.assertRaises(ValueError):
             self._namer(handler).name_terms(_candidates(self.N), "brief", ["d1"], concurrency=2)

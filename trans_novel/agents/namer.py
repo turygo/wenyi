@@ -1,4 +1,4 @@
-"""全书一次性定名 Agent（强档）。
+"""全书一次性定名 Agent。
 
 源文侧挖出候选（见 glossary/miner.py）后，一次性裁定全书统一译名——取代译后
 逐批抽取，避免把首译直译固化成铁律、避免普通名词/一次性修辞污染术语库。
@@ -16,7 +16,7 @@ from ..glossary.store import TYPE_PERSON, GlossaryTerm
 from . import prompts
 from .base import Agent
 
-# 候选分组的字符预算：组内一次强档调用，量级参考 agents/synopsis.py 的 _REDUCE_BUDGET。
+# 候选分组的字符预算：组内一次模型调用，量级参考 agents/synopsis.py 的 _REDUCE_BUDGET。
 _GROUP_CHAR_BUDGET = 6000
 
 
@@ -41,7 +41,7 @@ class CastNamer(Agent):
         concurrency: int = 1,
         on_progress: Callable[[int, int], None] | None = None,
     ) -> list[GlossaryTerm]:
-        """给候选定唯一中文译名 + type/gender/note；候选按字符预算分组，每组一次强档
+        """给候选定唯一中文译名 + type/gender/note；候选按字符预算分组，每组一次模型
         调用，组间独立无 reduce（候选已按 surface 去重，组间不会互相冲突）。
 
         existing：已入库条目（analyzer.seed_glossary 的样章种入等），渲染进 prompt
@@ -105,10 +105,10 @@ class CastNamer(Agent):
             digests=digest_text or "（无）",
             candidates=_render_candidates(group),
         )
-        # 不设 default：一次强档失败若被兜成空列表，term_mining_done 会静默永久落盘，
+        # 不设 default：一次模型调用失败若被兜成空列表，term_mining_done 会静默永久落盘，
         # 续跑再也不重试——异常整体冒泡，交由 orchestrator 捕获并放弃本次落标记。
         raw = self._ask_json(
-            system, user, tier="strong", key="terms", operation="prescan.name_terms"
+            system, user, key="terms", agent="analyst", operation="prescan.name_terms"
         )
         out: list[GlossaryTerm] = []
         for d in self.dict_items(raw):

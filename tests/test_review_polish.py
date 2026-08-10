@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 
+from tests.fake_llm import fake_llm_dict
 from trans_novel.agents.polisher import Polisher
 from trans_novel.agents.reviewer import BackTranslator, Reviewer, ReviewOutputError
 from trans_novel.config import Config
@@ -15,10 +16,7 @@ def _cfg():
     return Config.from_dict(
         {
             "language": {"source": "ja", "target": "zh"},
-            "llm": {
-                "provider": "fake",
-                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-            },
+            "llm": fake_llm_dict(),
         }
     )
 
@@ -43,14 +41,15 @@ class TestReviewer(unittest.TestCase):
             "reviewed_segments": 2,
             "complete": True,
         }
-        client = FakeClient(handler=lambda m, t, j: json.dumps(issues, ensure_ascii=False))
+        client = FakeClient(handler=lambda m, a, o, j: json.dumps(issues, ensure_ascii=False))
         r = Reviewer(client, _cfg())
         out = r.review(["あ", "い"], ["甲", "乙"])
         self.assertEqual(len(out), 2)
-        self.assertEqual(client.calls[-1]["tier"], "cheap")  # 审校走廉价档
+        self.assertEqual(client.calls[-1]["operation"], "review.chapter")  # 审校 operation
+        self.assertEqual(client.calls[-1]["agent"], "reviewer")  # 审校 Agent 路由
 
     def _review_with(self, payload):
-        client = FakeClient(handler=lambda m, t, j: json.dumps(payload, ensure_ascii=False))
+        client = FakeClient(handler=lambda m, a, o, j: json.dumps(payload, ensure_ascii=False))
         return Reviewer(client, _cfg())
 
     def test_review_rejects_invalid_outer_schema(self):
@@ -94,12 +93,12 @@ class TestReviewer(unittest.TestCase):
         self.assertEqual(reviewer.review(["あ", "い"], ["甲", "乙"]), [])
 
     def test_review_rejects_malformed_json(self):
-        client = FakeClient(handler=lambda m, t, j: '{"issues":[')
+        client = FakeClient(handler=lambda m, a, o, j: '{"issues":[')
         with self.assertRaises(ReviewOutputError):
             Reviewer(client, _cfg()).review(["あ", "い"], ["甲", "乙"])
 
     def test_review_propagates_provider_exception(self):
-        def boom(messages, tier, json_mode):
+        def boom(messages, agent, operation, json_mode):
             raise RuntimeError("provider down")
 
         with self.assertRaisesRegex(RuntimeError, "provider down"):
@@ -109,18 +108,19 @@ class TestReviewer(unittest.TestCase):
 class TestPolisher(unittest.TestCase):
     def test_polish_ok(self):
         client = FakeClient(
-            handler=lambda m, t, j: json.dumps(
+            handler=lambda m, a, o, j: json.dumps(
                 {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False
             )
         )
         p = Polisher(client, _cfg())
         out = p.polish(["甲", "乙"], ["a", "b"])
         self.assertEqual(out, ["润色甲", "润色乙"])
-        self.assertEqual(client.calls[-1]["tier"], "strong")
+        self.assertEqual(client.calls[-1]["operation"], "polish.batch")
+        self.assertEqual(client.calls[-1]["agent"], "editor")
 
     def test_polish_mismatch_keeps_original(self):
         client = FakeClient(
-            handler=lambda m, t, j: json.dumps({"polished": ["只有一段"]}, ensure_ascii=False)
+            handler=lambda m, a, o, j: json.dumps({"polished": ["只有一段"]}, ensure_ascii=False)
         )
         p = Polisher(client, _cfg())
         out = p.polish(["甲", "乙"], ["a", "b"])
@@ -129,7 +129,7 @@ class TestPolisher(unittest.TestCase):
     def test_polish_prompt_includes_source_for_fidelity(self):
         # 契约：润色必须把源文作为忠实度参照注入 prompt，且落在【源文对照】块内。
         client = FakeClient(
-            handler=lambda m, t, j: json.dumps(
+            handler=lambda m, a, o, j: json.dumps(
                 {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False
             )
         )
@@ -154,7 +154,7 @@ class TestPolisher(unittest.TestCase):
 
 class TestBackTranslator(unittest.TestCase):
     def test_check(self):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             system = messages[0]["content"]
             if "回译译者" in system:
                 return json.dumps({"backtranslations": ["あ", "い"]}, ensure_ascii=False)

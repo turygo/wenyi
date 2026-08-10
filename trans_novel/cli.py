@@ -200,7 +200,7 @@ def _print_back_matter(report: dict) -> None:
 
 
 def _print_usage(report: dict) -> None:
-    """打印本书累计 token 用量与分档缓存命中率（无数据时静默跳过）。"""
+    """打印本书累计 token 用量与分 Agent 缓存命中率（无数据时静默跳过）。"""
     usage = report.get("usage") or {}
     totals = usage.get("totals") or {}
     if not totals.get("total_tokens"):
@@ -211,9 +211,11 @@ def _print_usage(report: dict) -> None:
         f"缓存命中率 {totals.get('cache_hit_rate', 0.0):.1%}"
         f"（命中 {totals['cache_hit_tokens']:,} / 未命中 {totals['cache_miss_tokens']:,} tok）"
     )
-    for tier, v in sorted(usage.get("by_tier", {}).items()):
+    for agent, v in sorted(
+        usage.get("by_agent", {}).items(), key=lambda kv: -kv[1]["total_tokens"]
+    ):
         console.print(
-            f"  · {tier}：{v['total_tokens']:,} tok，{v['calls']} 次调用，"
+            f"  · {agent}：{v['total_tokens']:,} tok，{v['calls']} 次调用，"
             f"缓存命中率 {v['cache_hit_rate']:.1%}"
         )
     stages = usage.get("by_stage") or {}

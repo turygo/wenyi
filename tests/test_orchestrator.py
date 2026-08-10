@@ -10,7 +10,7 @@ import threading
 import time
 import unittest
 
-from tests.fake_llm import routing_handler
+from tests.fake_llm import fake_llm_dict, routing_handler
 from tests.sample_data import (
     write_grouped_nav_epub,
     write_nested_toc_epub,
@@ -40,10 +40,7 @@ def _config(state_dir: str):
     return Config.from_dict(
         {
             "language": {"source": "ja", "target": "zh"},
-            "llm": {
-                "provider": "fake",
-                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-            },
+            "llm": fake_llm_dict(),
             "segment": {"max_chars_per_batch": 1800},
             "pipeline": {
                 "review": True,
@@ -61,10 +58,7 @@ def _epub_config(state_dir: str):
     return Config.from_dict(
         {
             "language": {"source": "en", "target": "zh"},
-            "llm": {
-                "provider": "fake",
-                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-            },
+            "llm": fake_llm_dict(),
             "segment": {"max_chars_per_batch": 1800},
             "pipeline": {
                 "review": True,
@@ -88,7 +82,7 @@ class TestOrchestrator(unittest.TestCase):
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
 
-            def fail_analysis(messages, tier, json_mode):
+            def fail_analysis(messages, agent, operation, json_mode):
                 raise RuntimeError("temporary model failure")
 
             with self.assertRaisesRegex(RuntimeError, "temporary model failure"):
@@ -182,7 +176,7 @@ class TestSegmentLevelResume(unittest.TestCase):
         用原文长度补齐译文（填充字符），避免触发新增确定性 lint 的 too_short
         判定——本类只测续跑/段级幂等，不是 lint 的测试范围。"""
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             if "文学翻译" in messages[0]["content"]:
                 user = messages[-1]["content"]
                 pairs = re.findall(r"^\[(\d+)\] (.*)$", user, re.M)
@@ -191,7 +185,7 @@ class TestSegmentLevelResume(unittest.TestCase):
                     base = f"{tag}译{i}"
                     out.append(base + "文" * max(0, len(src) - len(base)))
                 return json.dumps({"translations": out}, ensure_ascii=False)
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         return handler
 
@@ -376,10 +370,10 @@ class TestTermMiningRobustness(unittest.TestCase):
     def test_naming_failure_does_not_set_flag_and_retries_on_resume(self):
         """一次强档定名异常：term_mining_done 不落盘，不静默永久跳过；续跑重试并成功。"""
 
-        def failing_handler(messages, tier, json_mode):
+        def failing_handler(messages, agent, operation, json_mode):
             if "全书定名" in messages[0]["content"]:
-                raise RuntimeError("strong tier timeout")
-            return routing_handler(messages, tier, json_mode)
+                raise RuntimeError("routed model timeout")
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -581,10 +575,12 @@ class TestTitleReuse(unittest.TestCase):
 
             captured = {}
 
-            def handler(messages, tier, json_mode):
+            def handler(messages, agent, operation, json_mode):
                 if "标题翻译" in messages[0]["content"]:
                     captured["user"] = messages[-1]["content"]
-                return routing_handler(messages, tier, json_mode)
+                    captured["agent"] = agent
+                    captured["operation"] = operation
+                return routing_handler(messages, agent, operation, json_mode)
 
             glossary = GlossaryStore(store.glossary_path)
             client2 = FakeClient(handler=handler)
@@ -592,6 +588,8 @@ class TestTitleReuse(unittest.TestCase):
             glossary.close()
 
             self.assertIn("user", captured)
+            self.assertEqual(captured["agent"], "translator")
+            self.assertEqual(captured["operation"], "title.translate")
             self.assertIn("【全书概览】", captured["user"])
             # 只有章0 + toc 条目共 2 条进入 LLM 列表（章1 已复用，不重复发送）
             self.assertEqual(len(re.findall(r"^\[(\d+)\]", captured["user"], re.M)), 2)
@@ -762,10 +760,10 @@ class TestEpubTitleTranslation(unittest.TestCase):
 
             captured = {}
 
-            def handler(messages, tier, json_mode):
+            def handler(messages, agent, operation, json_mode):
                 if "标题翻译" in messages[0]["content"]:
                     captured["user"] = messages[-1]["content"]
-                return routing_handler(messages, tier, json_mode)
+                return routing_handler(messages, agent, operation, json_mode)
 
             glossary = GlossaryStore(store.glossary_path)
             Orchestrator(cfg, client=FakeClient(handler=handler))._translate_titles(store, glossary)
@@ -810,7 +808,7 @@ class TestReviewReporting(unittest.TestCase):
     def _handler(self, fix_text):
         """审校每块报 index 0 漏译；带审校意见的定向重译调用返回定向重译文。"""
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             sys = messages[0]["content"]
             user = messages[-1]["content"]
             if "译文审校" in sys:
@@ -832,7 +830,7 @@ class TestReviewReporting(unittest.TestCase):
                 )
             if "文学翻译" in sys and "审校意见" in user:
                 return json.dumps({"translations": [fix_text]}, ensure_ascii=False)
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         return handler
 
@@ -886,7 +884,7 @@ class TestReviewReporting(unittest.TestCase):
     def test_review_index_mapping(self):
         """整章多块审校时，块内 index 正确映射回章内段号。"""
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             user = messages[-1]["content"]
             if "译文审校" in messages[0]["content"]:
                 n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
@@ -905,7 +903,7 @@ class TestReviewReporting(unittest.TestCase):
                     },
                     ensure_ascii=False,
                 )
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -922,7 +920,7 @@ class TestReviewReporting(unittest.TestCase):
             self.assertEqual(idxs, list(range(len(ch.text_segments))))
 
     def test_review_accepts_numeric_string_index(self):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             user = messages[-1]["content"]
             if "译文审校" in messages[0]["content"]:
                 n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
@@ -941,7 +939,7 @@ class TestReviewReporting(unittest.TestCase):
                     },
                     ensure_ascii=False,
                 )
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -956,7 +954,7 @@ class TestReviewReporting(unittest.TestCase):
             self.assertEqual(issues[0]["index"], 0)
 
     def test_review_rejects_invalid_index_and_keeps_pending(self):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             user = messages[-1]["content"]
             if "译文审校" in messages[0]["content"]:
                 n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
@@ -975,7 +973,7 @@ class TestReviewReporting(unittest.TestCase):
                     },
                     ensure_ascii=False,
                 )
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -1136,7 +1134,7 @@ class TestGlossaryScope(unittest.TestCase):
     def test_batch_glossary_refreshes_following_prompts(self):
         """批次翻译后实时抽取术语，后续批次 prompt 立即带上新称谓。"""
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
             if "文学翻译" in system:
@@ -1164,7 +1162,7 @@ class TestGlossaryScope(unittest.TestCase):
                     },
                     ensure_ascii=False,
                 )
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -1194,7 +1192,7 @@ class TestGlossaryScope(unittest.TestCase):
     def test_chapter_glossary_refreshes_review_prompt(self):
         """全章兜底术语抽取在 review 前执行，章末审校能看到新称谓。"""
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
             if "文学翻译" in system:
@@ -1224,7 +1222,7 @@ class TestGlossaryScope(unittest.TestCase):
                     {"issues": [], "reviewed_segments": n, "complete": True},
                     ensure_ascii=False,
                 )
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -1278,7 +1276,7 @@ class TestNaturalizePipeline(unittest.TestCase):
     NATURALIZE_MARKERS = ("书稿的母语审读编辑", "改写编辑", "两个版本", "双语翻译审核员")
 
     @staticmethod
-    def _naturalize_handler(messages, tier, json_mode):
+    def _naturalize_handler(messages, agent, operation, json_mode):
         system = messages[0]["content"]
         user = messages[-1]["content"]
         if "书稿的母语审读编辑" in system:
@@ -1293,7 +1291,7 @@ class TestNaturalizePipeline(unittest.TestCase):
             m = re.search(r"【版本 A】\n(.*?)\n\n【版本 B】\n(.*?)\n\n请判断", user, re.S)
             winner = "A" if "更自然" in m.group(1) else "B"
             return json.dumps({"winner": winner}, ensure_ascii=False)
-        return routing_handler(messages, tier, json_mode)
+        return routing_handler(messages, agent, operation, json_mode)
 
     def _naturalize_calls(self, calls):
         return [
@@ -1366,40 +1364,113 @@ class TestNaturalizePipeline(unittest.TestCase):
             )
 
 
-class TestTierRouting(unittest.TestCase):
-    def test_task_tiers(self):
-        """机械任务走 fast 档、判断类走 cheap、翻译走 strong；梗概带 max_tokens 上限。"""
+class TestOperationRouting(unittest.TestCase):
+    def test_task_operations(self):
+        """每个生产 LLM 调用都带稳定 operation（内部业务标签）与 agent（功能路由键）；
+        梗概带 max_tokens 上限。
+
+        翻译类三个 operation（translate.batch / translate.lint_fix / translate.review_fix）
+        共用同一系统前缀「文学翻译」，不能依据共享 marker 做一一映射；这里根据
+        用户 prompt 模板的结构逐一精确判定，并分别覆盖三条路由。
+        """
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
             cfg.pipeline.backtranslate_sample = 1.0  # 强制触发回译
 
-            client = FakeClient(handler=routing_handler)
+            def handler(messages, agent, operation, json_mode):
+                # 审校报一个严重项（missing，默认 autofix_severe=True），
+                # 驱动章末 _autofix_severe → translate.review_fix 路由。
+                if "译文审校" in messages[0]["content"]:
+                    n = len(re.findall(r"^\[(\d+)\]", messages[-1]["content"], re.M))
+                    return json.dumps(
+                        {
+                            "issues": [
+                                {
+                                    "index": 0,
+                                    "type": "missing",
+                                    "detail": "漏译",
+                                    "suggestion": "补充全文",
+                                }
+                            ],
+                            "reviewed_segments": n,
+                            "complete": True,
+                        },
+                        ensure_ascii=False,
+                    )
+                return routing_handler(messages, agent, operation, json_mode)
+
+            client = FakeClient(handler=handler)
             Orchestrator(cfg, client=client).run(txt)
 
             expect = {
-                "章节梗概员": "fast",
-                "全书概览员": "fast",
-                "术语候选挖掘": "fast",
-                "全书定名": "strong",
-                "回译译者": "fast",
-                "译文审校": "cheap",
-                "保真度": "cheap",
-                "文学翻译": "strong",
+                "章节梗概员": "prescan.digest",
+                "全书概览员": "prescan.book_synopsis",
+                "术语候选挖掘": "prescan.term_mine",
+                "全书定名": "prescan.name_terms",
+                "回译译者": "backtranslate.translate",
+                "译文审校": "review.chapter",
+                "保真度": "backtranslate.check",
+                "中文润色编辑": "polish.batch",
+                "中文书稿的母语审读编辑": "naturalize.screen",
+            }
+            expect_agent = {
+                "章节梗概员": "preparer",
+                "全书概览员": "preparer",
+                "术语候选挖掘": "preparer",
+                "全书定名": "analyst",
+                "回译译者": "light-translator",
+                "译文审校": "reviewer",
+                "保真度": "reviewer",
+                "中文润色编辑": "editor",
+                "中文书稿的母语审读编辑": "reviewer",
             }
             seen = set()
+            translator_calls = []
             for c in client.calls:
                 system = c["messages"][0]["content"]
-                for marker, tier in expect.items():
+                if "文学翻译" in system:
+                    self.assertEqual(c["agent"], "translator", "翻译调用固定走 translator Agent")
+                    translator_calls.append(c)
+                    continue
+                for marker, operation in expect.items():
                     if marker in system:
-                        self.assertEqual(c["tier"], tier, f"{marker} 应走 {tier} 档")
+                        self.assertEqual(c["operation"], operation, f"{marker} 应走 {operation}")
+                        self.assertEqual(
+                            c["agent"],
+                            expect_agent[marker],
+                            f"{marker} 应走 {expect_agent[marker]}",
+                        )
                         seen.add(marker)
                         if marker == "章节梗概员":
                             self.assertEqual(c["max_tokens"], 600)
                         if marker == "全书概览员":
                             self.assertEqual(c["max_tokens"], 1200)
             self.assertEqual(seen, set(expect), "各类调用都应出现")
+
+            # 翻译类：按可观察的用户 prompt 模板区分三条路由（系统前缀共享，不可作键）。
+            # 批译模板含「请翻译以上每一段」；定向重译模板必有「重译」；其中仅章末严重项
+            # 自动重译（_autofix_severe）把反馈拼成「…（建议：…）」，据此区分 lint/review 修复。
+            routes = {"translate.batch": 0, "translate.lint_fix": 0, "translate.review_fix": 0}
+            for c in translator_calls:
+                user = c["messages"][-1]["content"]
+                if "请翻译以上每一段" in user:
+                    expected = "translate.batch"
+                else:
+                    self.assertIn("重译", user, "翻译调用须命中批译或定向重译模板之一")
+                    expected = (
+                        "translate.review_fix" if "（建议：" in user else "translate.lint_fix"
+                    )
+                self.assertEqual(c["operation"], expected, f"{expected} 被错误标注")
+                routes[expected] += 1
+            self.assertGreater(routes["translate.batch"], 0, "普通批翻译必须走 translate.batch")
+            self.assertGreater(
+                routes["translate.lint_fix"], 0, "lint 修复必须走 translate.lint_fix"
+            )
+            self.assertGreater(
+                routes["translate.review_fix"], 0, "review 修复必须走 translate.review_fix"
+            )
 
 
 class TestLangNormalize(unittest.TestCase):
@@ -1510,7 +1581,7 @@ class TestReviewAsync(unittest.TestCase):
     并发 chapter_reviewed 事件；review worker 出错不得中断 run。"""
 
     @staticmethod
-    def _issue_handler(messages, tier, json_mode):
+    def _issue_handler(messages, agent, operation, json_mode):
         # 无共享可变状态：每次调用构造新 dict，可被线程池并发调用
         if "译文审校" in messages[0]["content"]:
             user = messages[-1]["content"]
@@ -1530,7 +1601,7 @@ class TestReviewAsync(unittest.TestCase):
                 },
                 ensure_ascii=False,
             )
-        return routing_handler(messages, tier, json_mode)
+        return routing_handler(messages, agent, operation, json_mode)
 
     def test_async_review_issues_persisted_before_run_returns(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1681,7 +1752,7 @@ class TestReviewAsync(unittest.TestCase):
 
 class TestReviewRecovery(unittest.TestCase):
     def test_malformed_multi_segment_chunk_splits_and_maps_indexes(self):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             user = messages[-1]["content"]
             n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
             if n > 1:
@@ -1720,7 +1791,7 @@ class TestReviewRecovery(unittest.TestCase):
     def test_singleton_retries_after_protocol_error(self):
         calls = 0
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -1745,7 +1816,7 @@ class TestReviewRecovery(unittest.TestCase):
     def test_singleton_exhaustion_raises_after_bounded_attempts(self):
         calls = 0
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             nonlocal calls
             calls += 1
             return '{"issues":['
@@ -1763,7 +1834,7 @@ class TestReviewRecovery(unittest.TestCase):
     def test_provider_exception_propagates_without_retry(self):
         calls = 0
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             nonlocal calls
             calls += 1
             raise RuntimeError("provider down")
@@ -1792,7 +1863,7 @@ class TestReviewChunkConcurrency(unittest.TestCase):
         completion_order: list[int] = []
         chunk0_done = threading.Event()
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             user = messages[-1]["content"]
             m = re.search(r"MARK(\d+)", user)
             assert m, "chunk marker missing from review prompt"
@@ -1863,7 +1934,7 @@ class TestReviewChunkConcurrency(unittest.TestCase):
         current = 0
         lock = threading.Lock()
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             nonlocal max_concurrent, current
             if "译文审校" in messages[0]["content"]:
                 with lock:
@@ -1878,7 +1949,7 @@ class TestReviewChunkConcurrency(unittest.TestCase):
                     {"issues": [], "reviewed_segments": n, "complete": True},
                     ensure_ascii=False,
                 )
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -1907,7 +1978,7 @@ class TestPrescanOverlap(unittest.TestCase):
             mining_reached = threading.Event()
             overlapped = threading.Event()
 
-            def handler(messages, tier, json_mode):
+            def handler(messages, agent, operation, json_mode):
                 system = messages[0]["content"]
                 if "梗概员" in system:
                     digest_reached.set()
@@ -1919,7 +1990,7 @@ class TestPrescanOverlap(unittest.TestCase):
                     if digest_reached.wait(timeout=2):
                         overlapped.set()
                     return json.dumps({"candidates": ["堀北"]}, ensure_ascii=False)
-                return routing_handler(messages, tier, json_mode)
+                return routing_handler(messages, agent, operation, json_mode)
 
             store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
 
@@ -1940,7 +2011,7 @@ class TestPrescanOverlap(unittest.TestCase):
             mining_finished_at: list[float] = []
             naming_started_at: list[float] = []
 
-            def handler(messages, tier, json_mode):
+            def handler(messages, agent, operation, json_mode):
                 system = messages[0]["content"]
                 if "术语候选挖掘" in system:
                     time.sleep(0.1)  # 故意拖慢挖掘分支
@@ -1950,7 +2021,7 @@ class TestPrescanOverlap(unittest.TestCase):
                 if "全书定名" in system:
                     with lock:
                         naming_started_at.append(time.monotonic())
-                return routing_handler(messages, tier, json_mode)
+                return routing_handler(messages, agent, operation, json_mode)
 
             store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
 
@@ -2009,7 +2080,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
     def test_polish_batch_rejected_when_introduces_new_lint_issue(self):
         src = "「おはようございます」と彼は静かな声で言った。"
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             sys = messages[0]["content"]
             user = messages[-1]["content"]
             if "文学翻译" in sys:
@@ -2023,7 +2094,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
                 return json.dumps(
                     {"polished": ["早上好他轻声说道" for _ in range(n)]}, ensure_ascii=False
                 )
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -2042,7 +2113,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
     def test_lint_fix_accepted_when_retranslation_reduces_issues(self):
         src = "「おはようございます」と彼は静かな声で言った。窓の外には青い空が広がっていた。"
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             sys = messages[0]["content"]
             user = messages[-1]["content"]
             if "文学翻译" in sys:
@@ -2052,7 +2123,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
                 else:
                     out = ["早上好他轻声说道窗外是一片蔚蓝的天空" for _ in range(n)]
                 return json.dumps({"translations": out}, ensure_ascii=False)
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -2074,7 +2145,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
         FIX_TEXT = "第一章 邂逅"  # 7 字，比值 1.0，通过长度校验 → accepted
 
         def handler(fix_text):
-            def h(messages, tier, json_mode):
+            def h(messages, agent, operation, json_mode):
                 sys = messages[0]["content"]
                 user = messages[-1]["content"]
                 if "译文审校" in sys:
@@ -2096,7 +2167,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
                     )
                 if "文学翻译" in sys and "审校意见" in user:
                     return json.dumps({"translations": [fix_text]}, ensure_ascii=False)
-                return routing_handler(messages, tier, json_mode)
+                return routing_handler(messages, agent, operation, json_mode)
 
             return h
 
@@ -2149,10 +2220,10 @@ class TestPolishFailureFallback(unittest.TestCase):
         """润色调用失败（handler 抛异常）：该批最终 target 回退为未润色译文
         （经标点规范化），run() 正常完成，无 pending_polish 残留。"""
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             if "中文润色编辑" in messages[0]["content"]:
                 raise RuntimeError("润色模型宕机")
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -2185,7 +2256,7 @@ class TestLintQuoteRefix(unittest.TestCase):
             f.write(f"# 第一章\n\n{self.SRC}\n")
 
     @staticmethod
-    def _handler(messages, tier, json_mode):
+    def _handler(messages, agent, operation, json_mode):
         sys = messages[0]["content"]
         user = messages[-1]["content"]
         if "文学翻译" in sys:
@@ -2197,7 +2268,7 @@ class TestLintQuoteRefix(unittest.TestCase):
                 # 首译：丢引号（触发 quote_loss）
                 out = ["早上好他轻声说道窗外是一片蔚蓝的天空" for _ in range(n)]
             return json.dumps({"translations": out}, ensure_ascii=False)
-        return routing_handler(messages, tier, json_mode)
+        return routing_handler(messages, agent, operation, json_mode)
 
     def test_quote_loss_caught_and_refixed(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2242,7 +2313,7 @@ class TestPolishQuoteRejection(unittest.TestCase):
             f.write(f"# 第一章\n\n{self.SRC}\n")
 
     @staticmethod
-    def _handler(messages, tier, json_mode):
+    def _handler(messages, agent, operation, json_mode):
         sys = messages[0]["content"]
         user = messages[-1]["content"]
         if "文学翻译" in sys:
@@ -2257,7 +2328,7 @@ class TestPolishQuoteRejection(unittest.TestCase):
             return json.dumps(
                 {"polished": ["早上好他轻声说道" for _ in range(n)]}, ensure_ascii=False
             )
-        return routing_handler(messages, tier, json_mode)
+        return routing_handler(messages, agent, operation, json_mode)
 
     def test_polish_stripping_quotes_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2302,13 +2373,13 @@ class TestLintTooShortReportOnly(unittest.TestCase):
             f.write(f"# Chapter One\n\n{self.SRC}\n")
 
     @staticmethod
-    def _handler(messages, tier, json_mode):
+    def _handler(messages, agent, operation, json_mode):
         sys = messages[0]["content"]
         user = messages[-1]["content"]
         if "文学翻译" in sys:
             n = len(re.findall(r"^\[(\d+)\] ", user, re.M))
             return json.dumps({"translations": ["short" for _ in range(n)]}, ensure_ascii=False)
-        return routing_handler(messages, tier, json_mode)
+        return routing_handler(messages, agent, operation, json_mode)
 
     def test_too_short_reported_but_not_retranslated(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2317,10 +2388,7 @@ class TestLintTooShortReportOnly(unittest.TestCase):
             cfg = Config.from_dict(
                 {
                     "language": {"source": "en", "target": "zh"},
-                    "llm": {
-                        "provider": "fake",
-                        "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-                    },
+                    "llm": fake_llm_dict(),
                     "segment": {"max_chars_per_batch": 1800},
                     "pipeline": {
                         "review": False,
@@ -2369,7 +2437,7 @@ class TestLintSkipBranchRecordsIssue(unittest.TestCase):
             f.write(f"# 第一章\n\n{self.SRC}\n")
 
     @staticmethod
-    def _handler(messages, tier, json_mode):
+    def _handler(messages, agent, operation, json_mode):
         sys = messages[0]["content"]
         user = messages[-1]["content"]
         if "文学翻译" in sys:
@@ -2378,7 +2446,7 @@ class TestLintSkipBranchRecordsIssue(unittest.TestCase):
             return json.dumps(
                 {"translations": ["早上好他说道" for _ in range(n)]}, ensure_ascii=False
             )
-        return routing_handler(messages, tier, json_mode)
+        return routing_handler(messages, agent, operation, json_mode)
 
     def test_skip_branch_relints_without_retranslating(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2492,7 +2560,7 @@ class TestLintFixMerged(unittest.TestCase):
             f.write(f"# 第一章\n\n{self.SRC}")
 
     def _handler(self, fix_calls):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             sys = messages[0]["content"]
             user = messages[-1]["content"]
             if "文学翻译" in sys:
@@ -2507,7 +2575,7 @@ class TestLintFixMerged(unittest.TestCase):
                 return json.dumps(
                     {"translations": [f"首译{i}丢引号" for i in range(n)]}, ensure_ascii=False
                 )
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         return handler
 
@@ -2573,7 +2641,7 @@ class TestLintFixMergeFallback(unittest.TestCase):
             f.write(f"# 第一章\n\n{self.SRC}")
 
     def _handler(self, fix_calls):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             sys = messages[0]["content"]
             user = messages[-1]["content"]
             if "文学翻译" in sys:
@@ -2592,7 +2660,7 @@ class TestLintFixMergeFallback(unittest.TestCase):
                 return json.dumps(
                     {"translations": [f"首译{i}丢引号" for i in range(n)]}, ensure_ascii=False
                 )
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         return handler
 
@@ -2681,10 +2749,10 @@ class TestTitleTermTrim(unittest.TestCase):
 
         captured = {}
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             if "标题翻译" in messages[0]["content"]:
                 captured["user"] = messages[-1]["content"]
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         glossary2 = GlossaryStore(store.glossary_path)
         Orchestrator(cfg, client=FakeClient(handler=handler))._translate_titles(store, glossary2)

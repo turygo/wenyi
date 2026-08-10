@@ -6,11 +6,11 @@
 ._build_understanding）。
 
 英文源双通道：确定性大写正则统计（mine_candidates_en，零成本、可复现，只抓大写词/
-缩写）∪ fast 档逐章 LLM 挖掘（mine_candidates_llm，补大写通道的结构性盲区——领域
+缩写）∪ 逐章 LLM 挖掘（mine_candidates_llm，补大写通道的结构性盲区——领域
 术语与主题词多以小写反复出现，如 lithography/foundry/yield，大写正则天生抓不到；
 此类词译法不统一是实伤：Chip War 里 yield 曾译裂成"良率/产率"）。en 每章因此多一次
-fast 档调用，与逐章梗概同量级，成本可接受。其它语言没有可靠的大小写信号，只走
-fast 档逐章 LLM 挖掘（mine_candidates_llm）。
+LLM 调用，与逐章梗概同量级，成本可接受。其它语言没有可靠的大小写信号，只走
+逐章 LLM 挖掘（mine_candidates_llm）。
 """
 
 from __future__ import annotations
@@ -377,7 +377,7 @@ def mine_candidates_llm(
     concurrency: int = 1,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Candidate]:
-    """非英文源退路：fast 档逐章挖掘（只看源文，不给译名），本函数负责跨章合并计数。
+    """非英文源退路：逐章 LLM 挖掘（只看源文，不给译名），本函数负责跨章合并计数。
 
     各章调用相互独立 → 按 concurrency 并行（LLM 调用进线程池；合并计数在主线程，
     且按输入章序合并，输出与串行完全一致）。on_progress(done, total) 按完成数回调
@@ -395,7 +395,7 @@ def mine_candidates_llm(
         # 不设 default：某章挖掘失败若被兜成空列表，会让 term_mining_done 静默永久
         # 落盘——异常整体冒泡，交由调用方（orchestrator）捕获并放弃本次落标记、下次续跑重试。
         raw = agent._ask_json(
-            system, user, tier="fast", key="candidates", operation="prescan.term_mine"
+            system, user, key="candidates", agent="preparer", operation="prescan.term_mine"
         )
         return [s.strip() for s in raw or [] if isinstance(s, str) and s.strip()]
 
@@ -429,7 +429,7 @@ def mine_candidates(
     concurrency: int = 1,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Candidate]:
-    """入口：en 走"确定性大写通道 ∪ fast 档 LLM 通道"双通道合并；其它语言只走 LLM 通道。"""
+    """入口：en 走"确定性大写通道 ∪ LLM 通道"双通道合并；其它语言只走 LLM 通道。"""
     if not (src_lang or "").strip().lower().startswith("en"):
         return mine_candidates_llm(
             chapters, agent, concurrency=concurrency, on_progress=on_progress

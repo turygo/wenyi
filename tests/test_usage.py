@@ -1,4 +1,10 @@
-"""LLM 用量统计契约测试（离线，不发网络请求）。"""
+"""LLM 用量统计契约测试（schema v2，离线，不发网络请求）。
+
+覆盖：totals 仅累计一次；by_agent / by_operation / by_provider / by_model /
+by_stage 分别归因（同一物理/逻辑事件在 by_agent 与 by_operation 各计一次）；
+实际请求的尝试、失败和空响应均记账；delta/merge 不重不漏、拒绝非 v2 快照；
+RunStore 断点续跑时正确累计。
+"""
 
 from __future__ import annotations
 
@@ -13,11 +19,19 @@ from unittest.mock import patch
 
 from tenacity import wait_none
 
-from tests.fake_llm import routing_handler
-from tests.sample_data import write_sample_txt
-from trans_novel.config import Config, LLMConfig, TierConfig
-from trans_novel.llm.providers.deepseek import DeepSeekClient
+from tests.fake_llm import fake_llm_dict
+from trans_novel.config import (
+    Config,
+    ModelRef,
+    ProviderConfig,
+    ProviderModelConfig,
+    ReasoningConfig,
+)
 from trans_novel.llm.providers.fake import FakeClient
+from trans_novel.llm.providers.transport import (
+    DIALECT_DEEPSEEK,
+    OpenAICompatibleTransport,
+)
 from trans_novel.llm.retrying import EmptyResponseError
 from trans_novel.llm.usage import UsageTracker, merge_usage_summaries, usage_delta
 from trans_novel.pipeline.orchestrator import Orchestrator
@@ -77,50 +91,37 @@ class _ClientStub:
         self.chat = _ChatStub(responses)
 
 
-def _minimal_deepseek_cfg() -> LLMConfig:
-    return LLMConfig(
-        provider="deepseek",
+def _provider(models=("m1", "m2")) -> ProviderConfig:
+    return ProviderConfig(
+        type="deepseek",
         base_url="x",
         api_key_env="X",
         timeout=1,
         max_retries=0,
-        tiers={
-            "strong": TierConfig(model="m1"),
-            "cheap": TierConfig(model="m2"),
-        },
+        models={m: ProviderModelConfig(id=m) for m in models},
     )
 
 
-class TestThinkingFlagWiring(unittest.TestCase):
-    """thinking 开关必须显式下发：API 缺省是开思考，漏发 disabled 等于没关。"""
-
-    def test_thinking_tiers_send_explicit_enable_or_disable(self):
-        cfg = _minimal_deepseek_cfg()
-        cfg.tiers["strong"] = TierConfig(
-            model="m1",
-            options={"thinking": True, "reasoning_effort": "high"},
-        )
-        cfg.tiers["fast"] = TierConfig(model="m2", options={"thinking": False})
-        c = DeepSeekClient(cfg)
-        stub = _ClientStub([_make_response("a", None), _make_response("b", None)])
-        c._client = stub
-        msgs = [{"role": "user", "content": "x"}]
-        c.complete(msgs, tier="strong")
-        c.complete(msgs, tier="fast")
-        on, off = stub.chat.completions.calls
-        self.assertEqual(on["extra_body"], {"thinking": {"type": "enabled"}})
-        self.assertEqual(on["reasoning_effort"], "high")
-        self.assertEqual(off["extra_body"], {"thinking": {"type": "disabled"}})
-        self.assertNotIn("reasoning_effort", off)
+def _transport(tracker: UsageTracker):
+    return OpenAICompatibleTransport(
+        "deepseek",
+        _provider(),
+        tracker,
+        dialect=DIALECT_DEEPSEEK,
+        provider_name="DeepSeek",
+        default_base_url="https://api.deepseek.com",
+        default_api_key_env="DEEPSEEK_API_KEY",
+        requires_api_key=True,
+    )
 
 
-class TestDeepSeekUsageByTier(unittest.TestCase):
-    def test_records_usage_and_splits_by_tier(self):
-        cfg = _minimal_deepseek_cfg()
-        c = DeepSeekClient(cfg)
+class TestUsageDimensions(unittest.TestCase):
+    def test_records_tokens_once_into_totals_and_parallel_views(self):
+        tracker = UsageTracker()
+        t = _transport(tracker)
         responses = [
             _make_response(
-                "strong-out",
+                "a",
                 _make_usage(
                     prompt_tokens=1000,
                     completion_tokens=200,
@@ -130,7 +131,7 @@ class TestDeepSeekUsageByTier(unittest.TestCase):
                 ),
             ),
             _make_response(
-                "cheap-out",
+                "b",
                 _make_usage(
                     prompt_tokens=500,
                     completion_tokens=100,
@@ -140,12 +141,20 @@ class TestDeepSeekUsageByTier(unittest.TestCase):
                 ),
             ),
         ]
+        t._client = _ClientStub(responses)
+        ref = ModelRef("deepseek", "m1")
         msgs = [{"role": "user", "content": "hi"}]
-        with patch.object(c, "_ensure_client", return_value=_ClientStub(responses)):
-            self.assertEqual(c.complete(msgs, tier="strong", stage="Translator"), "strong-out")
-            self.assertEqual(c.complete(msgs, tier="cheap"), "cheap-out")
+        self.assertEqual(
+            t.complete(
+                msgs, ref, stage="Translator", agent="translator", operation="translate.batch"
+            ),
+            "a",
+        )
+        self.assertEqual(
+            t.complete(msgs, ref, agent="translator", operation="translate.batch"), "b"
+        )
 
-        summary = c.usage_summary()
+        summary = tracker.summary()
         totals = summary["totals"]
         self.assertEqual(totals["prompt_tokens"], 1500)
         self.assertEqual(totals["completion_tokens"], 300)
@@ -155,69 +164,610 @@ class TestDeepSeekUsageByTier(unittest.TestCase):
         self.assertEqual(totals["cache_hit_rate"], 0.6)
         self.assertEqual(totals["calls"], 2)
 
-        by_tier = summary["by_tier"]
-        self.assertEqual(by_tier["strong"]["cache_hit_rate"], 0.8)
-        self.assertEqual(by_tier["cheap"]["cache_hit_rate"], 0.2)
-        self.assertEqual(by_tier["strong"]["calls"], 1)
-        self.assertEqual(by_tier["cheap"]["calls"], 1)
-        self.assertEqual(by_tier["strong"]["prompt_tokens"], 1000)
-        self.assertEqual(by_tier["cheap"]["prompt_tokens"], 500)
+        agent = summary["by_operation"]["translate.batch"]
+        self.assertEqual(agent["calls"], 2)
+        self.assertEqual(agent["prompt_tokens"], 1500)
+        self.assertEqual(agent["cache_hit_rate"], 0.6)
+        self.assertEqual(agent["attempts"], 2)
+        self.assertEqual(agent["failed_attempts"], 0)
+        # 同一事件在 by_agent（功能 Agent 视图）里同样累计
+        by_agent = summary["by_agent"]["translator"]
+        self.assertEqual(by_agent["calls"], 2)
+        self.assertEqual(by_agent["prompt_tokens"], 1500)
+        self.assertEqual(by_agent["total_tokens"], 1800)
 
-        # stage 归因：显式标注的调用进 by_stage；未标注的只计入 tier
+        provider = summary["by_provider"]["deepseek"]
+        self.assertEqual(provider["calls"], 2)
+        self.assertEqual(provider["total_tokens"], 1800)
+        self.assertNotIn("logical_calls", provider)
+        self.assertNotIn("accepted", provider)
+
+        model = summary["by_model"]["deepseek:m1"]
+        self.assertEqual(model["calls"], 2)
+        self.assertEqual(model["total_tokens"], 1800)
+        self.assertEqual(model["attempts"], 2)
+
+        # stage 归因：显式标注的调用进 by_stage；未标注的只进其它维度
         by_stage = summary["by_stage"]
         self.assertEqual(list(by_stage), ["Translator"])
         self.assertEqual(by_stage["Translator"]["calls"], 1)
         self.assertEqual(by_stage["Translator"]["prompt_tokens"], 1000)
-        self.assertEqual(by_stage["Translator"]["cache_hit_rate"], 0.8)
+        self.assertEqual(summary["schema_version"], 2)
 
-
-class TestMissingUsage(unittest.TestCase):
-    def test_none_usage_silently_skipped(self):
+    def test_missing_usage_records_attempt_but_no_token_call(self):
         tracker = UsageTracker()
-        tracker.record("strong", None)
+        t = _transport(tracker)
+        t._client = _ClientStub([_make_response("ok", None)])
+        t.complete(
+            [{"role": "user", "content": "x"}],
+            ModelRef("deepseek", "m1"),
+            agent="translator",
+            operation="translate.batch",
+        )
         summary = tracker.summary()
         self.assertEqual(summary["totals"]["calls"], 0)
         self.assertEqual(summary["totals"]["total_tokens"], 0)
-        self.assertEqual(summary["by_tier"], {})
-
-    def test_complete_with_none_usage_does_not_count(self):
-        cfg = _minimal_deepseek_cfg()
-        c = DeepSeekClient(cfg)
-        with patch.object(
-            c,
-            "_ensure_client",
-            return_value=_ClientStub([_make_response("ok", None)]),
-        ):
-            self.assertEqual(c.complete([{"role": "user", "content": "x"}]), "ok")
-        summary = c.usage_summary()
-        self.assertEqual(summary["totals"]["calls"], 0)
-        self.assertEqual(summary["totals"]["total_tokens"], 0)
-        self.assertEqual(summary["by_tier"], {})
-
-    def test_complete_with_missing_usage_attr_does_not_count(self):
-        cfg = _minimal_deepseek_cfg()
-        c = DeepSeekClient(cfg)
-        msg = SimpleNamespace(content="ok")
-        choice = SimpleNamespace(message=msg)
-        # 无 usage 属性
-        resp = SimpleNamespace(choices=[choice])
-        with patch.object(c, "_ensure_client", return_value=_ClientStub([resp])):
-            self.assertEqual(c.complete([{"role": "user", "content": "x"}]), "ok")
-        summary = c.usage_summary()
-        self.assertEqual(summary["totals"]["calls"], 0)
-        self.assertEqual(summary["by_tier"], {})
+        agent = summary["by_operation"]["translate.batch"]
+        self.assertEqual(agent["attempts"], 1)
+        self.assertEqual(agent["calls"], 0)
+        self.assertEqual(summary["by_agent"]["translator"]["attempts"], 1)
 
     def test_missing_total_tokens_falls_back_to_prompt_plus_completion(self):
         tracker = UsageTracker()
         usage = _make_usage(prompt_tokens=40, completion_tokens=10)
-        # 确认未设置 total_tokens
         self.assertFalse(hasattr(usage, "total_tokens"))
-        tracker.record("cheap", usage)
-        slot = tracker.summary()["by_tier"]["cheap"]
-        self.assertEqual(slot["prompt_tokens"], 40)
-        self.assertEqual(slot["completion_tokens"], 10)
+        tracker.record(
+            provider="deepseek",
+            model_ref=ModelRef("deepseek", "m1"),
+            agent="translator",
+            operation="translate.batch",
+            usage=usage,
+        )
+        slot = tracker.summary()["by_operation"]["translate.batch"]
         self.assertEqual(slot["total_tokens"], 50)
         self.assertEqual(slot["calls"], 1)
+
+    def test_reasoning_tokens_direct_and_nested(self):
+        tracker = UsageTracker()
+        direct = _make_usage(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+        direct.reasoning_tokens = 7
+        nested = _make_usage(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+        nested.completion_tokens_details = SimpleNamespace(reasoning_tokens=4)
+        for usage in (direct, nested):
+            tracker.record(
+                provider="deepseek",
+                model_ref=ModelRef("deepseek", "m1"),
+                agent="editor",
+                operation="naturalize.rewrite",
+                usage=usage,
+            )
+        slot = tracker.summary()["by_operation"]["naturalize.rewrite"]
+        self.assertEqual(slot["reasoning_tokens"], 11)
+        self.assertEqual(slot["total_tokens"], 60)  # reasoning 不叠加进 total
+        self.assertNotIn("reasoning_tokens", tracker.summary()["totals"])
+        self.assertEqual(tracker.summary()["by_agent"]["editor"]["reasoning_tokens"], 11)
+
+    def test_totals_direct_once_not_derived_from_dimensions(self):
+        tracker = UsageTracker()
+        tracker.record(
+            provider="p1",
+            model_ref=ModelRef("p1", "m1"),
+            agent="a1",
+            operation="op1",
+            usage=_make_usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        )
+        tracker.record(
+            provider="p1",
+            model_ref=ModelRef("p1", "m2"),
+            agent="a2",
+            operation="op2",
+            usage=_make_usage(prompt_tokens=20, completion_tokens=10, total_tokens=30),
+        )
+        summary = tracker.summary()
+        self.assertEqual(summary["totals"]["calls"], 2)
+        self.assertEqual(summary["totals"]["total_tokens"], 45)
+        self.assertEqual(summary["by_provider"]["p1"]["calls"], 2)
+        self.assertEqual(summary["by_provider"]["p1"]["total_tokens"], 45)
+        self.assertEqual(summary["by_operation"]["op1"]["total_tokens"], 15)
+        self.assertEqual(summary["by_operation"]["op2"]["total_tokens"], 30)
+
+
+class TestThinkingFlagWiring(unittest.TestCase):
+    def test_thinking_explicit_enable_or_disable(self):
+        tracker = UsageTracker()
+        t = _transport(tracker)
+        t._client = _ClientStub([_make_response("a", None), _make_response("b", None)])
+        msgs = [{"role": "user", "content": "x"}]
+        t.cfg.models["m1"] = ProviderModelConfig(
+            id="m1", reasoning=ReasoningConfig(enabled=True, effort="high")
+        )
+        t.complete(
+            msgs, ModelRef("deepseek", "m1"), agent="translator", operation="translate.batch"
+        )
+        t.cfg.models["m1"] = ProviderModelConfig(id="m1", reasoning=ReasoningConfig(enabled=False))
+        t.complete(
+            msgs, ModelRef("deepseek", "m1"), agent="translator", operation="translate.batch"
+        )
+        on, off = t._client.chat.completions.calls
+        self.assertEqual(on["extra_body"], {"thinking": {"type": "enabled"}})
+        self.assertEqual(on["reasoning_effort"], "high")
+        self.assertEqual(off["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertNotIn("reasoning_effort", off)
+
+    def test_same_service_id_aliases_keep_independent_reasoning(self):
+        # 同一服务 ID 拆成两个别名（生产如 flash-thinking / flash-fast）：
+        # 每次请求都按所选别名对应的 ProviderModelConfig 独立构建，不会串用配置，也不会共享可变状态。
+        tracker = UsageTracker()
+        t = _transport(tracker)
+        t.cfg.models = {
+            "think": ProviderModelConfig(
+                id="deepseek-v4-flash", reasoning=ReasoningConfig(enabled=True, effort="high")
+            ),
+            "fast": ProviderModelConfig(
+                id="deepseek-v4-flash", reasoning=ReasoningConfig(enabled=False)
+            ),
+        }
+        t._client = _ClientStub([_make_response("a", None), _make_response("b", None)])
+        msgs = [{"role": "user", "content": "x"}]
+        t.complete(
+            msgs, ModelRef("deepseek", "think"), agent="translator", operation="translate.batch"
+        )
+        t.complete(
+            msgs, ModelRef("deepseek", "fast"), agent="translator", operation="translate.batch"
+        )
+        think, fast = t._client.chat.completions.calls
+        self.assertEqual(think["model"], "deepseek-v4-flash")
+        self.assertEqual(think["extra_body"], {"thinking": {"type": "enabled"}})
+        self.assertEqual(think["reasoning_effort"], "high")
+        self.assertEqual(fast["model"], "deepseek-v4-flash")
+        self.assertEqual(fast["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertNotIn("reasoning_effort", fast)
+
+
+class TestEmptyResponseAccounting(unittest.TestCase):
+    def test_empty_then_success_preserves_usage_and_attribution(self):
+        tracker = UsageTracker()
+        t = _transport(tracker)
+        responses = [
+            _make_response("", _make_usage(prompt_tokens=3, completion_tokens=1, total_tokens=4)),
+            _make_response(
+                "  preserved output  ",
+                _make_usage(prompt_tokens=5, completion_tokens=2, total_tokens=7),
+            ),
+        ]
+        t.cfg.max_retries = 1
+        t._client = _ClientStub(responses)
+        with patch(
+            "trans_novel.llm.providers.transport.wait_exponential", return_value=wait_none()
+        ):
+            result = t.complete(
+                [{"role": "user", "content": "x"}],
+                ModelRef("deepseek", "m1"),
+                stage="Translator",
+                agent="translator",
+                operation="translate.batch",
+            )
+        self.assertEqual(result, "  preserved output  ")
+        self.assertEqual(len(t._client.chat.completions.calls), 2)
+        summary = tracker.summary()
+        self.assertEqual(summary["by_stage"]["Translator"]["calls"], 2)
+        self.assertEqual(summary["by_stage"]["Translator"]["total_tokens"], 11)
+        agent = summary["by_operation"]["translate.batch"]
+        self.assertEqual(agent["calls"], 2)
+        self.assertEqual(agent["total_tokens"], 11)
+        self.assertEqual(agent["attempts"], 2)
+        self.assertEqual(agent["failed_attempts"], 1)
+        self.assertEqual(summary["by_model"]["deepseek:m1"]["failed_attempts"], 1)
+
+    def test_whitespace_empty_retries(self):
+        tracker = UsageTracker()
+        t = _transport(tracker)
+        t.cfg.max_retries = 1
+        t._client = _ClientStub([_make_response(" \n\t", None), _make_response("visible", None)])
+        with patch(
+            "trans_novel.llm.providers.transport.wait_exponential", return_value=wait_none()
+        ):
+            self.assertEqual(
+                t.complete(
+                    [{"role": "user", "content": "x"}],
+                    ModelRef("deepseek", "m1"),
+                    agent="translator",
+                    operation="translate.batch",
+                ),
+                "visible",
+            )
+        self.assertEqual(len(t._client.chat.completions.calls), 2)
+
+    def test_exhaustion_raises_and_keeps_consumed_usage(self):
+        tracker = UsageTracker()
+        t = _transport(tracker)
+        t.cfg.max_retries = 1
+        t._client = _ClientStub(
+            [
+                _make_response(
+                    "", _make_usage(prompt_tokens=2, completion_tokens=1, total_tokens=3)
+                ),
+                _make_response(
+                    "", _make_usage(prompt_tokens=4, completion_tokens=2, total_tokens=6)
+                ),
+            ]
+        )
+        with patch(
+            "trans_novel.llm.providers.transport.wait_exponential", return_value=wait_none()
+        ):
+            with self.assertRaises(EmptyResponseError):
+                t.complete(
+                    [{"role": "user", "content": "x"}],
+                    ModelRef("deepseek", "m1"),
+                    stage="Translator",
+                    agent="translator",
+                    operation="translate.batch",
+                )
+        summary = tracker.summary()
+        self.assertEqual(summary["by_stage"]["Translator"]["calls"], 2)
+        self.assertEqual(summary["by_stage"]["Translator"]["total_tokens"], 9)
+        agent = summary["by_operation"]["translate.batch"]
+        self.assertEqual(agent["calls"], 2)
+        self.assertEqual(agent["total_tokens"], 9)
+        self.assertEqual(agent["attempts"], 2)
+        self.assertEqual(agent["failed_attempts"], 2)
+
+    def test_permanent_error_does_not_retry(self):
+        """普通 RuntimeError 是永久错误：传输不重试、立即原样抛出。"""
+        tracker = UsageTracker()
+        t = _transport(tracker)
+        t.cfg.max_retries = 3  # 即便有重试预算也不消耗
+
+        class _Boom:
+            def create(self, **kwargs):
+                raise RuntimeError("down")
+
+        t._client = SimpleNamespace(chat=SimpleNamespace(completions=_Boom()))
+        with self.assertRaisesRegex(RuntimeError, "down"):
+            t.complete(
+                [{"role": "user", "content": "x"}],
+                ModelRef("deepseek", "m1"),
+                agent="translator",
+                operation="translate.batch",
+            )
+        agent = tracker.summary()["by_operation"]["translate.batch"]
+        self.assertEqual(agent["attempts"], 1, "永久错误只尝试一次")
+        self.assertEqual(agent["failed_attempts"], 1)
+
+
+class TestUsageDeltaAndMerge(unittest.TestCase):
+    @staticmethod
+    def _record(
+        tracker: UsageTracker, *, agent: str, operation: str, prompt: int, completion: int
+    ) -> None:
+        tracker.record(
+            provider="deepseek",
+            model_ref=ModelRef("deepseek", "m1"),
+            agent=agent,
+            operation=operation,
+            usage=_make_usage(
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=prompt + completion,
+                prompt_cache_hit_tokens=prompt // 2,
+                prompt_cache_miss_tokens=prompt - prompt // 2,
+            ),
+        )
+
+    def test_delta_and_merge_do_not_double_count(self):
+        tracker = UsageTracker()
+        self._record(
+            tracker, agent="translator", operation="translate.batch", prompt=100, completion=20
+        )
+        first = tracker.summary()
+        self._record(
+            tracker, agent="translator", operation="translate.batch", prompt=50, completion=10
+        )
+        self._record(tracker, agent="editor", operation="polish.batch", prompt=30, completion=5)
+        second = tracker.summary()
+
+        increment = usage_delta(second, first)
+        self.assertEqual(increment["totals"]["total_tokens"], 95)
+        self.assertEqual(
+            increment["by_operation"]["translate.batch"]["prompt_tokens"],
+            50,
+            "已持久化的部分不进增量",
+        )
+        merged = merge_usage_summaries(first, increment)
+        self.assertEqual(merged, second)
+        self.assertEqual(
+            set(merged),
+            {
+                "schema_version",
+                "totals",
+                "by_agent",
+                "by_operation",
+                "by_provider",
+                "by_model",
+                "by_stage",
+            },
+        )
+
+    def test_merge_combines_both_agent_and_operation_views(self):
+        tracker = UsageTracker()
+        self._record(
+            tracker, agent="translator", operation="translate.batch", prompt=100, completion=20
+        )
+        first = tracker.summary()
+        tracker.record_outcome("translator", "translate.batch", accepted=True)
+        merged = merge_usage_summaries(first, usage_delta(tracker.summary(), first))
+        self.assertEqual(merged["by_agent"]["translator"]["accepted"], 1)
+        self.assertEqual(merged["by_operation"]["translate.batch"]["accepted"], 1)
+        self.assertEqual(merged["by_agent"]["translator"]["total_tokens"], 120)
+        self.assertEqual(merged["by_operation"]["translate.batch"]["total_tokens"], 120)
+
+    def test_empty_accumulated_allowed_as_fresh_snapshot(self):
+        tracker = UsageTracker()
+        self._record(
+            tracker, agent="translator", operation="translate.batch", prompt=10, completion=5
+        )
+        merged = merge_usage_summaries({}, tracker.summary())
+        self.assertEqual(merged["totals"]["total_tokens"], 15)
+        self.assertEqual(merged["by_agent"]["translator"]["total_tokens"], 15)
+        self.assertEqual(merged["by_operation"]["translate.batch"]["total_tokens"], 15)
+
+    def test_merge_rejects_unsupported_schema(self):
+        legacy = {
+            "totals": {"calls": 1, "total_tokens": 100},
+            "by_tier": {"strong": {"calls": 1, "total_tokens": 100}},
+            "by_operation": {"translate.batch": {"calls": 1, "total_tokens": 100}},
+        }
+        with self.assertRaisesRegex(ValueError, "不支持的 usage 快照 schema"):
+            merge_usage_summaries(legacy, UsageTracker().summary())
+        with self.assertRaisesRegex(ValueError, "不支持的 usage 快照 schema"):
+            merge_usage_summaries({"schema_version": 1, "totals": {}}, UsageTracker().summary())
+
+    def test_merge_rejects_unsupported_increment_schema(self):
+        with self.assertRaisesRegex(ValueError, "不支持的 usage 快照 schema"):
+            merge_usage_summaries(UsageTracker().summary(), {"totals": {"calls": 1}})
+
+    def test_new_snapshots_never_write_legacy_fields(self):
+        tracker = UsageTracker()
+        self._record(
+            tracker, agent="translator", operation="translate.batch", prompt=10, completion=5
+        )
+        summary = tracker.summary()
+        self.assertNotIn("legacy_by_tier", summary)
+        self.assertNotIn("by_tier", summary)
+        delta = usage_delta(summary, UsageTracker().summary())
+        self.assertNotIn("legacy_by_tier", delta)
+
+
+class TestUsageIncrementalPersistence(unittest.TestCase):
+    def test_usage_accumulates_across_orchestrators_for_one_book(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(os.path.join(d, "state", "book"))
+            config = Config.from_dict({"llm": fake_llm_dict()})
+
+            first_client = FakeClient()
+            first = Orchestrator(config, client=first_client)
+            first_client.usage.record(
+                provider="fake",
+                model_ref=ModelRef("fake", "p"),
+                agent="translator",
+                operation="translate.batch",
+                usage=_make_usage(prompt_tokens=100, completion_tokens=20, total_tokens=120),
+            )
+            cumulative = first._flush_usage(store, scope="translate")
+            self.assertEqual(cumulative["totals"]["total_tokens"], 120)
+
+            # 同一进程再次 flush 没有新增调用，不能重复累计。
+            unchanged = first._flush_usage(store, scope="pipeline")
+            self.assertEqual(unchanged["totals"]["total_tokens"], 120)
+
+            # 模拟 resume：新 client / Orchestrator 的增量继续累加到同一本书。
+            resumed_client = FakeClient()
+            resumed = Orchestrator(config, client=resumed_client)
+            resumed_client.usage.record(
+                provider="fake",
+                model_ref=ModelRef("fake", "p"),
+                agent="editor",
+                operation="polish.batch",
+                usage=_make_usage(prompt_tokens=40, completion_tokens=10, total_tokens=50),
+            )
+            cumulative = resumed._flush_usage(store, scope="translate")
+
+            self.assertEqual(cumulative["totals"]["total_tokens"], 170)
+            self.assertEqual(cumulative["totals"]["calls"], 2)
+            self.assertEqual(cumulative["by_agent"]["translator"]["total_tokens"], 120)
+            self.assertEqual(cumulative["by_agent"]["editor"]["total_tokens"], 50)
+            self.assertEqual(cumulative["by_operation"]["translate.batch"]["total_tokens"], 120)
+            self.assertEqual(cumulative["by_operation"]["polish.batch"]["total_tokens"], 50)
+            self.assertEqual(cumulative["by_provider"]["fake"]["total_tokens"], 170)
+            self.assertEqual(store.load_usage(), cumulative)
+            self.assertTrue(os.path.isfile(store.usage_path))
+
+    def test_operation_only_failure_persists_and_second_flush_does_not_duplicate(self):
+        """由 Agent 的 default 兜底处理的失败调用：totals/by_stage 全零（无成功响应），
+        但 by_agent/by_operation 中的 attempts/failed_attempts/logical_calls 仍会增长——
+        _flush_usage 不得因 totals.calls==0 就跳过持久化。"""
+        from trans_novel.agents.base import Agent
+
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(os.path.join(d, "state", "book"))
+            config = Config.from_dict({"llm": fake_llm_dict()})
+
+            def _boom(messages, agent, operation, json_mode):
+                raise RuntimeError("model down")
+
+            client = FakeClient(handler=_boom)
+            orch = Orchestrator(config, client=client)
+            agent = Agent(client, config)
+
+            result = agent._ask_json(
+                "sys", "user", default={}, agent="translator", operation="translate.batch"
+            )
+            self.assertEqual(result, {}, "default 应吞掉异常，Agent 调用方视角照常返回")
+
+            before = client.usage_summary()["by_operation"]["translate.batch"]
+            self.assertGreater(before["attempts"], 0)
+            self.assertGreater(before["failed_attempts"], 0)
+            self.assertGreater(before["logical_calls"], 0)
+            self.assertEqual(before["calls"], 0)  # 无成功响应，token/calls 字段不动
+            self.assertEqual(
+                client.usage_summary()["by_agent"]["translator"]["attempts"], before["attempts"]
+            )
+
+            cumulative = orch._flush_usage(store, scope="translate")
+            persisted = store.load_usage()
+            self.assertIsNotNone(persisted)
+            assert persisted is not None
+            self.assertEqual(
+                persisted["by_operation"]["translate.batch"]["attempts"], before["attempts"]
+            )
+            self.assertEqual(
+                persisted["by_operation"]["translate.batch"]["failed_attempts"],
+                before["failed_attempts"],
+            )
+            self.assertEqual(
+                persisted["by_operation"]["translate.batch"]["logical_calls"],
+                before["logical_calls"],
+            )
+            self.assertEqual(
+                persisted["by_agent"]["translator"]["logical_calls"], before["logical_calls"]
+            )
+
+            # 第二次 flush：没有新调用，增量为 0，不得重复累加或再次写盘造成翻倍。
+            unchanged = orch._flush_usage(store, scope="translate")
+            self.assertEqual(unchanged, cumulative)
+            self.assertEqual(store.load_usage(), cumulative)
+
+
+class TestOperationTelemetry(unittest.TestCase):
+    def test_new_agent_slot_has_full_canonical_field_set(self):
+        c = FakeClient()
+        c.complete(
+            [{"role": "user", "content": "x"}], agent="translator", operation="translate.batch"
+        )
+        summary = c.usage_summary()
+        for slot in (summary["by_agent"]["translator"], summary["by_operation"]["translate.batch"]):
+            for key in (
+                "calls",
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "cache_hit_tokens",
+                "cache_miss_tokens",
+                "cache_hit_rate",
+                "logical_calls",
+                "attempts",
+                "failed_attempts",
+                "elapsed_ms",
+                "reasoning_tokens",
+                "accepted",
+                "rejected",
+                "fallbacks",
+            ):
+                self.assertIn(key, slot)
+            # FakeClient 不产生真实 provider usage：token/cache 字段保持 0，
+            # 但 agent/operation 标签本身与 attempts/logical_calls 必须被记录。
+            self.assertEqual(slot["calls"], 0)
+            self.assertEqual(slot["prompt_tokens"], 0)
+            self.assertEqual(slot["attempts"], 1)
+            self.assertEqual(slot["logical_calls"], 1)
+            self.assertEqual(slot["failed_attempts"], 0)
+            self.assertEqual(slot["fallbacks"], 0)
+
+    def test_handler_exception_records_failed_attempt_then_reraises(self):
+        def _boom(messages, agent, operation, json_mode):
+            raise ValueError("bad")
+
+        c = FakeClient(handler=_boom)
+        with self.assertRaises(ValueError):
+            c.complete(
+                [{"role": "user", "content": "x"}], agent="reviewer", operation="review.chapter"
+            )
+        op = c.usage_summary()["by_operation"]["review.chapter"]
+        self.assertEqual(op["attempts"], 1)
+        self.assertEqual(op["failed_attempts"], 1)
+        self.assertEqual(op["logical_calls"], 1)
+        self.assertEqual(c.usage_summary()["by_agent"]["reviewer"]["failed_attempts"], 1)
+
+    def test_outcome_and_fallback_counters(self):
+        c = FakeClient()
+        c.complete(
+            [{"role": "user", "content": "x"}], agent="translator", operation="translate.batch"
+        )
+        c.usage.record_outcome("translator", "translate.batch", accepted=True)
+        c.usage.record_outcome("translator", "translate.batch", accepted=False)
+        c.usage.record_fallback("translator", "translate.batch")
+        for slot in (
+            c.usage_summary()["by_agent"]["translator"],
+            c.usage_summary()["by_operation"]["translate.batch"],
+        ):
+            self.assertEqual(slot["accepted"], 1)
+            self.assertEqual(slot["rejected"], 1)
+            self.assertEqual(slot["fallbacks"], 1)
+
+    def test_concurrent_calls_do_not_lose_or_corrupt_records(self):
+        """FakeClient.calls 只用一把锁保护列表本身，never 持锁调用 handler；
+        并发下 calls 长度与各 agent/operation 的 logical_calls 计数必须精确，不丢不重。"""
+        c = FakeClient(handler=lambda m, a, o, j: "ok")
+        n = 64
+
+        def _one(i):
+            c.complete(
+                [{"role": "user", "content": str(i)}], agent="reviewer", operation="naturalize.pair"
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(_one, range(n)))
+
+        self.assertEqual(len(c.calls), n)
+        op = c.usage_summary()["by_operation"]["naturalize.pair"]
+        self.assertEqual(op["logical_calls"], n)
+        self.assertEqual(op["attempts"], n)
+        self.assertEqual(c.usage_summary()["by_agent"]["reviewer"]["logical_calls"], n)
+
+
+class TestUsageThreadSafety(unittest.TestCase):
+    def test_concurrent_record_exact_counts(self):
+        tracker = UsageTracker()
+        n_workers = 8
+        per_worker = 25  # 8 * 25 = 200
+        usage = _make_usage(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            prompt_cache_hit_tokens=3,
+            prompt_cache_miss_tokens=7,
+        )
+        ref = ModelRef("deepseek", "m1")
+
+        def _worker() -> None:
+            for _ in range(per_worker):
+                tracker.record(
+                    provider="deepseek",
+                    model_ref=ref,
+                    agent="translator",
+                    operation="translate.batch",
+                    usage=usage,
+                )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futs = [pool.submit(_worker) for _ in range(n_workers)]
+            for f in concurrent.futures.as_completed(futs):
+                f.result()
+
+        total_calls = n_workers * per_worker
+        summary = tracker.summary()
+        totals = summary["totals"]
+        self.assertEqual(totals["calls"], total_calls)
+        self.assertEqual(totals["prompt_tokens"], 10 * total_calls)
+        self.assertEqual(totals["completion_tokens"], 5 * total_calls)
+        self.assertEqual(totals["total_tokens"], 15 * total_calls)
+        self.assertEqual(totals["cache_hit_tokens"], 3 * total_calls)
+        self.assertEqual(totals["cache_miss_tokens"], 7 * total_calls)
+        self.assertEqual(totals["cache_hit_rate"], 0.3)  # 3/(3+7)
+        self.assertEqual(summary["by_agent"]["translator"]["calls"], total_calls)
+        self.assertEqual(summary["by_operation"]["translate.batch"]["calls"], total_calls)
+        self.assertEqual(summary["by_provider"]["deepseek"]["calls"], total_calls)
+        self.assertEqual(summary["by_model"]["deepseek:m1"]["calls"], total_calls)
 
 
 class TestEmptyCacheHitRate(unittest.TestCase):
@@ -237,547 +787,13 @@ class TestEmptyCacheHitRate(unittest.TestCase):
         ):
             self.assertIn(key, totals)
         self.assertEqual(totals["calls"], 0)
-        self.assertEqual(totals["prompt_tokens"], 0)
-        self.assertEqual(totals["completion_tokens"], 0)
-        self.assertEqual(totals["cache_hit_tokens"], 0)
-        self.assertEqual(totals["cache_miss_tokens"], 0)
-        self.assertEqual(c.usage_summary()["by_tier"], {})
-        self.assertEqual(c.usage_summary()["by_stage"], {})
-
-
-class TestUsageThreadSafety(unittest.TestCase):
-    def test_concurrent_record_exact_counts(self):
-        client = FakeClient()
-        n_workers = 8
-        per_worker = 25  # 8 * 25 = 200
-        usage = _make_usage(
-            prompt_tokens=10,
-            completion_tokens=5,
-            total_tokens=15,
-            prompt_cache_hit_tokens=3,
-            prompt_cache_miss_tokens=7,
-        )
-
-        def _worker() -> None:
-            for _ in range(per_worker):
-                client.usage.record("strong", usage)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
-            futs = [pool.submit(_worker) for _ in range(n_workers)]
-            for f in concurrent.futures.as_completed(futs):
-                f.result()
-
-        total_calls = n_workers * per_worker
-        summary = client.usage_summary()
-        totals = summary["totals"]
-        self.assertEqual(totals["calls"], total_calls)
-        self.assertEqual(totals["prompt_tokens"], 10 * total_calls)
-        self.assertEqual(totals["completion_tokens"], 5 * total_calls)
-        self.assertEqual(totals["total_tokens"], 15 * total_calls)
-        self.assertEqual(totals["cache_hit_tokens"], 3 * total_calls)
-        self.assertEqual(totals["cache_miss_tokens"], 7 * total_calls)
-        self.assertEqual(totals["cache_hit_rate"], 0.3)  # 3/(3+7)
-        self.assertEqual(summary["by_tier"]["strong"]["calls"], total_calls)
-
-
-class TestUsageIncrementalPersistence(unittest.TestCase):
-    @staticmethod
-    def _record(client: FakeClient, tier: str, *, prompt: int, completion: int) -> None:
-        client.usage.record(
-            tier,
-            _make_usage(
-                prompt_tokens=prompt,
-                completion_tokens=completion,
-                total_tokens=prompt + completion,
-                prompt_cache_hit_tokens=prompt // 2,
-                prompt_cache_miss_tokens=prompt - prompt // 2,
-            ),
-        )
-
-    def test_delta_and_merge_do_not_double_count(self):
-        client = FakeClient()
-        self._record(client, "strong", prompt=100, completion=20)
-        first = client.usage_summary()
-        self._record(client, "strong", prompt=50, completion=10)
-        self._record(client, "fast", prompt=30, completion=5)
-        second = client.usage_summary()
-
-        increment = usage_delta(second, first)
-        self.assertEqual(increment["totals"]["total_tokens"], 95)
-        merged = merge_usage_summaries(first, increment)
-        self.assertEqual(merged, second)
-
-    def test_usage_accumulates_across_orchestrators_for_one_book(self):
-        with tempfile.TemporaryDirectory() as d:
-            store = RunStore(os.path.join(d, "state", "book"))
-            config = Config.from_dict({"llm": {"provider": "fake"}})
-
-            first_client = FakeClient()
-            first = Orchestrator(config, client=first_client)
-            self._record(first_client, "strong", prompt=100, completion=20)
-            cumulative = first._flush_usage(store, scope="translate")
-            self.assertEqual(cumulative["totals"]["total_tokens"], 120)
-
-            # 同一进程再次 flush 没有新增调用，不能重复累计。
-            unchanged = first._flush_usage(store, scope="pipeline")
-            self.assertEqual(unchanged["totals"]["total_tokens"], 120)
-
-            # 模拟 resume：新 client / Orchestrator 的增量继续累加到同一本书。
-            resumed_client = FakeClient()
-            resumed = Orchestrator(config, client=resumed_client)
-            self._record(resumed_client, "cheap", prompt=40, completion=10)
-            cumulative = resumed._flush_usage(store, scope="translate")
-
-            self.assertEqual(cumulative["totals"]["total_tokens"], 170)
-            self.assertEqual(cumulative["totals"]["calls"], 2)
-            self.assertEqual(cumulative["by_tier"]["strong"]["total_tokens"], 120)
-            self.assertEqual(cumulative["by_tier"]["cheap"]["total_tokens"], 50)
-            self.assertEqual(store.load_usage(), cumulative)
-            self.assertTrue(os.path.isfile(store.usage_path))
-
-    def test_report_omits_usage_and_usage_file_keeps_book_total(self):
-        with tempfile.TemporaryDirectory() as d:
-            source = os.path.join(d, "novel.txt")
-            write_sample_txt(source)
-            config = Config.from_dict(
-                {
-                    "language": {"source": "ja", "target": "zh"},
-                    "llm": {"provider": "fake"},
-                    "pipeline": {"book_understanding": False, "review": False},
-                    "paths": {"state_dir": os.path.join(d, "state")},
-                }
-            )
-
-            initial_client = FakeClient(handler=routing_handler)
-            initial = Orchestrator(config, client=initial_client)
-            store = initial.run_steps(source, {"translate"})["store"]
-            self._record(initial_client, "strong", prompt=100, completion=20)
-            initial._flush_usage(store, scope="translate")
-
-            resumed_client = FakeClient(handler=routing_handler)
-            resumed = Orchestrator(config, client=resumed_client)
-            self._record(resumed_client, "cheap", prompt=40, completion=10)
-            result = resumed.run_steps(source, {"report"})
-
-            self.assertNotIn("usage", result["report"])
-            usage = result["store"].load_usage()
-            self.assertIsNotNone(usage)
-            assert usage is not None
-            self.assertEqual(usage["totals"]["total_tokens"], 170)
-            self.assertEqual(usage["totals"]["calls"], 2)
-            self.assertEqual(result["store"].load_usage(), usage)
-
-    def test_operation_only_failure_persists_and_second_flush_does_not_duplicate(self):
-        """由 Agent default 捕获的失败调用：by_tier/by_stage/totals.calls 全零
-        （无成功响应），但 by_operation 的 attempts/failed_attempts/logical_calls
-        真实增长——_flush_usage 不得因 totals.calls==0 就跳过持久化。"""
-        from trans_novel.agents.base import Agent
-
-        with tempfile.TemporaryDirectory() as d:
-            store = RunStore(os.path.join(d, "state", "book"))
-            config = Config.from_dict({"llm": {"provider": "fake"}})
-
-            def _boom(messages, tier, json_mode):
-                raise RuntimeError("model down")
-
-            client = FakeClient(handler=_boom)
-            orch = Orchestrator(config, client=client)
-            agent = Agent(client, config)
-
-            result = agent._ask_json(
-                "sys", "user", tier="strong", default={}, operation="translate.batch"
-            )
-            self.assertEqual(result, {}, "default 应吞掉异常，Agent 调用方视角照常返回")
-
-            op_before = client.usage_summary()["by_operation"]["translate.batch"]
-            self.assertGreater(op_before["attempts"], 0)
-            self.assertGreater(op_before["failed_attempts"], 0)
-            self.assertGreater(op_before["logical_calls"], 0)
-            self.assertEqual(op_before["calls"], 0)  # 无成功响应，token/calls 字段不动
-
-            cumulative = orch._flush_usage(store, scope="translate")
-            self.assertEqual(
-                cumulative["by_operation"]["translate.batch"]["attempts"], op_before["attempts"]
-            )
-            self.assertEqual(
-                cumulative["by_operation"]["translate.batch"]["failed_attempts"],
-                op_before["failed_attempts"],
-            )
-
-            persisted = store.load_usage()
-            self.assertIsNotNone(persisted)
-            assert persisted is not None
-            self.assertEqual(persisted, cumulative)
-            self.assertEqual(
-                persisted["by_operation"]["translate.batch"]["logical_calls"],
-                op_before["logical_calls"],
-            )
-
-            # 第二次 flush：没有新调用，增量为 0，不得重复累加或再次写盘造成翻倍。
-            unchanged = orch._flush_usage(store, scope="translate")
-            self.assertEqual(unchanged, cumulative)
-            self.assertEqual(store.load_usage(), cumulative)
-
-
-class TestOperationTelemetry(unittest.TestCase):
-    """by_operation：新增槽位、字段计数、旧快照向后兼容（decision 16/43/47）。"""
-
-    def test_new_operation_slot_has_full_canonical_field_set(self):
-        c = FakeClient()
-        c.complete([{"role": "user", "content": "x"}], operation="translate.batch")
-        op = c.usage_summary()["by_operation"]["translate.batch"]
-        for key in (
-            "calls",
-            "prompt_tokens",
-            "completion_tokens",
-            "total_tokens",
-            "cache_hit_tokens",
-            "cache_miss_tokens",
-            "cache_hit_rate",
-            "logical_calls",
-            "attempts",
-            "failed_attempts",
-            "elapsed_ms",
-            "reasoning_tokens",
-            "accepted",
-            "rejected",
-        ):
-            self.assertIn(key, op)
-        # FakeClient 不产生真实 provider usage：token/cache 字段保持 0，
-        # 但 operation 标签本身与 attempts/logical_calls 必须被记录。
-        self.assertEqual(op["calls"], 0)
-        self.assertEqual(op["prompt_tokens"], 0)
-        self.assertEqual(op["attempts"], 1)
-        self.assertEqual(op["logical_calls"], 1)
-        self.assertEqual(op["failed_attempts"], 0)
-
-    def test_operation_missing_from_old_snapshot_normalizes_to_zero(self):
-        """旧快照没有 by_operation 键（含"没有该 operation 键"两种缺档形态）：
-        merge/delta 后新增的 operation 槽位仍是全字段、缺失按 0 补齐，不报错。"""
-        old_snapshot = {"totals": {}, "by_tier": {}, "by_stage": {}}  # 完全没有 by_operation 键
-        c = FakeClient()
-        c.usage.record(
-            "strong", _make_usage(prompt_tokens=10, completion_tokens=5), operation="polish.batch"
-        )
-        merged = merge_usage_summaries(old_snapshot, c.usage_summary())
-        self.assertIn("by_operation", merged)
-        slot = merged["by_operation"]["polish.batch"]
-        self.assertEqual(slot["prompt_tokens"], 10)
-        self.assertEqual(slot["accepted"], 0)  # 旧快照没有的字段按 0 合并
-        self.assertEqual(
-            slot["attempts"], 0
-        )  # record() 走 usage.record 而非 complete()，未记 attempts
-
-    def test_delta_and_merge_round_trip_for_operation_fields(self):
-        c = FakeClient()
-        c.usage.record(
-            "strong",
-            _make_usage(prompt_tokens=100, completion_tokens=20),
-            operation="translate.batch",
-        )
-        c.usage.record_outcome("translate.batch", accepted=True)
-        first = c.usage_summary()
-        c.usage.record(
-            "strong",
-            _make_usage(prompt_tokens=50, completion_tokens=10),
-            operation="translate.batch",
-        )
-        c.usage.record_outcome("translate.batch", accepted=False)
-        second = c.usage_summary()
-
-        increment = usage_delta(second, first)
-        self.assertEqual(increment["by_operation"]["translate.batch"]["prompt_tokens"], 50)
-        self.assertEqual(increment["by_operation"]["translate.batch"]["rejected"], 1)
-        self.assertEqual(increment["by_operation"]["translate.batch"]["accepted"], 0)
-        merged = merge_usage_summaries(first, increment)
-        self.assertEqual(merged["by_operation"], second["by_operation"])
-
-    def test_reasoning_tokens_direct_field(self):
-        tracker = UsageTracker()
-        usage = _make_usage(prompt_tokens=10, completion_tokens=20)
-        usage.reasoning_tokens = 7
-        tracker.record("strong", usage, operation="naturalize.rewrite")
-        slot = tracker.summary()["by_operation"]["naturalize.rewrite"]
-        self.assertEqual(slot["reasoning_tokens"], 7)
-        # 不叠加进 total_tokens
-        self.assertEqual(slot["total_tokens"], 30)
-
-    def test_reasoning_tokens_nested_completion_details(self):
-        tracker = UsageTracker()
-        usage = _make_usage(prompt_tokens=10, completion_tokens=20, total_tokens=30)
-        usage.completion_tokens_details = SimpleNamespace(reasoning_tokens=4)
-        tracker.record("strong", usage, operation="naturalize.rewrite")
-        slot = tracker.summary()["by_operation"]["naturalize.rewrite"]
-        self.assertEqual(slot["reasoning_tokens"], 4)
-        self.assertEqual(slot["total_tokens"], 30)
-
-    def test_outcome_and_by_tier_by_stage_unaffected(self):
-        """by_tier/by_stage 保持原字段集合不变，不被 operation 新字段污染。"""
-        c = FakeClient()
-        c.usage.record(
-            "strong",
-            _make_usage(prompt_tokens=1, completion_tokens=1),
-            "Polisher",
-            operation="polish.batch",
-        )
         summary = c.usage_summary()
-        self.assertNotIn("attempts", summary["by_tier"]["strong"])
-        self.assertNotIn("attempts", summary["by_stage"]["Polisher"])
-        self.assertIn("attempts", summary["by_operation"]["polish.batch"])
-
-
-class TestDeepSeekAttemptTelemetry(unittest.TestCase):
-    """底层 attempt/failed_attempt/logical_call/elapsed_ms 统计（decision 45）。"""
-
-    def test_retry_then_success_counts_attempts_and_one_logical_call(self):
-        cfg = _minimal_deepseek_cfg()
-        cfg.max_retries = 2
-        c = DeepSeekClient(cfg)
-
-        # _ClientStub 只支持按响应列表顺序返回；异常项需要直接抛出而非当作响应，
-        # 这里用一个最小自定义 stub 模拟"前两次抛异常，第三次成功"。
-        class _FlakyCompletions:
-            def __init__(self, items):
-                self._items = list(items)
-                self.calls = []
-
-            def create(self, **kwargs):
-                self.calls.append(kwargs)
-                item = self._items.pop(0)
-                if isinstance(item, Exception):
-                    raise item
-                return item
-
-        flaky = SimpleNamespace(
-            chat=SimpleNamespace(
-                completions=_FlakyCompletions(
-                    [RuntimeError("boom"), RuntimeError("boom"), _make_response("ok", None)]
-                )
-            )
-        )
-        with patch.object(c, "_ensure_client", return_value=flaky):
-            result = c.complete(
-                [{"role": "user", "content": "x"}], tier="strong", operation="translate.batch"
-            )
-        self.assertEqual(result, "ok")
-        op = c.usage_summary()["by_operation"]["translate.batch"]
-        self.assertEqual(op["attempts"], 3)
-        self.assertEqual(op["failed_attempts"], 2)
-        self.assertEqual(op["logical_calls"], 1)
-        self.assertGreaterEqual(op["elapsed_ms"], 0)
-
-    def test_terminal_failure_still_records_before_reraising(self):
-        cfg = _minimal_deepseek_cfg()
-        cfg.max_retries = 1  # 最多尝试 2 次
-        c = DeepSeekClient(cfg)
-
-        class _AlwaysFailCompletions:
-            def create(self, **kwargs):
-                raise RuntimeError("down")
-
-        flaky = SimpleNamespace(chat=SimpleNamespace(completions=_AlwaysFailCompletions()))
-        with patch.object(c, "_ensure_client", return_value=flaky):
-            with self.assertRaises(RuntimeError):
-                c.complete(
-                    [{"role": "user", "content": "x"}], tier="strong", operation="translate.batch"
-                )
-        op = c.usage_summary()["by_operation"]["translate.batch"]
-        self.assertEqual(op["attempts"], 2)
-        self.assertEqual(op["failed_attempts"], 2)
-        self.assertEqual(op["logical_calls"], 1)  # 终态失败仍只计一次逻辑调用
-        self.assertEqual(op["calls"], 0)  # 无成功响应，token 字段不动
-
-    def test_ensure_client_init_failure_records_logical_call_and_reraises(self):
-        """_ensure_client 初始化失败（缺 API key）：即便从未发出 create() 请求
-        （attempts=0），本次逻辑调用仍要计 logical_calls/elapsed_ms 后原样重抛。"""
-        cfg = _minimal_deepseek_cfg()
-        c = DeepSeekClient(cfg)
-        env_backup = os.environ.pop(cfg.api_key_env, None)
-        try:
-            with self.assertRaises(RuntimeError):
-                c.complete(
-                    [{"role": "user", "content": "x"}], tier="strong", operation="translate.batch"
-                )
-        finally:
-            if env_backup is not None:
-                os.environ[cfg.api_key_env] = env_backup
-        op = c.usage_summary()["by_operation"]["translate.batch"]
-        self.assertEqual(op["logical_calls"], 1)
-        self.assertEqual(op["attempts"], 0)
-        self.assertEqual(op["failed_attempts"], 0)
-        self.assertGreaterEqual(op["elapsed_ms"], 0)
-        self.assertEqual(op["calls"], 0)
-
-    def test_resolve_tier_failure_records_logical_call_and_reraises(self):
-        """resolve_tier 缺 strong 档抛 KeyError：同样先记账（logical_calls=1，
-        attempts=0，因为从未走到 create()）再原样重抛。"""
-        cfg = _minimal_deepseek_cfg()
-        cfg.tiers = {"cheap": cfg.tiers["cheap"]}  # 缺 strong 档
-        c = DeepSeekClient(cfg)
-        with self.assertRaises(KeyError):
-            c.complete(
-                [{"role": "user", "content": "x"}], tier="strong", operation="translate.batch"
-            )
-        op = c.usage_summary()["by_operation"]["translate.batch"]
-        self.assertEqual(op["logical_calls"], 1)
-        self.assertEqual(op["attempts"], 0)
-
-
-class TestDeepSeekEmptyResponseRetry(unittest.TestCase):
-    """Empty content must retry in the shared OpenAI-compatible transport."""
-
-    @staticmethod
-    def _client(responses: list[Any], *, max_retries: int = 1) -> tuple[Any, _ClientStub]:
-        cfg = _minimal_deepseek_cfg()
-        cfg.max_retries = max_retries
-        client = DeepSeekClient(cfg)
-        stub = _ClientStub(responses)
-        client._client = stub
-        return client, stub
-
-    def test_empty_then_success_preserves_usage_and_attribution(self):
-        client, stub = self._client(
-            [
-                _make_response(
-                    "",
-                    _make_usage(prompt_tokens=3, completion_tokens=1, total_tokens=4),
-                ),
-                _make_response(
-                    "  preserved output  ",
-                    _make_usage(prompt_tokens=5, completion_tokens=2, total_tokens=7),
-                ),
-            ]
-        )
-        with patch(
-            "trans_novel.llm.providers._openai_compatible.wait_exponential",
-            return_value=wait_none(),
-        ):
-            result = client.complete(
-                [{"role": "user", "content": "x"}],
-                stage="Translator",
-                operation="translate.batch",
-            )
-
-        self.assertEqual(result, "  preserved output  ")
-        self.assertEqual(len(stub.chat.completions.calls), 2)
-        summary = client.usage_summary()
-        self.assertEqual(summary["by_stage"]["Translator"]["calls"], 2)
-        self.assertEqual(summary["by_stage"]["Translator"]["total_tokens"], 11)
-        operation = summary["by_operation"]["translate.batch"]
-        self.assertEqual(operation["calls"], 2)
-        self.assertEqual(operation["total_tokens"], 11)
-        self.assertEqual(operation["attempts"], 2)
-        self.assertEqual(operation["failed_attempts"], 1)
-        self.assertEqual(operation["logical_calls"], 1)
-
-    def test_whitespace_then_success_retries(self):
-        client, stub = self._client(
-            [_make_response(" \n\t", None), _make_response("visible", None)]
-        )
-        with patch(
-            "trans_novel.llm.providers._openai_compatible.wait_exponential",
-            return_value=wait_none(),
-        ):
-            self.assertEqual(client.complete([{"role": "user", "content": "x"}]), "visible")
-        self.assertEqual(len(stub.chat.completions.calls), 2)
-
-    def test_json_empty_then_success_retries(self):
-        client, stub = self._client([_make_response("", None), _make_response('["visible"]', None)])
-        with patch(
-            "trans_novel.llm.providers._openai_compatible.wait_exponential",
-            return_value=wait_none(),
-        ):
-            self.assertEqual(client.complete_json([{"role": "user", "content": "x"}]), ["visible"])
-        self.assertEqual(len(stub.chat.completions.calls), 2)
-        self.assertEqual(stub.chat.completions.calls[0]["response_format"], {"type": "json_object"})
-
-    def test_exhaustion_raises_canonical_error_and_keeps_consumed_usage(self):
-        client, stub = self._client(
-            [
-                _make_response(
-                    None,
-                    _make_usage(prompt_tokens=2, completion_tokens=1, total_tokens=3),
-                ),
-                _make_response(
-                    123,
-                    _make_usage(prompt_tokens=4, completion_tokens=2, total_tokens=6),
-                ),
-            ]
-        )
-        with patch(
-            "trans_novel.llm.providers._openai_compatible.wait_exponential",
-            return_value=wait_none(),
-        ):
-            with self.assertRaises(EmptyResponseError):
-                client.complete(
-                    [{"role": "user", "content": "x"}],
-                    stage="Translator",
-                    operation="translate.batch",
-                )
-
-        self.assertEqual(len(stub.chat.completions.calls), 2)
-        summary = client.usage_summary()
-        self.assertEqual(summary["by_stage"]["Translator"]["calls"], 2)
-        self.assertEqual(summary["by_stage"]["Translator"]["total_tokens"], 9)
-        operation = summary["by_operation"]["translate.batch"]
-        self.assertEqual(operation["calls"], 2)
-        self.assertEqual(operation["total_tokens"], 9)
-        self.assertEqual(operation["attempts"], 2)
-        self.assertEqual(operation["failed_attempts"], 2)
-        self.assertEqual(operation["logical_calls"], 1)
-
-    def test_reasoning_content_does_not_replace_empty_content(self):
-        empty = _make_response("", None)
-        empty.choices[0].message.reasoning_content = "internal reasoning"
-        client, stub = self._client([empty, _make_response("visible", None)])
-        with patch(
-            "trans_novel.llm.providers._openai_compatible.wait_exponential",
-            return_value=wait_none(),
-        ):
-            self.assertEqual(client.complete([{"role": "user", "content": "x"}]), "visible")
-        self.assertEqual(len(stub.chat.completions.calls), 2)
-
-
-class TestFakeClientOperationTelemetry(unittest.TestCase):
-    """FakeClient 记录 operation 便于测试，不伪造 provider token（decision 17/52/61）。"""
-
-    def test_records_operation_on_calls_without_faking_tokens(self):
-        c = FakeClient(handler=lambda m, t, j: "ok")
-        c.complete([{"role": "user", "content": "x"}], operation="review.chapter")
-        self.assertEqual(c.calls[0]["operation"], "review.chapter")
-        op = c.usage_summary()["by_operation"]["review.chapter"]
-        self.assertEqual(op["prompt_tokens"], 0)
-        self.assertEqual(op["total_tokens"], 0)
-        self.assertEqual(op["logical_calls"], 1)
-
-    def test_handler_exception_records_failed_attempt_then_reraises(self):
-        def _boom(messages, tier, json_mode):
-            raise ValueError("bad")
-
-        c = FakeClient(handler=_boom)
-        with self.assertRaises(ValueError):
-            c.complete([{"role": "user", "content": "x"}], operation="review.chapter")
-        op = c.usage_summary()["by_operation"]["review.chapter"]
-        self.assertEqual(op["attempts"], 1)
-        self.assertEqual(op["failed_attempts"], 1)
-        self.assertEqual(op["logical_calls"], 1)
-
-    def test_concurrent_calls_do_not_lose_or_corrupt_records(self):
-        """FakeClient.calls 只用一把锁保护列表本身，never 持锁调用 handler；
-        并发下 calls 长度与各 operation 的 logical_calls 计数必须精确，不丢不重。"""
-        c = FakeClient(handler=lambda m, t, j: "ok")
-        n = 64
-
-        def _one(i):
-            c.complete([{"role": "user", "content": str(i)}], operation="naturalize.pair")
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(_one, range(n)))
-
-        self.assertEqual(len(c.calls), n)
-        op = c.usage_summary()["by_operation"]["naturalize.pair"]
-        self.assertEqual(op["logical_calls"], n)
-        self.assertEqual(op["attempts"], n)
+        self.assertEqual(summary["by_agent"], {})
+        self.assertEqual(summary["by_operation"], {})
+        self.assertEqual(summary["by_provider"], {})
+        self.assertEqual(summary["by_model"], {})
+        self.assertEqual(summary["by_stage"], {})
+        self.assertEqual(summary["schema_version"], 2)
 
 
 class TestRunStoreLock(unittest.TestCase):

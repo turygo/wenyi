@@ -11,7 +11,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 from typer.testing import CliRunner
 
-from tests.fake_llm import routing_handler
+from tests.fake_llm import fake_llm_dict, routing_handler
 from tests.sample_data import write_sample_epub, write_sample_txt
 from trans_novel.assemble.writer import (
     _default_out,
@@ -143,10 +143,7 @@ class TestRenderChapterHtmlBilingual(unittest.TestCase):
 def _config(state_dir: str, output: dict | None = None):
     raw = {
         "language": {"source": "ja", "target": "zh"},
-        "llm": {
-            "provider": "fake",
-            "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-        },
+        "llm": fake_llm_dict(),
         "pipeline": {
             "review": True,
             "polish": False,
@@ -242,13 +239,13 @@ class TestDefaultOutBilingual(unittest.TestCase):
 
 class TestOutputConfigParsing(unittest.TestCase):
     def test_defaults(self):
-        cfg = Config.from_dict({})
+        cfg = Config.from_dict({"llm": fake_llm_dict()})
         self.assertTrue(cfg.output.mono)
         self.assertTrue(cfg.output.bilingual)
         self.assertEqual(cfg.output.bilingual_order, "target_first")
 
     def test_bilingual_off_keeps_mono_default(self):
-        cfg = Config.from_dict({"output": {"bilingual": False}})
+        cfg = Config.from_dict({"llm": fake_llm_dict(), "output": {"bilingual": False}})
         self.assertFalse(cfg.output.bilingual)
         self.assertIs(cfg.output.mono, True)
 
@@ -301,7 +298,7 @@ class TestCliBilingualFlags(unittest.TestCase):
     def test_translate_flags_override_output_config(self):
         cfg = Config.from_dict(
             {
-                "llm": {"provider": "fake", "tiers": {"strong": {"model": "p"}}},
+                "llm": fake_llm_dict(),
             }
         )
         captured = {}

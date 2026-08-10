@@ -3,7 +3,7 @@
 守护两层契约：
 1. trans_novel/pipeline/backmatter.py 的标题识别 is_back_matter；
 2. orchestrator 在 config.pipeline.back_matter=skip/light/full 三档下对附属章的旁路行为：
-   - light：fast 档粗翻，跳过润色/审校/术语/回译/预扫梗概；
+   - light：走 translate.back_matter 路由粗翻，跳过润色/审校/术语/回译/预扫梗概；
    - skip：原文直通，附属章不发任何翻译调用（seg.target==seg.source）；
    - full：附属章不旁路，照常走完整翻译/润色/审校/回译，但 is_back_matter 命中时不抽术语。
 """
@@ -15,7 +15,7 @@ import os
 import tempfile
 import unittest
 
-from tests.fake_llm import routing_handler
+from tests.fake_llm import fake_llm_dict, routing_handler
 from trans_novel.config import Config
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.backmatter import is_back_matter
@@ -45,10 +45,7 @@ def _config(state_dir: str, back_matter: str) -> Config:
     return Config.from_dict(
         {
             "language": {"source": "ja", "target": "zh"},
-            "llm": {
-                "provider": "fake",
-                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-            },
+            "llm": fake_llm_dict(),
             "segment": {"max_chars_per_batch": 1800},
             # 打开 review/polish/backtranslate，让「附属章没有这些事件」成为有信号的断言
             # ——正文章会产生它们，附属章旁路后才不产生。
@@ -75,12 +72,13 @@ def _bm_index(store) -> int:
     return next(c["index"] for c in m["chapters"] if is_back_matter(c["title"]))
 
 
-def _lit_calls(calls, tier=None):
-    """翻译调用（system 含「文学翻译」），可按 tier 过滤。"""
+def _lit_calls(calls, operation=None):
+    """翻译调用（system 含「文学翻译」），可按 operation 过滤。"""
     return [
         c
         for c in calls
-        if "文学翻译" in c["messages"][0]["content"] and (tier is None or c["tier"] == tier)
+        if "文学翻译" in c["messages"][0]["content"]
+        and (operation is None or c["operation"] == operation)
     ]
 
 
@@ -161,7 +159,7 @@ class TestIsBackMatter(unittest.TestCase):
 
 
 class TestBackMatterLight(unittest.TestCase):
-    """light 档：附属章走 fast 档粗翻，跳过润色/审校/术语/回译，正文仍走强档。"""
+    """light 档：附属章走 translate.back_matter 粗翻，跳过润色/审校/术语/回译，正文仍走 translate.batch。"""
 
     def test_light_bypass(self):
         with tempfile.TemporaryDirectory() as d:
@@ -175,7 +173,7 @@ class TestBackMatterLight(unittest.TestCase):
             bm = _bm_index(store)
             bm_events = [e for e in _events(store) if e.get("chapter") == bm]
 
-            # (a) 旁路专属事件：chapter_back_matter(mode=light) + light 批次翻译（fast 档）
+            # (a) 旁路专属事件：chapter_back_matter(mode=light) + light 批次翻译
             cbm = [e for e in bm_events if e["event"] == "chapter_back_matter"]
             self.assertEqual(len(cbm), 1)
             self.assertEqual(cbm[0]["mode"], "light")
@@ -183,7 +181,7 @@ class TestBackMatterLight(unittest.TestCase):
             self.assertTrue(bts, "light 档附属章应产生 batch_translated")
             for e in bts:
                 self.assertTrue(e.get("back_matter"))
-                self.assertEqual(e.get("tier"), "fast")
+                self.assertEqual(e.get("operation"), "translate.back_matter")
 
             # (b) 完整流水线的重活一律不落到附属章
             for ev in (
@@ -200,9 +198,20 @@ class TestBackMatterLight(unittest.TestCase):
                 "预扫逐章梗概应跳过附属章",
             )
 
-            # (c) 附属章走 fast 档、正文走 strong 档，两类翻译调用都在
-            self.assertTrue(_lit_calls(client.calls, tier="fast"), "附属章 light 翻译应为 fast 档")
-            self.assertTrue(_lit_calls(client.calls, tier="strong"), "正文翻译应为 strong 档")
+            # (c) 附属章走 translate.back_matter、正文走 translate.batch，两类调用都在，
+            #     且 Agent 归因正确：light-translator 与 translator
+            bm_calls = _lit_calls(client.calls, operation="translate.back_matter")
+            self.assertTrue(bm_calls, "附属章 light 翻译应为 translate.back_matter")
+            self.assertTrue(
+                all(c["agent"] == "light-translator" for c in bm_calls),
+                "附属章 light 翻译应归因 light-translator Agent",
+            )
+            body_calls = _lit_calls(client.calls, operation="translate.batch")
+            self.assertTrue(body_calls, "正文翻译应为 translate.batch")
+            self.assertTrue(
+                all(c["agent"] == "translator" for c in body_calls),
+                "正文翻译应归因 translator Agent",
+            )
 
             # (d) 附属章每段都有译文
             ch = store.load_chapter(bm)
@@ -336,7 +345,7 @@ class TestBackMatterConfigValidation(unittest.TestCase):
         from pydantic import ValidationError
 
         with self.assertRaises(ValidationError):
-            Config.from_dict({"pipeline": {"back_matter": "ligth"}})
+            Config.from_dict({"llm": fake_llm_dict(), "pipeline": {"back_matter": "ligth"}})
 
 
 class TestBackMatterUpgradeReopen(unittest.TestCase):
@@ -366,9 +375,17 @@ class TestBackMatterUpgradeReopen(unittest.TestCase):
                 all(s.target and s.target != s.source for s in ch.text_segments),
                 "升档后附属章应真的重译，而非复用原文副本",
             )
-            self.assertTrue(_lit_calls(client2.calls, tier="fast"))
+            self.assertTrue(_lit_calls(client2.calls, operation="translate.back_matter"))
+            self.assertTrue(
+                all(
+                    c["agent"] == "light-translator"
+                    for c in _lit_calls(client2.calls, operation="translate.back_matter")
+                ),
+                "升档重译应归因 light-translator Agent",
+            )
             self.assertFalse(
-                _lit_calls(client2.calls, tier="strong"), "升档重开只影响附属章，正文不得重翻"
+                _lit_calls(client2.calls, operation="translate.batch"),
+                "升档重开只影响附属章，正文不得重翻",
             )
             self.assertEqual(ch.meta.get("back_matter_mode"), "light")
 

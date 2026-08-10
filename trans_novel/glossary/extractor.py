@@ -1,4 +1,4 @@
-"""术语抽取 Agent（廉价档）+ 入库（含冲突裁决）。
+"""术语抽取 Agent + 入库（含冲突裁决）。
 
 每翻完一章，从"原文 + 译文"里抽取应进表的专有名词，
 依据实际译法入库；冲突裁决由 GlossaryStore.upsert_term 完成。
@@ -37,7 +37,7 @@ class GlossaryExtractor(Agent):
             target=target_text,
         )
         raw = self._ask_json(
-            system, user, tier="fast", key="terms", default=[], operation="glossary.extract"
+            system, user, key="terms", default=[], agent="preparer", operation="glossary.extract"
         )
         terms: list[GlossaryTerm] = []
         for d in self.dict_items(raw):

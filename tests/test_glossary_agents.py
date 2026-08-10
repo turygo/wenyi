@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 
+from tests.fake_llm import fake_llm_dict
 from trans_novel.agents.analyzer import Analyzer
 from trans_novel.agents.glossary_auditor import GlossaryAuditor
 from trans_novel.config import Config
@@ -22,10 +23,7 @@ def _cfg():
     return Config.from_dict(
         {
             "language": {"source": "ja", "target": "zh"},
-            "llm": {
-                "provider": "fake",
-                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-            },
+            "llm": fake_llm_dict(),
         }
     )
 
@@ -47,10 +45,12 @@ class TestAnalyzer(unittest.TestCase):
             ],
             "terms": [{"source": "高度育成高校", "target": "高度育成高中", "type": "组织"}],
         }
-        client = FakeClient(handler=lambda m, t, j: json.dumps(analysis, ensure_ascii=False))
+        client = FakeClient(handler=lambda m, a, o, j: json.dumps(analysis, ensure_ascii=False))
         a = Analyzer(client, _cfg())
         result = a.analyze("……样章……")
         self.assertEqual(result["genre"], "校园")
+        self.assertEqual(client.calls[0]["agent"], "analyst")
+        self.assertEqual(client.calls[0]["operation"], "analyzer.analyze")
 
         with tempfile.TemporaryDirectory() as d:
             store = GlossaryStore(os.path.join(d, "g.db"))
@@ -69,7 +69,7 @@ class TestAnalyzer(unittest.TestCase):
             "characters": ["bad", {"source": "綾小路", "target": "绫小路"}],
             "terms": [1, {"source": "学校", "target": "学校", "type": {"bad": 1}}],
         }
-        client = FakeClient(handler=lambda m, t, j: json.dumps(analysis, ensure_ascii=False))
+        client = FakeClient(handler=lambda m, a, o, j: json.dumps(analysis, ensure_ascii=False))
         analyzer = Analyzer(client, _cfg())
         result = analyzer.analyze("……样章……")
 
@@ -97,12 +97,14 @@ class TestExtractor(unittest.TestCase):
                 {"source": "屋上", "target": "天台", "type": "地名", "gender": "未知"},
             ]
         }
-        client = FakeClient(handler=lambda m, t, j: json.dumps(terms, ensure_ascii=False))
+        client = FakeClient(handler=lambda m, a, o, j: json.dumps(terms, ensure_ascii=False))
         ext = GlossaryExtractor(client, _cfg())
         with tempfile.TemporaryDirectory() as d:
             store = GlossaryStore(os.path.join(d, "g.db"))
             summary, _ = ext.extract_and_store(store, "原文", "译文", chapter=1)
             self.assertEqual(summary["inserted"], 2)
+            self.assertEqual(client.calls[0]["agent"], "preparer")
+            self.assertEqual(client.calls[0]["operation"], "glossary.extract")
             horikita = store.get_term("堀北")
             self.assertEqual(horikita.gender, "女")
             self.assertEqual(horikita.aliases, ["堀北さん"])
@@ -158,7 +160,7 @@ class TestExtractor(unittest.TestCase):
         """existing 只保留本次原文命中的词条 + 锁定人物，其余不进 prompt。"""
         captured = {}
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             captured["user"] = messages[1]["content"]
             return json.dumps({"terms": []}, ensure_ascii=False)
 
@@ -193,7 +195,9 @@ class TestExtractor(unittest.TestCase):
                 }
             ]
         }
-        extractor = GlossaryExtractor(FakeClient(handler=lambda m, t, j: json.dumps(terms)), _cfg())
+        extractor = GlossaryExtractor(
+            FakeClient(handler=lambda m, a, o, j: json.dumps(terms)), _cfg()
+        )
 
         result = extractor.extract("term", "术语", [])
 
@@ -257,7 +261,7 @@ class TestLatinResidueFix(unittest.TestCase):
         self.tmp.cleanup()
 
     def _client(self):
-        return FakeClient(handler=lambda messages, tier, json_mode: "{}")
+        return FakeClient(handler=lambda messages, agent, operation, json_mode: "{}")
 
     def test_fixes_locked_latin_residue_and_squeezes_space(self):
         applied = GlossaryAuditor(self._client(), _cfg()).audit(self.store, self.glossary)
@@ -364,7 +368,7 @@ class TestGlossaryAuditGuards(unittest.TestCase):
         self.glossary.upsert_term(GlossaryTerm(source="Kaho", target="佳穂子", type=TYPE_PERSON))
         self._seed_chapter(["佳穂子和佳穗子在一起。"])
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             return json.dumps(
                 {
                     "unifications": [

@@ -143,7 +143,7 @@ class TestMineCandidatesEn(unittest.TestCase):
 
 
 class TestMineCandidatesDualChannel(unittest.TestCase):
-    """mine_candidates 入口：en 走"确定性大写通道 ∪ fast 档 LLM 通道"双通道合并。"""
+    """mine_candidates 入口：en 走"确定性大写通道 ∪ LLM 通道"双通道合并。"""
 
     class _FakeMinerAgent:
         """最小 stub：满足 mine_candidates_llm 所需接口（.src/.tgt + _ask_json），
@@ -155,7 +155,15 @@ class TestMineCandidatesDualChannel(unittest.TestCase):
             self._candidates = candidates
 
         def _ask_json(
-            self, system, user, *, tier, key=None, default=None, max_tokens=None, operation=None
+            self,
+            system,
+            user,
+            *,
+            key=None,
+            default=None,
+            max_tokens=None,
+            agent=None,
+            operation=None,
         ):
             return list(self._candidates)
 
@@ -201,7 +209,15 @@ class TestMineCandidatesLlmConcurrency(unittest.TestCase):
             self._per = per_chapter
 
         def _ask_json(
-            self, system, user, *, tier, key=None, default=None, max_tokens=None, operation=None
+            self,
+            system,
+            user,
+            *,
+            key=None,
+            default=None,
+            max_tokens=None,
+            agent=None,
+            operation=None,
         ):
             import re
 

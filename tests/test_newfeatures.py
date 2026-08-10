@@ -8,7 +8,7 @@ import tempfile
 import unittest
 import zipfile
 
-from tests.fake_llm import routing_handler
+from tests.fake_llm import fake_llm_dict, routing_handler
 from tests.sample_data import write_sample_txt
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
@@ -22,10 +22,7 @@ class TestModelLanguageDetection(unittest.TestCase):
         return Config.from_dict(
             {
                 "language": {"source": "auto", "target": "zh"},
-                "llm": {
-                    "provider": "fake",
-                    "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-                },
+                "llm": fake_llm_dict(),
                 "pipeline": {"book_understanding": False},
                 "paths": {"state_dir": state},
             }
@@ -37,14 +34,21 @@ class TestModelLanguageDetection(unittest.TestCase):
             write_sample_txt(txt)
             cfg = self._cfg(os.path.join(d, "state"))
 
-            def handler(messages, tier, json_mode):
-                if "语言识别器" in messages[0]["content"]:
-                    return json.dumps({"language": "russian"}, ensure_ascii=False)
-                return routing_handler(messages, tier, json_mode)
+            captured = {}
 
-            store = Orchestrator(cfg, client=FakeClient(handler=handler)).prepare(txt)
+            def handler(messages, agent, operation, json_mode):
+                if "语言识别器" in messages[0]["content"]:
+                    captured["agent"] = agent
+                    captured["operation"] = operation
+                    return json.dumps({"language": "russian"}, ensure_ascii=False)
+                return routing_handler(messages, agent, operation, json_mode)
+
+            client = FakeClient(handler=handler)
+            store = Orchestrator(cfg, client=client).prepare(txt)
             self.assertEqual(cfg.source_lang, "ru")
             self.assertEqual(store.load_manifest()["source_lang"], "ru")
+            self.assertEqual(captured["agent"], "reviewer")
+            self.assertEqual(captured["operation"], "language.detect")
 
     def test_auto_detection_failure_requires_user_source(self):
         with tempfile.TemporaryDirectory() as d:
@@ -52,10 +56,10 @@ class TestModelLanguageDetection(unittest.TestCase):
             write_sample_txt(txt)
             cfg = self._cfg(os.path.join(d, "state"))
 
-            def handler(messages, tier, json_mode):
+            def handler(messages, agent, operation, json_mode):
                 if "语言识别器" in messages[0]["content"]:
                     return json.dumps({"language": ""}, ensure_ascii=False)
-                return routing_handler(messages, tier, json_mode)
+                return routing_handler(messages, agent, operation, json_mode)
 
             with self.assertRaisesRegex(RuntimeError, "language.source"):
                 Orchestrator(cfg, client=FakeClient(handler=handler)).prepare(txt)
@@ -67,7 +71,7 @@ class TestModelLanguageDetection(unittest.TestCase):
             cfg = Config.from_dict(
                 {
                     "language": {"source": "ja", "target": "ja-JP"},
-                    "llm": {"provider": "fake"},
+                    "llm": fake_llm_dict(),
                     "paths": {"state_dir": os.path.join(d, "state")},
                 }
             )
@@ -84,7 +88,7 @@ class TestModelLanguageDetection(unittest.TestCase):
             write_sample_txt(txt)
             cfg = self._cfg(os.path.join(d, "state"))
 
-            def handler(messages, tier, json_mode):
+            def handler(messages, agent, operation, json_mode):
                 if "语言识别器" in messages[0]["content"]:
                     return json.dumps({"language": "chinese"}, ensure_ascii=False)
                 raise AssertionError("相同语言不应继续进入分析或翻译")
@@ -162,10 +166,7 @@ class TestGlossaryAudit(unittest.TestCase):
             cfg = Config.from_dict(
                 {
                     "language": {"source": "ja", "target": "zh"},
-                    "llm": {
-                        "provider": "fake",
-                        "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-                    },
+                    "llm": fake_llm_dict(),
                     "pipeline": {
                         "review": False,
                         "polish": False,
@@ -186,7 +187,7 @@ class TestGlossaryAudit(unittest.TestCase):
             ch.segments[1].target = "佳穂子和佳穗子在一起。"  # 同名两种写法
             store.save_chapter(ch)
 
-            def handler(messages, tier, json_mode):
+            def handler(messages, agent, operation, json_mode):
                 if "术语一致性审计员" in messages[0]["content"]:
                     return json.dumps(
                         {
@@ -204,7 +205,10 @@ class TestGlossaryAudit(unittest.TestCase):
                 return "{}"
 
             g = GlossaryStore(store.glossary_path)
-            applied = GlossaryAuditor(FakeClient(handler=handler), cfg).audit(store, g)
+            client = FakeClient(handler=handler)
+            applied = GlossaryAuditor(client, cfg).audit(store, g)
+            self.assertEqual(client.calls[0]["agent"], "analyst")
+            self.assertEqual(client.calls[0]["operation"], "glossary.audit")
             self.assertEqual(len(applied), 1)
             term = g.get_term("カホ")
             self.assertTrue(term.locked)
@@ -225,10 +229,7 @@ class TestRunAll(unittest.TestCase):
             cfg = Config.from_dict(
                 {
                     "language": {"source": "auto", "target": "zh"},
-                    "llm": {
-                        "provider": "fake",
-                        "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-                    },
+                    "llm": fake_llm_dict(),
                     "pipeline": {
                         "review": True,
                         "polish": True,

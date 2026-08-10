@@ -6,6 +6,7 @@ import json
 import re
 import unittest
 
+from tests.fake_llm import fake_llm_dict
 from trans_novel.agents import prompts
 from trans_novel.agents.translator import Translator
 from trans_novel.config import Config
@@ -22,30 +23,45 @@ class TestTranslatorAlignment(unittest.TestCase):
         return Config.from_dict(
             {
                 "language": {"source": "ja", "target": "zh"},
-                "llm": {
-                    "provider": "fake",
-                    "tiers": {
-                        "strong": {"model": "deepseek-v4-pro"},
-                        "cheap": {"model": "deepseek-v4-flash"},
-                    },
-                },
+                "llm": fake_llm_dict(),
                 "pipeline": {"align_retry_limit": 1},
             }
         )
 
     def test_happy_path_aligned(self):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             n = _count_segments(messages[-1]["content"])
             return json.dumps({"translations": [f"译{i}" for i in range(n)]}, ensure_ascii=False)
 
-        t = Translator(FakeClient(handler=handler), self._config())
-        out = t.translate_batch(["あ", "い", "う"])
+        client = FakeClient(handler=handler)
+        t = Translator(client, self._config())
+        out = t.translate_batch(["あ", "い", "う"], agent="translator")
         self.assertEqual(len(out), 3)
         self.assertEqual(out, ["译0", "译1", "译2"])
+        # 路由归因：正文翻译显式走 translator Agent（translate.batch）
+        self.assertTrue(client.calls)
+        self.assertTrue(all(c["agent"] == "translator" for c in client.calls))
+        self.assertTrue(all(c["operation"] == "translate.batch" for c in client.calls))
+
+    def test_back_matter_light_agent_routing(self):
+        """light 旁路调用显式传 light-translator Agent，agent 原样透传到调用记录。"""
+
+        def handler(messages, agent, operation, json_mode):
+            n = _count_segments(messages[-1]["content"])
+            return json.dumps({"translations": [f"译{i}" for i in range(n)]}, ensure_ascii=False)
+
+        client = FakeClient(handler=handler)
+        t = Translator(client, self._config())
+        out = t.translate_batch(
+            ["あ", "い"], agent="light-translator", operation="translate.back_matter"
+        )
+        self.assertEqual(len(out), 2)
+        self.assertEqual(client.calls[0]["agent"], "light-translator")
+        self.assertEqual(client.calls[0]["operation"], "translate.back_matter")
 
     def test_fallback_to_per_segment_on_mismatch(self):
         # 多段批次故意少返回一段；单段调用正常 → 触发逐段兜底
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             n = _count_segments(messages[-1]["content"])
             trans = [f"译{i}" for i in range(n)]
             if n > 1:
@@ -54,7 +70,7 @@ class TestTranslatorAlignment(unittest.TestCase):
 
         client = FakeClient(handler=handler)
         t = Translator(client, self._config())
-        out = t.translate_batch(["あ", "い", "う"])
+        out = t.translate_batch(["あ", "い", "う"], agent="translator")
         self.assertEqual(len(out), 3)  # 兜底后仍保证 1:1
         # 验证确实回退到了逐段（出现过 n==1 的调用）
         single_calls = [
@@ -64,26 +80,28 @@ class TestTranslatorAlignment(unittest.TestCase):
 
     def test_empty_per_segment_fallback_is_rejected(self):
         client = FakeClient(
-            handler=lambda messages, tier, json_mode: json.dumps({"translations": []})
+            handler=lambda messages, agent, operation, json_mode: json.dumps({"translations": []})
         )
         translator = Translator(client, self._config())
 
         with self.assertRaisesRegex(Exception, "索引为 0 的段落"):
-            translator.translate_batch(["あ", "い"])
+            translator.translate_batch(["あ", "い"], agent="translator")
 
     def test_non_string_translation_is_rejected(self):
         client = FakeClient(
-            handler=lambda messages, tier, json_mode: json.dumps({"translations": [None]})
+            handler=lambda messages, agent, operation, json_mode: json.dumps(
+                {"translations": [None]}
+            )
         )
         translator = Translator(client, self._config())
 
         with self.assertRaisesRegex(Exception, "索引为 0 的段落"):
-            translator.translate_batch(["あ"])
+            translator.translate_batch(["あ"], agent="translator")
 
     def test_retranslate_batch_with_feedback_rejects_non_string_element(self):
         """translations 数组中包含 dict 元素时应视为无效并返回 []，不应经 str() 强制转换后采纳。"""
         client = FakeClient(
-            handler=lambda messages, tier, json_mode: json.dumps(
+            handler=lambda messages, agent, operation, json_mode: json.dumps(
                 {"translations": ["译0", {"text": "译1"}]}, ensure_ascii=False
             )
         )
@@ -98,7 +116,7 @@ class TestTranslatorAlignment(unittest.TestCase):
     def test_retranslate_batch_with_feedback_rejects_blank_element(self):
         """translations 数组含空串元素时视为无效，返回 []。"""
         client = FakeClient(
-            handler=lambda messages, tier, json_mode: json.dumps(
+            handler=lambda messages, agent, operation, json_mode: json.dumps(
                 {"translations": ["译0", "  "]}, ensure_ascii=False
             )
         )

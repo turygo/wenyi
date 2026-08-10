@@ -1,4 +1,12 @@
-"""测试和离线流程使用的可编程 provider。"""
+"""测试与离线流程使用的可编程 provider。
+
+- FakeClient：直接注入 handler 的标准测试路径，handler 签名
+  (messages, agent, operation, json_mode)。调用记录同时包含 agent 与
+  operation 两个键，供离线测试确定性断言。缺省输出（纯文本 ""、JSON "[]"）
+  是刻意的 fake 语义，绕过生产空响应校验，空输出计成功，不计 failed_attempts。
+- FakeProviderTransport：provider 类型 fake 在 ProviderRegistry 中的共享传输，
+  无凭据无网络，输出与 FakeClient 缺省一致；模型 ID 只用于目录一致性，不发送。
+"""
 
 from __future__ import annotations
 
@@ -6,16 +14,17 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+from ...config import ModelRef, ProviderConfig
 from ..base import LLMClient, Messages
+from ..usage import UsageTracker
+
+Handler = Callable[[Messages, str, str, bool], str]
 
 
 class FakeClient(LLMClient):
     """可编程的离线 client。"""
 
-    def __init__(
-        self,
-        handler: Optional[Callable[[Messages, str, bool], str]] = None,
-    ) -> None:
+    def __init__(self, handler: Optional[Handler] = None) -> None:
         super().__init__()
         self.handler = handler
         self.calls: list[dict[str, Any]] = []
@@ -25,30 +34,59 @@ class FakeClient(LLMClient):
         self,
         messages: Messages,
         *,
-        tier: str = "strong",
         json_mode: bool = False,
         max_tokens: Optional[int] = None,
         stage: Optional[str] = None,
-        operation: Optional[str] = None,
+        agent: str,
+        operation: str,
     ) -> str:
         record = {
             "messages": messages,
-            "tier": tier,
             "json_mode": json_mode,
             "max_tokens": max_tokens,
             "stage": stage,
+            "agent": agent,
             "operation": operation,
         }
         with self._calls_lock:
             self.calls.append(record)
-        self.usage.record_attempt(operation)
+        self.usage.record_attempt(agent=agent, operation=operation)
         start = time.monotonic()
         try:
             if self.handler is not None:
-                return self.handler(messages, tier, json_mode)
+                return self.handler(messages, agent, operation, json_mode)
             return "[]" if json_mode else ""
         except Exception:
-            self.usage.record_attempt_failed(operation)
+            self.usage.record_attempt_failed(agent=agent, operation=operation)
             raise
         finally:
-            self.usage.record_logical_call(operation, (time.monotonic() - start) * 1000)
+            self.usage.record_logical_call(agent, operation, (time.monotonic() - start) * 1000)
+
+
+class FakeProviderTransport:
+    """provider 类型 fake 的共享传输：无凭据、无网络、无 handler。
+
+    缺省输出与直接 FakeClient 一致（"" / "[]"），是生产空响应规则之外的
+    显式测试例外：成功返回，不记 failed_attempts，不产生 token usage。
+    """
+
+    def __init__(self, alias: str, cfg: ProviderConfig, usage: UsageTracker) -> None:
+        self.alias = alias
+        self.cfg = cfg
+        self.usage = usage
+
+    def complete(
+        self,
+        messages: Messages,
+        model_ref: ModelRef,
+        *,
+        json_mode: bool = False,
+        max_tokens: Optional[int] = None,
+        stage: Optional[str] = None,
+        agent: str,
+        operation: str,
+    ) -> str:
+        self.usage.record_attempt(
+            agent=agent, operation=operation, provider=self.alias, model_ref=model_ref
+        )
+        return "[]" if json_mode else ""

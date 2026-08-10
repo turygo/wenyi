@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+from tests.fake_llm import fake_llm_dict
 from trans_novel.cli import _configure_windows_console, app
 from trans_novel.config import Config
 
@@ -31,7 +32,7 @@ class TestCliConfig(unittest.TestCase):
     def test_translate_defaults_keep_config_switches(self):
         cfg = Config.from_dict(
             {
-                "llm": {"provider": "fake", "tiers": {"strong": {"model": "p"}}},
+                "llm": fake_llm_dict(),
                 "pipeline": {"polish": True, "consistency_qa": False},
             }
         )
@@ -71,7 +72,7 @@ class TestCliConfig(unittest.TestCase):
     def test_translate_flags_override_config_switches(self):
         cfg = Config.from_dict(
             {
-                "llm": {"provider": "fake", "tiers": {"strong": {"model": "p"}}},
+                "llm": fake_llm_dict(),
                 "pipeline": {"polish": True, "consistency_qa": False},
             }
         )
@@ -114,7 +115,7 @@ class TestCliConfig(unittest.TestCase):
     def test_translate_prepare_stops_before_translation(self):
         config = Config.from_dict(
             {
-                "llm": {"provider": "fake", "tiers": {"strong": {"model": "p"}}},
+                "llm": fake_llm_dict(),
             }
         )
         captured = {}
@@ -164,7 +165,7 @@ class TestCliConfig(unittest.TestCase):
     def test_translate_prepare_rejects_chapter(self):
         config = Config.from_dict(
             {
-                "llm": {"provider": "fake", "tiers": {"strong": {"model": "p"}}},
+                "llm": fake_llm_dict(),
             }
         )
         with (
@@ -182,7 +183,7 @@ class TestCliConfig(unittest.TestCase):
     def test_resume_delegates_to_translate_without_audit_argument(self):
         cfg = Config.from_dict(
             {
-                "llm": {"provider": "fake", "tiers": {"strong": {"model": "p"}}},
+                "llm": fake_llm_dict(),
                 "pipeline": {"polish": True, "consistency_qa": False},
             }
         )
@@ -245,6 +246,7 @@ class TestCliConfig(unittest.TestCase):
             cfg = Config.from_dict(
                 {
                     "language": {"source": "ja", "target": "zh"},
+                    "llm": fake_llm_dict(),
                     "paths": {"state_dir": state_dir},
                 }
             )
@@ -279,7 +281,7 @@ class TestCliConfig(unittest.TestCase):
         self.assertIn("不支持的输出格式", result.output)
 
     def test_translate_reports_out_of_range_chapter_without_traceback(self):
-        cfg = Config.from_dict({"llm": {"provider": "fake"}})
+        cfg = Config.from_dict({"llm": fake_llm_dict()})
 
         class FakeOrchestrator:
             def __init__(self, config):
@@ -308,6 +310,7 @@ class TestCliConfig(unittest.TestCase):
             cfg = Config.from_dict(
                 {
                     "language": {"source": "ja", "target": "zh"},
+                    "llm": fake_llm_dict(),
                     "paths": {"state_dir": state_dir},
                 }
             )

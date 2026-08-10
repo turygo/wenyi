@@ -1,8 +1,8 @@
 """编排器：驱动全流程，章级状态机 + 断点续跑。
 
 单章流水线（章内批次**串行**翻译，逐批刷新滚动上下文与术语快照；跨章亦串行传递梗概）：
-  每批：渲染上下文（含前一批刚译出的译文）→ 翻译（强档，唯一阻塞关键路径的调用，段数对齐保证）→
-        立即落盘（crash-safe）→ 术语抽取（fast 档，落盘后主线程同步抽取，供下一批参照）→
+  每批：渲染上下文（含前一批刚译出的译文）→ 翻译（translate.batch，唯一阻塞关键路径的调用，段数对齐保证）→
+        立即落盘（crash-safe）→ 术语抽取（glossary.extract，落盘后主线程同步抽取，供下一批参照）→
         润色（可选，提交共享线程池后台跑，批间无依赖，不阻塞下一批翻译）。
   章末（串行）：排干本章全部润色 future（含续跑遗留的 pending_polish，写回前按需标点规范化）→
         全章术语兜底抽取（在润色后的最终文本上，仍在审校前）→ 整章分块审校
@@ -14,7 +14,8 @@
   RunStore 的读写全部留在主线程，worker 线程只做 LLM 调用；异步审校在 manifest 记 review_pending
   持久标记，run() 收尾（发 translate_run_finished 前）排干所有在飞 future 并清标记，崩溃续跑据
   残留标记补跑，避免异步审校结果丢失。
-翻译前先预扫源文建立全书理解（逐章梗概+全书概览，fast 档并行），作恒定前缀注入每章翻译。
+翻译前先预扫源文建立全书理解（逐章梗概+全书概览，prescan.digest / prescan.book_synopsis 并行），
+作恒定前缀注入每章翻译。各 Agent 的模型由 llm.agents 路由决定。
 
 run_all：在翻译全书后接 术语 AI 审计统一 → 一致性 QA → 写报告 → 回填出 EPUB，一气呵成。
 进度回调 progress(done_segments, total_segments, label) 与 UI 无关，每批完成即触发。
@@ -180,18 +181,23 @@ class Orchestrator:
     def _flush_usage(self, store: RunStore, *, scope: str) -> dict[str, Any]:
         """把当前 client 尚未落盘的用量增量合并到本书 usage.json。
 
-        持久化门控不能只看 totals.calls（=by_tier 里成功响应计数）：一次完全失败的
+        持久化门控不能只看 totals.calls（=带 usage 的成功响应计数）：一次完全失败的
         逻辑调用（如 Agent._ask_json 捕获异常回退 default）不会走 usage.record()，
-        by_tier/by_stage/totals 全零，但 by_operation 的 attempts/failed_attempts/
-        logical_calls 仍真实增长——这类 operation-only 增量同样必须落盘，否则续跑
-        后这次失败尝试的底层统计永久丢失。usage_delta 内部已用 _nonneg_delta 过滤
-        掉全零槽位，故 increment["by_operation"] 非空即代表确有变化。
+        totals 与 by_stage 全零，by_agent/by_operation 中的响应用量字段也为零，但
+        attempts/failed_attempts/logical_calls 仍会增长——这类仅含归因计数的增量
+        同样必须落盘，否则续跑后这次失败尝试的底层统计永久丢失。usage_delta 内部已用
+        _nonneg_delta 过滤掉全零槽位，故 increment["by_agent"]/["by_operation"]
+        非空即代表确有变化。
         """
         current = self.client.usage_summary()
         increment = usage_delta(current, self._usage_checkpoint)
         self._usage_checkpoint = current
-        accumulated = store.load_usage() or {"totals": {}, "by_tier": {}, "by_stage": {}}
-        has_activity = bool(increment["totals"]["calls"]) or bool(increment.get("by_operation"))
+        accumulated = store.load_usage() or {}
+        has_activity = (
+            bool(increment["totals"]["calls"])
+            or bool(increment.get("by_agent"))
+            or bool(increment.get("by_operation"))
+        )
         if not has_activity:
             return merge_usage_summaries(accumulated, increment)
         cumulative = merge_usage_summaries(accumulated, increment)
@@ -327,8 +333,8 @@ class Orchestrator:
         try:
             data = self.client.complete_json(
                 [{"role": "system", "content": system}, {"role": "user", "content": sample}],
-                tier="cheap",
                 stage="language_detect",
+                agent="reviewer",
                 operation="language.detect",
             )
             code = (data.get("language") if isinstance(data, dict) else "") or ""
@@ -418,7 +424,7 @@ class Orchestrator:
         # 翻译前预扫源文，建立全书理解（幂等、可续跑）；全书概览注入每章翻译
         book_synopsis = self._build_understanding(store, glossary, progress=progress)
         # 附属章档位升档（skip→light/full、light→full）时重开已完成的附属章重译；
-        # 旁路产物（原文副本/fast 粗翻）否则会被批级续跑当成已译整批复用。降档不回退。
+        # 旁路产物（原文副本/快速粗翻）否则会被批级续跑当成已译整批复用。降档不回退。
         self._reopen_upgraded_back_matter(store)
 
         if only_chapter is not None:
@@ -465,7 +471,8 @@ class Orchestrator:
                     total=total,
                 )
                 store.save_context(context.to_dict())
-                # 每章落一次累计用量快照（含 by_stage/by_operation），中途即可做成本归因，不必等 report
+                # 每章落一次累计用量快照（含 by_agent/by_provider/by_model/by_stage），
+                # 中途即可做成本归因，不必等 report
                 store.log_event("usage_snapshot", chapter=ci, **self.client.usage_summary())
                 # 机会性排干：只处理已完成的审校 future，不阻塞下一章翻译
                 self._drain_ready_reviews(pending_reviews, store, blocking=False)
@@ -868,8 +875,8 @@ class Orchestrator:
         try:
             data = self.client.complete_json(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                tier="strong",
                 stage="title_translate",
+                agent="translator",
                 operation="title.translate",
             )
         except Exception:
@@ -921,7 +928,7 @@ class Orchestrator:
     def _reopen_upgraded_back_matter(self, store: RunStore) -> None:
         """附属章档位升档时重开已完成的附属章（skip→light/full、light→full）。
 
-        旁路档的 target（skip=原文副本、light=fast 粗翻）非空，会被批级续跑当成
+        旁路档的 target（skip=原文副本、light=快速粗翻）非空，会被批级续跑当成
         已译整批复用——不清掉就升档形同虚设。降档不回退：更高质量译文保留。
         位置门控收紧后不再命中的章同样按升档到 full 处理（此前属误伤）。
         """
@@ -957,7 +964,7 @@ class Orchestrator:
     def _translate_back_matter(
         self, mode, ci, chapter, text_segs, store, *, progress=None, done=0, total=0
     ) -> int:
-        """附属章旁路：skip=原文直通；light=fast 档粗翻。不碰 glossary/context/style/executor。"""
+        """附属章旁路：skip=原文直通；light=快速粗翻（走 translate.back_matter）。不碰 glossary/context/style/executor。"""
         label = f"第{ci}章 {chapter.title}"
         store.log_event("chapter_back_matter", chapter=ci, title=chapter.title, mode=mode)
 
@@ -986,14 +993,15 @@ class Orchestrator:
                     context="",
                     book_synopsis="",
                     chapter_digest="",
-                    tier="fast",
+                    agent="light-translator",
+                    operation="translate.back_matter",
                 )
                 if self.config.punctuation_normalize:
                     raw = [normalize_zh(t) if t else t for t in raw]
                 for s, t in zip(b, raw):
                     s.target = t
                 # 先落盘再记事件（与正文路径相反）：崩溃窗口只漏一条事件，
-                # 续跑按已落盘 target 整批复用，不重发 fast 调用。
+                # 续跑按已落盘 target 整批复用，不重发旁路调用。
                 store.save_chapter(chapter)
                 store.log_event(
                     "batch_translated",
@@ -1003,7 +1011,7 @@ class Orchestrator:
                     polished=False,
                     punctuation_normalized=self.config.punctuation_normalize,
                     back_matter=True,
-                    tier="fast",
+                    operation="translate.back_matter",
                     segments=[
                         {"index": seg_base + i, "source": s.source, "target": t}
                         for i, (s, t) in enumerate(zip(b, raw))
@@ -1078,9 +1086,9 @@ class Orchestrator:
         # 立即影响后续批次。glossary_scope=chapter 时仍按本章源文裁剪，避免全量表过大。
         term_snapshot = self._chapter_term_snapshot(glossary, text_segs)
 
-        # 逐批串行：每批渲染最新上下文 → 翻译（强档，本函数唯一阻塞关键路径的调用）→
+        # 逐批串行：每批渲染最新上下文 → 翻译（translate.batch，本函数唯一阻塞关键路径的调用）→
         # 立即落盘 → 把 raw 译文并入滚动上下文供下一批参照。术语抽取因下一批要用新词，
-        # 落盘后在主线程同步做（fast 档，耗时远小于下一批翻译，不入池避免被在飞 future 阻塞）；
+        # 落盘后在主线程同步做（glossary.extract，耗时远小于下一批翻译，不入池避免被在飞 future 阻塞）；
         # 润色批间无依赖，提交后不等，全部挪到章末统一排干（不阻塞下一批翻译）。
         # 断点续跑（段/批级）：上次中断前已译完并落盘的批次，整批跳过、不重翻，只重建上下文。
         review_issues: list[dict] = [
@@ -1211,7 +1219,9 @@ class Orchestrator:
                         else []
                     )
                     if new_t and len(new_issues) < len(seg_issues):
-                        self.client.usage.record_outcome("translate.lint_fix", accepted=True)
+                        self.client.usage.record_outcome(
+                            "translator", "translate.lint_fix", accepted=True
+                        )
                         store.log_event(
                             "lint_refixed",
                             chapter=ci,
@@ -1223,7 +1233,9 @@ class Orchestrator:
                         raw_targets[idx] = new_t
                         remaining = new_issues
                     else:
-                        self.client.usage.record_outcome("translate.lint_fix", accepted=False)
+                        self.client.usage.record_outcome(
+                            "translator", "translate.lint_fix", accepted=False
+                        )
                         remaining = seg_issues
                     for it in remaining:
                         lint_review_issues.append(
@@ -1322,7 +1334,7 @@ class Orchestrator:
                 ],
             )
             # 增量持久化：本批译文（+ pending_polish 标记）立即落盘，下次中断从此批之后
-            # 续跑；crash-safe 保住强档翻译成果——不领先落盘的只有术语库入库（见下）。
+            # 续跑；crash-safe 保住整批翻译成果——不领先落盘的只有术语库入库（见下）。
             chapter.meta["review_issues"] = review_issues
             store.save_chapter(chapter)
 
@@ -1337,7 +1349,7 @@ class Orchestrator:
                 )
 
             # 术语抽取：existing 按本批源文裁剪；落盘后在主线程同步抽取
-            # （fast 档，耗时远小于下一批强档翻译），不进共享池——否则会被在飞的润色/审校
+            # （glossary.extract，耗时远小于下一批翻译），不进共享池——否则会被在飞的润色/审校
             # future 占满 4 worker 时反向阻塞主线程，把后台工作拖回翻译关键路径。保住
             # 不变量 (a)（落库不领先落盘）与 (d)（下一批可见上一批新词）。
             # 附属章 full 档跳过抽取；新词仅当命中剩余源文时才刷新快照以保前缀缓存。
@@ -1538,9 +1550,9 @@ class Orchestrator:
             for i in range(count):
                 introduced = final_types.get(i, set()) - raw_types.get(i, set())
                 if not introduced:
-                    self.client.usage.record_outcome("polish.batch", accepted=True)
+                    self.client.usage.record_outcome("editor", "polish.batch", accepted=True)
                     continue
-                self.client.usage.record_outcome("polish.batch", accepted=False)
+                self.client.usage.record_outcome("editor", "polish.batch", accepted=False)
                 rejected_text = final[i]
                 final[i] = raw_normalized[i]
                 store.log_event(
@@ -1744,7 +1756,9 @@ class Orchestrator:
                 chapter_digest=chapter_digest,
             )
             accepted = bool(new_t) and not checks.length_flags([seg.source], [new_t])
-            self.client.usage.record_outcome("translate.review_fix", accepted=accepted)
+            self.client.usage.record_outcome(
+                "translator", "translate.review_fix", accepted=accepted
+            )
             if accepted:
                 if self.config.punctuation_normalize:
                     new_t = normalize_zh(new_t)
@@ -1792,6 +1806,7 @@ class Orchestrator:
         sources = [s.source for s in batch]
         return self.translator.translate_batch(
             sources,
+            agent="translator",
             glossary_terms=terms,
             style=style,
             context=ctx_text,

@@ -1,4 +1,4 @@
-"""全书理解预扫 Agent（廉价档）。
+"""全书理解预扫 Agent。
 
 翻译开始前通读**源文**，产出：
 - 逐章梗概（chapter digest）：每章一段中文梗概，存入 chapter.meta["source_digest"]；
@@ -27,8 +27,10 @@ class Synopsizer(Agent):
         user = prompts.render(
             "chapter_digest_user", src=self.src, tgt=self.tgt, source=source_text[:8000]
         )
-        # 机械任务走 fast 档（免思考）；梗概 ≤200 字，上限留足裕量防输出失控
-        return self._ask_text(system, user, tier="fast", max_tokens=600, operation="prescan.digest")
+        # 机械任务（免思考路由）；梗概 ≤200 字，上限留足裕量防输出失控
+        return self._ask_text(
+            system, user, max_tokens=600, agent="preparer", operation="prescan.digest"
+        )
 
     def book_synopsis(self, digests: list[str], analysis_brief: str, cast: str = "") -> str:
         """把各章梗概 + 前期分析 + 人物定名表归并成全书概览。超长则分组 map-reduce。"""
@@ -73,7 +75,7 @@ class Synopsizer(Agent):
             digests=numbered,
             cast=cast or "（无）",
         )
-        # 概览 ≤500 字，fast 档 + 上限
+        # 概览 ≤500 字，机械任务路由 + 上限
         return self._ask_text(
-            system, user, tier="fast", max_tokens=1200, operation="prescan.book_synopsis"
+            system, user, max_tokens=1200, agent="preparer", operation="prescan.book_synopsis"
         )

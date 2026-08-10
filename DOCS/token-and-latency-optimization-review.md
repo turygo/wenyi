@@ -825,7 +825,7 @@ pipeline:
    `translate.lint_fix`、`translate.review_fix`、`naturalize.screen/rewrite/fidelity/pair`、
    `review.chapter`、`polish.batch`、`prescan.digest/term_mine/name_terms/book_synopsis`、
    `language.detect`、`title.translate`、`analyzer.analyze`、`glossary.extract`、
-   `glossary.audit`、`backtranslate.translate/check`、`consistency.check/autofix`）已逐一标注，
+   `glossary.audit`、`backtranslate.translate/check`、`consistency.check`）已逐一标注，
    `Agent._ask_json`/`_ask_text` 把 `operation` 设为必填参数，杜绝遗漏。
 2. **Reviewer chunk 有界并发**：`Orchestrator.run()` 新建 book-wide 专用 `review_executor`
    （4-worker，与章级 `executor` 分离避免嵌套死锁），贯穿同步（`autofix_severe=true`）与

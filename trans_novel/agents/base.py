@@ -27,7 +27,7 @@ class Agent:
         system: str,
         user: str,
         *,
-        tier: str,
+        agent: str,
         operation: str,
         key: str | None = None,
         default: Any = _RAISE,
@@ -37,14 +37,15 @@ class Agent:
 
         异常时返回 default（未给 default 则照常抛出，如 Translator 交由重试逻辑处理）。
         key 给出时：结果为 dict 取 data[key]（缺失回退）；结果为非空 list 直接用；否则回退。
-        operation：稳定、可读的业务标签，用于按 by_operation 归因统计 LLM 用量。
+        agent：功能 Agent 路由键（llm.agents 中声明的六键之一）；operation：内部业务标签
+        （telemetry/调试归因）。两者都在调用点显式硬编码，缺一不可。
         """
         try:
             data = self.client.complete_json(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                tier=tier,
                 max_tokens=max_tokens,
                 stage=type(self).__name__,
+                agent=agent,
                 operation=operation,
             )
         except Exception:
@@ -63,7 +64,7 @@ class Agent:
         system: str,
         user: str,
         *,
-        tier: str,
+        agent: str,
         operation: str,
         default: str = "",
         max_tokens: int | None = None,
@@ -73,9 +74,9 @@ class Agent:
             return (
                 self.client.complete(
                     [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                    tier=tier,
                     max_tokens=max_tokens,
                     stage=type(self).__name__,
+                    agent=agent,
                     operation=operation,
                 )
                 or ""

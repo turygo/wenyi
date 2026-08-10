@@ -23,7 +23,7 @@ import os
 import tempfile
 import unittest
 
-from tests.fake_llm import routing_handler
+from tests.fake_llm import fake_llm_dict, routing_handler
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
 from trans_novel.llm import FakeClient
@@ -46,10 +46,7 @@ def _cfg(
     return Config.from_dict(
         {
             "language": {"source": "ja", "target": "zh"},
-            "llm": {
-                "provider": "fake",
-                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-            },
+            "llm": fake_llm_dict(),
             "segment": {"max_chars_per_batch": max_chars_per_batch, "max_chars_per_segment": 1200},
             "pipeline": {
                 "review": review,
@@ -162,11 +159,11 @@ class TestBatchExtractionPruning(unittest.TestCase):
     """(3) 抽取按批裁剪：批内内联抽取的『已有对照表』只含本批源文命中的词条。"""
 
     @staticmethod
-    def _extractor_returns_nothing(messages, tier, json_mode):
+    def _extractor_returns_nothing(messages, agent, operation, json_mode):
         system = messages[0]["content"]
         if "术语" in system and "抽取器" in system:
             return json.dumps({"terms": []}, ensure_ascii=False)
-        return routing_handler(messages, tier, json_mode)
+        return routing_handler(messages, agent, operation, json_mode)
 
     def test_inline_extraction_existing_pruned_to_batch(self):
         """预种两个 source 分处不同批的词条：批内抽取的 existing 只保留本批命中的那个，
@@ -218,7 +215,7 @@ class TestBatchSnapshotFreeze(unittest.TestCase):
     """(4) 章级快照条件刷新（不变量 d）：新词命中剩余源文才刷新，否则术语块逐字节冻结。"""
 
     def _run(self, doc: str, new_source: str, new_target: str) -> dict[str, str]:
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
             if "术语" in system and "抽取器" in system:
@@ -229,7 +226,7 @@ class TestBatchSnapshotFreeze(unittest.TestCase):
                         ensure_ascii=False,
                     )
                 return json.dumps({"terms": []}, ensure_ascii=False)
-            return routing_handler(messages, tier, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
 
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")

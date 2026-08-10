@@ -1,4 +1,4 @@
-"""全局分析 Agent（强档）。
+"""全局分析 Agent。
 
 通读样章，产出风格指南、角色圣经（含性别/语气）、初始术语候选，
 并把角色/术语种入术语库，作为全书翻译的统一基准。
@@ -27,7 +27,7 @@ class Analyzer(Agent):
         system = prompts.render("analyzer_system", src=self.src, tgt=self.tgt)
         user = prompts.render("analyzer_user", src=self.src, tgt=self.tgt, sample=sample_text)
         # 不传 default：分析失败照常抛出，由调用方决定（prepare 阶段失败应显式暴露）
-        data = self._ask_json(system, user, tier="strong", operation="analyzer.analyze")
+        data = self._ask_json(system, user, agent="analyst", operation="analyzer.analyze")
         if not isinstance(data, dict):
             data = {}
         for key in (

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from bs4 import BeautifulSoup, Tag
 
-from tests.fake_llm import routing_handler
+from tests.fake_llm import fake_llm_dict, routing_handler
 from tests.sample_data import (
     write_cross_resource_toc_epub,
     write_epub_type_less_nav_epub,
@@ -96,10 +96,7 @@ def _config(state_dir: str):
     return Config.from_dict(
         {
             "language": {"source": "ja", "target": "zh"},
-            "llm": {
-                "provider": "fake",
-                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-            },
+            "llm": fake_llm_dict(),
             "pipeline": {"review": True, "polish": True, "backtranslate_sample": 0.0},
             "paths": {"state_dir": state_dir},
         }
@@ -633,7 +630,7 @@ class TestConsistency(unittest.TestCase):
             write_sample_txt(txt)
             store, cfg = _run(txt, os.path.join(d, "state"))
 
-            def handler(messages, tier, json_mode):
+            def handler(messages, agent, operation, json_mode):
                 if "一致性审查员" in messages[0]["content"]:
                     return json.dumps(
                         {
@@ -646,11 +643,14 @@ class TestConsistency(unittest.TestCase):
                 return "{}"
 
             g = GlossaryStore(store.glossary_path)
-            checker = ConsistencyChecker(FakeClient(handler=handler), cfg)
+            client = FakeClient(handler=handler)
+            checker = ConsistencyChecker(client, cfg)
             issues = checker.check(store, g)
             g.close()
             self.assertEqual(len(issues), 1)
             self.assertEqual(issues[0]["type"], "terminology")
+            self.assertEqual(client.calls[0]["agent"], "reviewer")
+            self.assertEqual(client.calls[0]["operation"], "consistency.check")
 
 
 class TestAssembleEpubPhysicalResourceGrouping(unittest.TestCase):

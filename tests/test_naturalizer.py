@@ -10,6 +10,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
+from tests.fake_llm import fake_llm_dict
 from trans_novel.agents.naturalizer import (
     Naturalizer,
     candidate_segments,
@@ -27,10 +28,7 @@ def _config(state_dir: str = "state") -> Config:
     return Config.from_dict(
         {
             "language": {"source": "en", "target": "zh"},
-            "llm": {
-                "provider": "fake",
-                "tiers": {"strong": {"model": "p"}, "cheap": {"model": "f"}},
-            },
+            "llm": fake_llm_dict(),
             "paths": {"state_dir": state_dir},
         }
     )
@@ -77,7 +75,7 @@ REWRITE1_DROPS_NUMBER = "许多工程师建造了这座桥。"
 
 # 这里故意保留 pair.reason、fidelity.detail 等旧字段：多余字段会被忽略，
 # 用于验证模型仍按旧格式返回额外字段时，代码也能正常处理。
-def _combined_handler(messages, tier, json_mode):
+def _combined_handler(messages, agent, operation, json_mode):
     system = messages[0]["content"]
     user = messages[-1]["content"]
     if "书稿的母语审读编辑" in system:
@@ -128,7 +126,7 @@ class TestPairwiseAccept(unittest.TestCase):
     """正反两序判断采纳逻辑：双胜→接受；一胜一负→拒；tie→拒。"""
 
     def test_both_orders_win_accepts(self):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             user = messages[-1]["content"]
             m = re.search(r"【版本 A】\n(.*?)\n\n【版本 B】\n(.*?)\n\n请判断", user, re.S)
             a = m.group(1)
@@ -141,14 +139,14 @@ class TestPairwiseAccept(unittest.TestCase):
     def test_one_win_one_loss_rejects(self):
         # 位置偏好（恒选 A 位置），忽略内容：第一序 A=原译 赢，第二序 A=改写 也赢
         # → 改写只赢第二序，第一序告负，须拒。
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             return json.dumps({"winner": "A"}, ensure_ascii=False)
 
         agent = Naturalizer(FakeClient(handler=handler), _config())
         self.assertFalse(agent.pairwise_accept("原译", "改写"))
 
     def test_tie_rejects(self):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             return json.dumps({"winner": "tie"}, ensure_ascii=False)
 
         agent = Naturalizer(FakeClient(handler=handler), _config())
@@ -160,7 +158,7 @@ class TestPairwiseAccept(unittest.TestCase):
         wait() 会阻塞直到超时并抛出 BrokenBarrierError，测试失败。"""
         barrier = threading.Barrier(2, timeout=5)
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             barrier.wait()
             return json.dumps({"winner": "tie"}, ensure_ascii=False)
 
@@ -173,7 +171,7 @@ class TestPairwiseAccept(unittest.TestCase):
         """不给 executor（独立调用/旧测试场景）：保持原地串行调用，行为不变。"""
         calls: list[str] = []
 
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             calls.append(messages[-1]["content"])
             return json.dumps({"winner": "tie"}, ensure_ascii=False)
 
@@ -259,6 +257,23 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
             # test_full_flow 场景：段1的改写被 lint 拒绝（rejected），段5的改写被采纳（accepted）
             self.assertEqual(op["accepted"], 1)
             self.assertEqual(op["rejected"], 1)
+            # 调用点归属：rewrite→editor；screen/fidelity/pair→reviewer
+            agents = {c["agent"] for c in client.calls}
+            self.assertEqual(agents, {"reviewer", "editor"})
+            operations = {c["operation"] for c in client.calls}
+            self.assertEqual(
+                operations,
+                {
+                    "naturalize.screen",
+                    "naturalize.rewrite",
+                    "naturalize.fidelity",
+                    "naturalize.pair",
+                },
+            )
+            self.assertEqual(
+                client.usage_summary()["by_agent"]["editor"]["logical_calls"],
+                client.usage_summary()["by_operation"]["naturalize.rewrite"]["logical_calls"],
+            )
 
     def test_dry_run_no_writeback(self):
         with tempfile.TemporaryDirectory() as d:
@@ -284,7 +299,7 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
     def test_limit_caps_applied(self):
         with tempfile.TemporaryDirectory() as d:
             # 两段都会通过两道关卡：用只认内容差异的判断器，两者皆可各自双胜。
-            def handler(messages, tier, json_mode):
+            def handler(messages, agent, operation, json_mode):
                 system = messages[0]["content"]
                 user = messages[-1]["content"]
                 if "书稿的母语审读编辑" in system:
@@ -353,7 +368,7 @@ class TestFidelityGate(unittest.TestCase):
         )
 
     def _handler(self, fidelity_response: str):
-        def handler(messages, tier, json_mode):
+        def handler(messages, agent, operation, json_mode):
             system = messages[0]["content"]
             user = messages[-1]["content"]
             if "书稿的母语审读编辑" in system:
