@@ -9,7 +9,7 @@
 - 安装依赖：`uv sync`
 - 跑测试：`uv run python -m unittest discover -s tests`（uv 缓存不可写时前置 `UV_CACHE_DIR=/tmp/uv-cache`）
 - 格式化 + lint：`uv run ruff format .` 与 `uv run ruff check --fix .`（配置见 pyproject.toml `[tool.ruff]`）
-- 提交前钩子（一次性启用）：`uv run pre-commit install`，之后每次 commit 自动跑 ruff 修复+格式化
+- 提交前钩子（一次性启用）：`uv run pre-commit install`，之后每次提交都会自动检查是否更新了 CHANGELOG、修复 lint 问题并格式化代码
 - 本地跑：`uv run trans-novel translate book.epub`（需 `export DEEPSEEK_API_KEY=...`）
 
 ## Constraints
@@ -18,7 +18,11 @@
 - 调翻译行为优先改 `config.yaml`（模型档位、流水线开关、切分阈值），而不是改代码。
 - 术语库在翻译期只读、按配置注入提示词；改动定名或注入逻辑前先读 `README.md`「一致性机制」，否则易破坏全书专名一致性。
 - Commit message 的标题与正文一律用英文编写；代码注释可用中文。
+- 只要提交涉及代码、测试、构建脚本、工作流或依赖变更，就必须在同一次提交中更新 `CHANGELOG.md` 的 `[Unreleased]`。
+- 打版本标签前，必须同步修改 `pyproject.toml` 的版本号，并把待发布内容从 `[Unreleased]` 移入带日期的 `## [X.Y.Z] - YYYY-MM-DD` 小节；标签必须为对应的 `vX.Y.Z`。
+- 推送版本标签后由 GitHub Actions 自动创建 Release；禁止手工创建同名 Release，以免绕过版本和 CHANGELOG 校验。
 
 ## Context Routing
 - 翻译全流程、一致性机制、模型档位分工 → 读 `README.md`（「工作流程」「一致性机制」「模型档位」）。
 - 各配置项含义与默认值 → `config.yaml` 内联注释 + `README.md`「配置」。
+- 提交与发版约束 → 读 `README.md`「提交与发版」和 `CHANGELOG.md`。

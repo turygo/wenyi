@@ -11,6 +11,24 @@ permissions:
   contents: read
 
 jobs:
+  changelog:
+    name: Changelog policy
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require changelog for code changes
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: >
+          git diff --name-only -z "$BASE_SHA" "$HEAD_SHA"
+          | python scripts/check_changelog.py --null-from-stdin
+
   test:
     runs-on: ubuntu-latest
     strategy:

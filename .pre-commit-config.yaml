@@ -1,6 +1,14 @@
-# 提交前自动跑 ruff：先修 lint（含 import 排序），再格式化。
+# 提交前先检查代码变更是否同时更新了 CHANGELOG，再运行 ruff 自动修复问题并格式化代码。
 # 启用一次即可：uv run pre-commit install
 repos:
+  - repo: local
+    hooks:
+      - id: require-changelog
+        name: Require CHANGELOG for code changes
+        entry: python scripts/check_changelog.py
+        language: system
+        require_serial: true
+        files: ^(CHANGELOG\.md|pyproject\.toml|uv\.lock|\.pre-commit-config\.yaml|trans_novel/|tests/|scripts/|\.github/workflows/)
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.7
     hooks:

@@ -267,6 +267,30 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest discover -s tests
 uv run python -m unittest discover -s tests
 ```
 
+## 提交与发版
+
+启用提交钩子：
+
+```bash
+uv run pre-commit install
+```
+
+提交涉及代码、测试、构建脚本、GitHub Actions 工作流或依赖的变更时，必须在同一次提交中更新
+`CHANGELOG.md` 的 `[Unreleased]` 小节。否则，提交钩子会拒绝该提交，Pull Request 的 CI
+也会执行相同检查。
+
+发布 `X.Y.Z` 版本时：
+
+1. 把 `pyproject.toml` 中的 `project.version` 修改为 `X.Y.Z`。
+2. 在 `CHANGELOG.md` 中保留新的 `[Unreleased]` 小节，并把本次发布内容移入
+   `## [X.Y.Z] - YYYY-MM-DD` 小节。
+3. 提交对版本号和 `CHANGELOG.md` 的修改。
+4. 创建并推送与版本号完全匹配的标签：`git tag vX.Y.Z && git push origin vX.Y.Z`。
+
+标签推送会触发 GitHub Actions。只有当标签、`project.version` 与 `CHANGELOG.md` 中的版本号
+完全一致时，工作流才会创建 GitHub Release，并以对应版本小节作为发布说明；随后附上各平台的
+可执行文件和 `SHA256SUMS.txt`。
+
 ## 憧憬与不足
 
 本项目为作者个人兴趣所开发，仅在于针对长文本书籍的译介做出一份微薄的努力，未来想让翻译在够准确的前提下更加顺畅，努力从可读向好读迈进。现阶段翻译文本一些口头禅前后翻译不一致，专有名词翻译不准确的问题，已经改进！如果还有什么问题，可以提交issue，如果你有什么想法，欢迎在讨论区提出，如果你有一定的编程能力，欢迎给我提交PR，让这个项目变得更好。👏
