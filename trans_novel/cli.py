@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import os
 import sys
+from importlib import resources
+from pathlib import Path
 from typing import Optional
 
 import typer
+import yaml
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -23,6 +26,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from . import __version__
 from .config import Config
 from .ingest.segmenter import load_document
 from .pipeline.runstore import STATUS_DONE, RunStore, slugify
@@ -49,7 +53,11 @@ def _configure_windows_console(
 
 _configure_windows_console()
 
-app = typer.Typer(add_completion=False, help="多 Agent 小说翻译系统（多语言 → 中文）")
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="多 Agent 小说翻译系统（多语言 → 中文）",
+)
 tools_app = typer.Typer(
     add_completion=False,
     help="高级/调试工具：glossary（术语表）/ assemble（回填）/ qa / report",
@@ -59,15 +67,40 @@ console = Console()
 _CONFIG = {"path": "config.yaml"}
 
 
+def _show_version(value: bool) -> None:
+    if value:
+        console.print(f"trans-novel {__version__}")
+        raise typer.Exit()
+
+
 @app.callback()
 def _root(
     config: str = typer.Option("config.yaml", "--config", "-c", help="配置文件路径"),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_show_version,
+        is_eager=True,
+        help="显示版本并退出",
+    ),
 ):
     _CONFIG["path"] = config
 
 
 def _load_config() -> Config:
-    return Config.load(_CONFIG["path"])
+    path = Path(_CONFIG["path"]).expanduser()
+    if not path.is_file():
+        console.print(f"[red]找不到配置文件：{path}[/]")
+        console.print(
+            "首次使用请运行 [bold]trans-novel init[/]，或使用 [bold]--config[/] 指定配置文件路径。"
+        )
+        raise typer.Exit(2)
+    try:
+        return Config.load(str(path))
+    except (OSError, UnicodeError, TypeError, ValueError, yaml.YAMLError) as error:
+        console.print(f"[red]配置文件无效：{path}[/]")
+        console.print(str(error))
+        raise typer.Exit(2) from None
 
 
 def _require_input_file(input_path: str) -> None:
@@ -82,6 +115,32 @@ def _validate_output_format(fmt: str) -> str:
         console.print(f"[red]不支持的输出格式：{fmt}（可选 epub / txt）[/]")
         raise typer.Exit(2)
     return normalized
+
+
+@app.command("init")
+def init_config(
+    force: bool = typer.Option(False, "--force", help="覆盖已有配置文件"),
+) -> None:
+    """生成一份可直接修改的配置文件。"""
+    target = Path(_CONFIG["path"]).expanduser()
+    if target.exists() and not force:
+        console.print(f"[yellow]配置文件已存在：{target}[/]")
+        console.print("如需重建，请加 [bold]--force[/]。")
+        raise typer.Exit(1)
+    try:
+        template = (
+            resources.files("trans_novel")
+            .joinpath("config.example.yaml")
+            .read_text(encoding="utf-8")
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(template, encoding="utf-8")
+    except OSError as error:
+        console.print(f"[red]无法写入配置文件：{target}[/]")
+        console.print(str(error))
+        raise typer.Exit(1) from None
+    console.print(f"[bold green]已生成配置文件：{target}[/]")
+    console.print("下一步：设置 DEEPSEEK_API_KEY，然后运行 trans-novel translate <小说文件>。")
 
 
 def _runstore_for(config: Config, input_path: str) -> RunStore:

@@ -28,6 +28,68 @@ class FakeStore:
         return None
 
 
+class TestCliBootstrap(unittest.TestCase):
+    def test_version_is_available_without_a_subcommand(self):
+        result = CliRunner().invoke(app, ["--version"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertRegex(plain(result.output), r"^trans-novel \d+\.\d+\.\d+\s*$")
+
+    def test_init_writes_a_loadable_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = os.path.join(directory, "config.yaml")
+
+            result = CliRunner().invoke(app, ["--config", config_path, "init"])
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("已生成配置文件", plain(result.output))
+            config = Config.load(config_path)
+            self.assertIn("deepseek", config.llm.providers)
+
+    def test_init_does_not_overwrite_existing_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = os.path.join(directory, "config.yaml")
+            with open(config_path, "w", encoding="utf-8") as stream:
+                stream.write("keep-me")
+
+            result = CliRunner().invoke(app, ["--config", config_path, "init"])
+
+            self.assertEqual(result.exit_code, 1, result.output)
+            self.assertIn("配置文件已存在", plain(result.output))
+            with open(config_path, encoding="utf-8") as stream:
+                self.assertEqual(stream.read(), "keep-me")
+
+    def test_missing_config_has_actionable_error_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = os.path.join(directory, "missing.yaml")
+            with patch("trans_novel.cli.os.path.isfile", return_value=True):
+                result = CliRunner().invoke(
+                    app,
+                    ["--config", config_path, "translate", "input.txt"],
+                )
+
+        output = plain(result.output)
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("trans-novel init", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_invalid_config_has_concise_error_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = os.path.join(directory, "invalid.yaml")
+            with open(config_path, "w", encoding="utf-8") as stream:
+                stream.write("llm: [")
+            with patch("trans_novel.cli.os.path.isfile", return_value=True):
+                result = CliRunner().invoke(
+                    app,
+                    ["--config", config_path, "translate", "input.txt"],
+                )
+
+        output = plain(result.output)
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("配置文件无效", output)
+        self.assertNotIn("Traceback", output)
+
+
 class TestCliConfig(unittest.TestCase):
     def test_translate_defaults_keep_config_switches(self):
         cfg = Config.from_dict(

@@ -7,29 +7,34 @@
 ## 快速开始
 
 ```bash
-uv sync
+uv tool install .
+trans-novel init
 export DEEPSEEK_API_KEY=sk-...
-uv run trans-novel translate book.epub
+trans-novel translate book.epub
 ```
+
+在项目目录运行一次 `uv tool install .` 即可完成安装。`init` 会在当前工作目录生成
+可修改的 `config.yaml`；安装后可直接运行 `trans-novel`，无需再加 `uv run`。
+运行 `trans-novel --help` 可查看全部命令。
 
 翻译完成后，默认会在源文件目录下生成译文 EPUB。运行状态、章节 JSON、术语库和报告会放在 `state/` 目录下。
 
 中断后继续：
 
 ```bash
-uv run trans-novel resume book.epub
+trans-novel resume book.epub
 ```
 
 查看进度：
 
 ```bash
-uv run trans-novel status book.epub
+trans-novel status book.epub
 ```
 
 仅重新导出 EPUB：
 
 ```bash
-uv run trans-novel tools assemble book.epub
+trans-novel tools assemble book.epub
 ```
 
 ## 输入和输出
@@ -43,18 +48,18 @@ uv run trans-novel tools assemble book.epub
 示例：
 
 ```bash
-uv run trans-novel translate book.epub
-uv run trans-novel translate book.epub --format txt
-uv run trans-novel translate book.epub --chapter 3
+trans-novel translate book.epub
+trans-novel translate book.epub --format txt
+trans-novel translate book.epub --chapter 3
 ```
 
 ## 常用开关
 
 ```bash
-uv run trans-novel translate book.epub --polish
-uv run trans-novel translate book.epub --no-polish
-uv run trans-novel translate book.epub --qa
-uv run trans-novel translate book.epub --no-qa
+trans-novel translate book.epub --polish
+trans-novel translate book.epub --no-polish
+trans-novel translate book.epub --qa
+trans-novel translate book.epub --no-qa
 ```
 
 `--polish/--no-polish` 会覆盖 `config.yaml` 里的 `pipeline.polish`。当前仓库的 `config.yaml` 写的是 `polish: true`，所以不加参数时默认会润色；代码层面的缺省值是 `false`，只在配置文件没写该字段时生效。
@@ -199,11 +204,11 @@ llm:
 ## 常用工具
 
 ```bash
-uv run trans-novel tools glossary book.epub list
-uv run trans-novel tools glossary book.epub conflicts
-uv run trans-novel tools qa book.epub
-uv run trans-novel tools report book.epub
-uv run trans-novel tools assemble book.epub
+trans-novel tools glossary book.epub list
+trans-novel tools glossary book.epub conflicts
+trans-novel tools qa book.epub
+trans-novel tools report book.epub
+trans-novel tools assemble book.epub
 ```
 
 这些工具主要用于查看术语库、检查一致性、生成报告或重新导出成品。QA 和报告默认只汇总问题，不会自动改正文。

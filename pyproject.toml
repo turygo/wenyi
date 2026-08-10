@@ -25,6 +25,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["trans_novel"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"trans_novel/config.example.yaml" = "trans_novel/config.example.yaml"
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
