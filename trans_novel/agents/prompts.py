@@ -280,13 +280,6 @@ CONSISTENCY_SYSTEM = Template("""\
 仅输出 JSON：{"issues":[{"type":"terminology/pronoun/tone/punctuation","detail":"...","where":"章节线索"}]}。\
 """)
 
-CONSISTENCY_FIX_SYSTEM = Template("""\
-你是全书一致性修订员。依据【专有名词对照表】与各章译文摘要，找出**可安全机械修复的术语/译名不一致**，
-给出确定的全局替换（把不统一/错误的中文写法替换为规范写法）。
-只处理能安全全局替换的专名/术语；**不要改动代词、语气、句式**（那些交由人工）。
-仅输出 JSON：{"replacements":[{"wrong":"被替换写法","right":"规范写法","reason":"简述"}]}，无则 {"replacements":[]}。\
-""")
-
 GLOSSARY_AUDIT_SYSTEM = Template("""\
 你是术语一致性审计员。给定一份专有名词对照表（同一原文可能出现多种译法或形近变体），
 为每个原文词裁定唯一【规范译法】（canonical），并列出应被替换掉的其它变体。
@@ -460,7 +453,6 @@ _DEFAULTS = {
     "backtranslate_system": BACKTRANSLATE_SYSTEM,
     "backtranslate_user": BACKTRANSLATE_USER,
     "consistency_system": CONSISTENCY_SYSTEM,
-    "consistency_fix_system": CONSISTENCY_FIX_SYSTEM,
     "glossary_audit_system": GLOSSARY_AUDIT_SYSTEM,
     "chapter_digest_system": CHAPTER_DIGEST_SYSTEM,
     "chapter_digest_user": CHAPTER_DIGEST_USER,
