@@ -15,13 +15,14 @@
 解压后直接运行：
 
 ```bash
-export DEEPSEEK_API_KEY=sk-...
+export OPENCODE_API_KEY=sk-...
 ./wenyi translate book.epub
 ```
 
-在 Windows PowerShell 中，先运行 `$env:DEEPSEEK_API_KEY = "sk-..."` 设置环境变量，
-再运行 `.\wenyi.exe translate .\book.epub`。程序首次运行时会在当前目录自动生成可修改的
-`config.yaml`；`wenyi init --force` 可以将它重置为随当前版本发布的默认配置。
+在 Windows PowerShell 中，先运行 `$env:OPENCODE_API_KEY = "sk-..."` 设置环境变量，
+再运行 `.\wenyi.exe translate .\book.epub`。API Key 来自
+[OpenCode Go](https://dev.opencode.ai/docs/go/) 订阅。没有 `config.yaml` 时程序直接使用
+OpenCode Go 的 DeepSeek V4 Flash + `balanced` 默认值，不会自动写文件；需要改模型时运行 `wenyi init`。
 
 从源码安装仍可使用 `uv tool install .`，命令名为 `trans-novel`。运行
 `trans-novel --help` 或 `wenyi --help` 可查看全部命令。
@@ -65,119 +66,85 @@ trans-novel translate book.epub --chapter 3
 ## 常用开关
 
 ```bash
+trans-novel translate book.epub --quality economy
+trans-novel translate book.epub --quality quality
 trans-novel translate book.epub --polish
-trans-novel translate book.epub --no-polish
-trans-novel translate book.epub --qa
 trans-novel translate book.epub --no-qa
+trans-novel translate book.epub --source-language ja
+trans-novel translate book.epub --back-matter full
 ```
 
-`--polish/--no-polish` 会覆盖 `config.yaml` 里的 `pipeline.polish`。随程序发布的默认配置写的是 `polish: true`，所以不加参数时默认会润色；代码层面的缺省值是 `false`，只在配置文件没写该字段时生效。
-
-润色会让每个翻译批次增加一次经 `editor` Agent 路由发起的模型调用；默认配置中，
-`editor` 与 `translator` 绑定同一模型（`deepseek:pro`）。质量可能更稳，但会明显增加
-耗时和成本。已经翻译完成的批次会被断点续跑跳过，后来再开关润色不会自动重跑旧译文。
+`--quality` 只覆盖本次运行。`balanced` 默认开启全书预扫、章末审校、严重问题自动重译和
+去翻译腔；`economy` 关闭这些额外模型阶段；`quality` 额外开启全文润色、跨章一致性 QA
+和 5% 回译抽检。`--polish/--no-polish` 与 `--qa/--no-qa` 可以继续覆盖单个高成本阶段。
+已经翻译完成的批次会被断点续跑跳过，后来改变档位不会自动重跑旧译文。
 
 ## 配置
 
-主要配置都在 `config.yaml`：
-
-- `language.source`: `auto` 由模型识别源语言，也可以写死语言代码，如 `ja`、`en`、`ko`、`ru`、`de` 等。
-- `llm.providers`: Provider 别名 → 端点 / 凭据环境变量 / 超时 / 重试 / 命名模型目录。Provider 类型：`deepseek`、`openai`、`openrouter`、`openai-compatible`（或 `custom`）、`ollama`、`vllm`、`fake`。
-- `llm.agents`: 六个功能 Agent 路由（`translator` / `editor` / `reviewer` / `analyst` / `preparer` / `light-translator`），每个 Agent → `model`（primary）+ `fallback`（有序降级列表）。模型引用形如 `<provider-alias>:<model-alias>`，按**第一个冒号**切分，所以 `local:qwen3:32b` 解析为 provider=`local`、model=`qwen3:32b`。配置必须恰好声明这六个 Agent，缺失或未知键会在加载时直接报错。
-- `pipeline.review`: 章末审校。
-- `pipeline.autofix_severe`: 对严重问题自动重译并采纳通过校验的结果。
-- `pipeline.polish`: 翻译后再做中文润色。
-- `pipeline.backtranslate_sample`: 回译抽检比例，`0` 为关闭。
-- `pipeline.consistency_qa`: 全书跨章一致性扫描。
-- `pipeline.book_understanding`: 翻译前预扫整本书，生成全书概览和逐章梗概。
-- `pipeline.rolling_context_segments`: 每批翻译时带入的前文译文段数。
-- `segment.max_chars_per_batch`: 每个翻译批次的大小。
-- `segment.max_chars_per_segment`: 超长段落的拆分阈值。
-
-离线测试或调试流程时，可以把 provider 类型改成 `fake`，不会发网络请求。
-
-### Provider → 模型目录
-
-每个 Provider 别名代表一个端点/账号，`models` 里是它提供的命名模型；目录键是
-用户别名，`id` 是发给服务的精确模型 ID。同一个服务 ID 需要不同推理设置时必须
-拆成多个模型别名：
+配置文件只回答“使用什么模型”和“选择哪个质量档位”。没有配置文件也可以直接运行；
+`trans-novel init` 会生成以下精简配置：
 
 ```yaml
 llm:
-  providers:
-    deepseek:
-      type: deepseek
-      base_url: https://api.deepseek.com
-      api_key_env: DEEPSEEK_API_KEY
-      timeout: 600
-      max_retries: 4
-      models:
-        pro:
-          id: deepseek-v4-pro
-          reasoning: {enabled: true, effort: high}
-        flash-thinking:
-          id: deepseek-v4-flash
-          reasoning: {enabled: true, effort: high}
-        flash-fast:
-          id: deepseek-v4-flash
-          reasoning: {enabled: false}
+  provider: opencode-go
+  models:
+    primary: deepseek-v4-flash:high
+    fast: deepseek-v4-flash:off
+
+quality: balanced
 ```
 
-`reasoning.enabled=true` 会按不同 Provider 的请求格式启用推理（DeepSeek/OpenAI 使用
-`reasoning_effort`，OpenRouter 使用 `extra_body.reasoning.effort`），并把请求的正数
-`max_tokens` 抬到至少 4096；`enabled=false` 则关闭推理、不抬上限。`request_overrides`
-可递归覆盖请求字段（`model`/`messages`/`stream` 由系统生成，不可覆盖）。
+- `primary`：正文翻译、润色、全局分析和定名；默认 thinking 级别为 `high`。
+- `fast`：审校、预扫、梗概、术语抽取、回译和附属章粗翻；默认 thinking 级别为 `off`。
+- `quality`：`economy`、`balanced` 或 `quality`。
 
-### Agent → primary / fallback 路由
+模型规格可在模型 ID 最右侧追加 `:off`、`:low`、`:medium`、`:high` 或 `:max`。
+程序启动时会根据 Provider/模型能力校验；不支持的级别直接报错并列出可选值，不会静默
+升级或降级。没有级别后缀时，`primary` 默认 `high`，`fast` 默认 `off`。
 
-路由键是六个功能 Agent 之一：每个 Agent 先调用 `model`。只有发生可重试、可切换
-候选的错误（空响应、限流、超时、连接错误、5xx 等），且当前候选的
-`max_retries + 1` 次实际请求均失败后，才会尝试 `fallback` 中的下一个候选；
-配置错误、凭据缺失、鉴权失败、请求被拒等不可重试错误会立即报错，不会切换候选。
-所有候选均失败后抛出 `AllModelsFailedError`（只包含 `<provider>:<model>` 与
-归一化原因）。内部 operation（业务标签，如 `translate.batch`）不参与路由，只做
-用量/调试归因。
+Agent 路由、重试、超时、切分、上下文窗口和并发数都是内部策略，不接受 YAML 覆盖。
+Provider 使用固定的官方地址和密钥环境变量：
+
+| Provider | 密钥环境变量 |
+| --- | --- |
+| `opencode-go` | `OPENCODE_API_KEY` |
+| `deepseek` | `DEEPSEEK_API_KEY` |
+| `openai` | `OPENAI_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `bailian` | `BAILIAN_API_KEY` |
+| `ollama` | 无 |
+| `vllm` | 无 |
+
+百炼使用华北 2（北京）的共享 OpenAI 兼容端点。正文模型保留 DeepSeek V4 Flash、
+快任务改用更便宜的千问 3.7 Flash 时，可写：
 
 ```yaml
 llm:
-  agents:
-    translator:
-      model: deepseek:pro
-      fallback: []
-    reviewer:
-      model: deepseek:flash-thinking
-      fallback: [deepseek:pro]   # 判断类任务的主模型失败时改用 pro
+  provider: bailian
+  models:
+    primary: deepseek-v4-flash:high
+    fast: qwen3.7-flash:off
+
+quality: balanced
 ```
 
-### 自定义 provider 示例
-
-Bailian（阿里云百炼）使用 OpenAI 兼容端点；OpenCode-Go 使用其兼容端点
-（`https://opencode-go.example.com/v1` 仅为占位示例 URL，请替换为你的实际网关地址）：
+OpenAI 兼容服务使用单端点配置：
 
 ```yaml
 llm:
-  providers:
-    bailian:
-      type: openai-compatible
-      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-      api_key_env: DASHSCOPE_API_KEY
-      models:
-        qwen-max:
-          id: qwen-max
-          reasoning: {enabled: false}
-    opencode-go:
-      type: openai-compatible
-      base_url: https://opencode-go.example.com/v1
-      api_key_env: OPENCODE_GO_API_KEY
-      models:
-        "qwen3:32b":
-          id: qwen3-32b
-          reasoning: {enabled: false}
-  agents:
-    translator:
-      model: bailian:qwen-max
-      fallback: [opencode-go:qwen3:32b]
+  provider: openai-compatible
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key_env: DASHSCOPE_API_KEY
+  models:
+    primary: qwen-max
+    fast: qwen-turbo
+
+quality: balanced
 ```
+
+配置中只写密钥环境变量名，不能写明文密钥。旧的 `llm.providers`、`llm.agents`、
+`pipeline`、`segment` 等格式已废弃，加载时会直接报错；删除旧文件后直接运行，或执行
+`wenyi init --force` 生成新配置。
 
 ## 工作流程
 
@@ -202,12 +169,12 @@ llm:
 
 ## 一致性机制
 
-- **术语库**：翻译前从源文挖掘专名候选（英文走确定性统计，其他语言走 LLM 挖掘），由定名 Agent 一次性统一定名后写入 SQLite 术语库，翻译期只读、按配置注入提示词；人物条目锁定后由 lint 硬校验。日文轻小说等需要译后确认称呼变体的场景可开 `pipeline.inflight_glossary` 保留旧的译后抽取。
+- **术语库**：翻译前从源文挖掘专名候选（英文走确定性统计，其他语言走 LLM 挖掘），由定名 Agent 一次性统一定名后写入 SQLite 术语库，翻译期只读；人物条目锁定后由 lint 硬校验。
 - **全书理解**：翻译前预扫源文，生成全书概览和章节梗概，让早期章节也能参考全书走向。
 - **滚动上下文**：章内批次串行处理，后一个批次能看到前面最近几段译文。
 - **段数对齐**：每批输入 N 段，要求模型输出 N 段 JSON；段数不符会重试，仍失败则逐段兜底。
 - **确定性 lint**：零成本机器校验直接引语引号保留、数字一致、锁定专名命中、整段未译；翻译后与润色后各跑一遍，命中即定向重译或回退，其余记录进报告。
-- **章末 review**：按章检查漏译、误译、专名、人称等语义问题（机械问题已由 lint 兜住）；是否自动重译严重项由 `autofix_severe` 控制。
+- **章末 review**：`balanced` 和 `quality` 档位按章检查漏译、误译、专名、人称等语义问题，并自动重译严重项。
 - **标点规范化**：译文统一为简体中文大陆常用全角标点。
 
 ## 常用工具
@@ -224,21 +191,20 @@ trans-novel tools assemble book.epub
 
 ## 模型路由
 
-默认配置使用 DeepSeek，并通过 OpenAI SDK 调用 `https://api.deepseek.com`。其他 provider 也使用兼容
-Chat Completions 的接口：OpenAI 与 OpenRouter 使用各自默认的 API URL 和环境变量；Ollama 与 vLLM
-使用本地默认 URL；`openai-compatible`/`custom` 必须设置 `llm.providers.<别名>.base_url`。
+默认使用 OpenCode Go，通过其 OpenAI-compatible 端点
+`https://opencode.ai/zen/go/v1` 调用 DeepSeek V4 Flash。直接使用 DeepSeek、OpenAI 或
+OpenRouter 时走各自官方地址；Ollama 与 vLLM 使用本地默认地址；
+`openai-compatible` 必须设置 `llm.base_url`。
 
-每个 Agent 的模型由 `llm.agents` 路由决定（六键之一，operation 不参与路由）：
+内部 Agent 固定映射到两个用户模型角色：
 
-- `translator` → `deepseek:pro`（开思考）：正文翻译、定向重译、标题翻译。
-- `editor` → `deepseek:pro`（开思考）：润色、去翻译腔改写。
-- `reviewer` → `deepseek:flash-thinking`（开思考）：章末 review、一致性 QA、回译比对、去翻译腔检测、语言识别。
-- `analyst` → `deepseek:pro`（开思考）：全局分析、一次性定名、术语审计。
-- `preparer` → `deepseek:flash-fast`（免思考）：全书预扫、章节梗概、术语候选挖掘/抽取等机械任务（英文候选挖掘与 lint 为纯本地计算，零 token）。
-- `light-translator` → `deepseek:flash-fast`（免思考）：回译、附属章粗翻。
+- `primary`：正文翻译、定向重译、标题翻译、润色、全局分析、定名和术语审计。
+- `fast`：章末审校、一致性检查、语言识别、预扫、梗概、术语抽取、回译和附属章粗翻。
 
-改模型只动 `config.yaml` 的 `llm.providers.<别名>.models`（改 `id` 或推理设置）与
-`llm.agents`（改路由）；provider 专属请求字段写在模型条目的 `request_overrides`。
+thinking 级别由模型规格最右侧的后缀决定。请求字段由内置的逐 Provider/模型能力表
+生成：OpenCode Go 的 `deepseek-v4-flash:high` 下发 `thinking=enabled` 与
+`reasoning_effort=high`，`:off` 下发 `thinking=disabled`。该模型不支持 `low`，
+配置为 `deepseek-v4-flash:low` 会在启动时直接报错。
 
 ## 项目结构
 
