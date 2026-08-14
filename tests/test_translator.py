@@ -20,13 +20,10 @@ def _count_segments(user_content: str) -> int:
 
 class TestTranslatorAlignment(unittest.TestCase):
     def _config(self):
-        return Config.from_dict(
-            {
-                "language": {"source": "ja", "target": "zh"},
-                "llm": fake_llm_dict(),
-                "pipeline": {"align_retry_limit": 1},
-            }
-        )
+        config = Config.from_dict({"llm": fake_llm_dict()})
+        config.source_lang = "ja"
+        config.pipeline.align_retry_limit = 1
+        return config
 
     def test_happy_path_aligned(self):
         def handler(messages, agent, operation, json_mode):

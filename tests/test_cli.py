@@ -44,7 +44,7 @@ class TestCliBootstrap(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, result.output)
             self.assertIn("已生成配置文件", plain(result.output))
             config = Config.load(config_path)
-            self.assertIn("deepseek", config.llm.providers)
+            self.assertEqual(config.llm.provider, "opencode-go")
             with open(config_path, encoding="utf-8") as stream:
                 self.assertEqual(stream.read(), Config.default_config_text())
 
@@ -61,7 +61,7 @@ class TestCliBootstrap(unittest.TestCase):
             with open(config_path, encoding="utf-8") as stream:
                 self.assertEqual(stream.read(), "keep-me")
 
-    def test_translate_creates_missing_config_before_validating_input(self):
+    def test_translate_uses_defaults_without_creating_config(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = os.path.join(directory, "config.yaml")
             result = CliRunner().invoke(
@@ -71,9 +71,8 @@ class TestCliBootstrap(unittest.TestCase):
 
             output = plain(result.output)
             self.assertEqual(result.exit_code, 1, result.output)
-            self.assertIn("已生成默认配置文件", output)
             self.assertIn("输入文件不存在", output)
-            self.assertIn("deepseek", Config.load(config_path).llm.providers)
+            self.assertFalse(os.path.exists(config_path))
 
     def test_invalid_config_has_concise_error_without_traceback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -91,13 +90,36 @@ class TestCliBootstrap(unittest.TestCase):
         self.assertIn("配置文件无效", output)
         self.assertNotIn("Traceback", output)
 
+    def test_unsupported_thinking_level_lists_supported_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = os.path.join(directory, "config.yaml")
+            with open(config_path, "w", encoding="utf-8") as stream:
+                stream.write(
+                    "llm:\n"
+                    "  provider: opencode-go\n"
+                    "  models:\n"
+                    "    primary: deepseek-v4-flash:low\n"
+                    "    fast: deepseek-v4-flash:off\n"
+                )
+            with patch("trans_novel.cli.os.path.isfile", return_value=True):
+                result = CliRunner().invoke(
+                    app,
+                    ["--config", config_path, "translate", "input.txt"],
+                )
+
+        output = plain(result.output)
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("opencode-go:deepseek-v4-flash 不支持 thinking", output)
+        self.assertIn("级别 'low'；支持：off, high, max", output)
+        self.assertNotIn("Traceback", output)
+
 
 class TestCliConfig(unittest.TestCase):
     def test_translate_defaults_keep_config_switches(self):
         cfg = Config.from_dict(
             {
                 "llm": fake_llm_dict(),
-                "pipeline": {"polish": True, "consistency_qa": False},
+                "quality": "quality",
             }
         )
         captured = {}
@@ -137,7 +159,7 @@ class TestCliConfig(unittest.TestCase):
         cfg = Config.from_dict(
             {
                 "llm": fake_llm_dict(),
-                "pipeline": {"polish": True, "consistency_qa": False},
+                "quality": "quality",
             }
         )
         captured = {}
@@ -145,6 +167,10 @@ class TestCliConfig(unittest.TestCase):
         class FakeOrchestrator:
             def __init__(self, config):
                 captured["polish"] = config.pipeline.polish
+                captured["quality"] = config.quality
+                captured["source_language"] = config.source_lang
+                captured["back_matter"] = config.pipeline.back_matter
+                captured["honorifics"] = config.honorific_strategy
 
             def run_all(self, input_path, **kwargs):
                 captured["run_all"] = kwargs
@@ -169,12 +195,29 @@ class TestCliConfig(unittest.TestCase):
         ):
             result = CliRunner().invoke(
                 app,
-                ["translate", "input.txt", "--no-polish", "--qa"],
+                [
+                    "translate",
+                    "input.txt",
+                    "--quality",
+                    "economy",
+                    "--polish",
+                    "--qa",
+                    "--source-language",
+                    "en",
+                    "--back-matter",
+                    "full",
+                    "--honorifics",
+                    "drop",
+                ],
             )
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertFalse(captured["polish"])
+        self.assertTrue(captured["polish"])
         self.assertTrue(captured["run_all"]["do_qa"])
+        self.assertEqual(captured["quality"], "economy")
+        self.assertEqual(captured["source_language"], "en")
+        self.assertEqual(captured["back_matter"], "full")
+        self.assertEqual(captured["honorifics"], "drop")
 
     def test_translate_prepare_stops_before_translation(self):
         config = Config.from_dict(
@@ -248,7 +291,7 @@ class TestCliConfig(unittest.TestCase):
         cfg = Config.from_dict(
             {
                 "llm": fake_llm_dict(),
-                "pipeline": {"polish": True, "consistency_qa": False},
+                "quality": "quality",
             }
         )
         captured = {}
@@ -307,13 +350,9 @@ class TestCliConfig(unittest.TestCase):
             state_dir = os.path.join(d, "state")
             with open(src, "w", encoding="utf-8") as f:
                 f.write("第一段。\n\n第二段。\n")
-            cfg = Config.from_dict(
-                {
-                    "language": {"source": "ja", "target": "zh"},
-                    "llm": fake_llm_dict(),
-                    "paths": {"state_dir": state_dir},
-                }
-            )
+            cfg = Config.from_dict({"llm": fake_llm_dict()})
+            cfg.source_lang = "ja"
+            cfg.state_dir = state_dir
             run_dir = os.path.join(state_dir, "novel")
             os.makedirs(run_dir, exist_ok=True)
             with open(os.path.join(run_dir, "manifest.json"), "w", encoding="utf-8") as f:
@@ -371,13 +410,9 @@ class TestCliConfig(unittest.TestCase):
             state_dir = os.path.join(d, "state")
             with open(src, "w", encoding="utf-8") as f:
                 f.write("第一段。\n")
-            cfg = Config.from_dict(
-                {
-                    "language": {"source": "ja", "target": "zh"},
-                    "llm": fake_llm_dict(),
-                    "paths": {"state_dir": state_dir},
-                }
-            )
+            cfg = Config.from_dict({"llm": fake_llm_dict()})
+            cfg.source_lang = "ja"
+            cfg.state_dir = state_dir
 
             with patch("trans_novel.cli._load_config", return_value=cfg):
                 result = CliRunner().invoke(app, ["status", src])

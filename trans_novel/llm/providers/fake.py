@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
-from ...config import ModelRef, ProviderConfig
+from ...config import LLMConfig, ModelRef
 from ..base import LLMClient, Messages
 from ..usage import UsageTracker
 
@@ -70,8 +70,8 @@ class FakeProviderTransport:
     显式测试例外：成功返回，不记 failed_attempts，不产生 token usage。
     """
 
-    def __init__(self, alias: str, cfg: ProviderConfig, usage: UsageTracker) -> None:
-        self.alias = alias
+    def __init__(self, cfg: LLMConfig, usage: UsageTracker) -> None:
+        self.provider = cfg.provider
         self.cfg = cfg
         self.usage = usage
 
@@ -87,6 +87,6 @@ class FakeProviderTransport:
         operation: str,
     ) -> str:
         self.usage.record_attempt(
-            agent=agent, operation=operation, provider=self.alias, model_ref=model_ref
+            agent=agent, operation=operation, provider=self.provider, model_ref=model_ref
         )
         return "[]" if json_mode else ""

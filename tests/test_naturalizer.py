@@ -25,13 +25,10 @@ from trans_novel.postprocess.punct import normalize_zh
 
 
 def _config(state_dir: str = "state") -> Config:
-    return Config.from_dict(
-        {
-            "language": {"source": "en", "target": "zh"},
-            "llm": fake_llm_dict(),
-            "paths": {"state_dir": state_dir},
-        }
-    )
+    config = Config.from_dict({"llm": fake_llm_dict()})
+    config.source_lang = "en"
+    config.state_dir = state_dir
+    return config
 
 
 def _seg(

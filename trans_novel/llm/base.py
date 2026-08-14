@@ -34,10 +34,9 @@ class LLMClient(ABC):
     ) -> str:
         """返回模型回复的纯文本。
 
-        agent 是生产路由键：AgentRouter 按 llm.agents 中声明的 Agent 选择
-        primary/fallback 模型；缺失/未知时在请求前失败。operation 只是内部
-        业务标签（telemetry/调试归因），不参与路由，但生产调用方必须显式传入。
-        stage 仅用于用量归因（诊断维度）。
+        agent 是内置功能标识：AgentRouter 将其映射到 primary 或 fast 模型；
+        缺失或未知时在请求前失败。operation 是内部业务标签，仅用于调试与用量归因；
+        stage 是额外的诊断维度。
         """
         raise NotImplementedError
 

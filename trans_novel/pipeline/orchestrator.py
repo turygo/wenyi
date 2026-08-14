@@ -15,7 +15,7 @@
   持久标记，run() 收尾（发 translate_run_finished 前）排干所有在飞 future 并清标记，崩溃续跑据
   残留标记补跑，避免异步审校结果丢失。
 翻译前先预扫源文建立全书理解（逐章梗概+全书概览，prescan.digest / prescan.book_synopsis 并行），
-作恒定前缀注入每章翻译。各 Agent 的模型由 llm.agents 路由决定。
+作恒定前缀注入每章翻译。各 Agent 固定使用 primary 或 fast 模型角色。
 
 run_all：在翻译全书后接 术语 AI 审计统一 → 一致性 QA → 写报告 → 回填出 EPUB，一气呵成。
 进度回调 progress(done_segments, total_segments, label) 与 UI 无关，每批完成即触发。
@@ -219,7 +219,7 @@ class Orchestrator:
         if source and target and source == target:
             raise ValueError(
                 f"源语言与目标语言相同（{source}），无需翻译；"
-                "请修改 config.yaml 中的 language.source 或 language.target。"
+                "请用 --source-language 指定正确的源语言。"
             )
         self.config.source_lang = resolved
         for ag in (
@@ -270,8 +270,8 @@ class Orchestrator:
             if not detected:
                 store.log_event("language_detection_failed", source_lang=doc.source_lang)
                 raise RuntimeError(
-                    "自动识别源语言失败：请检查模型配置，或在 config.yaml 的 "
-                    "language.source 指定 ISO 639-1 语言代码（如 ja/en/ko/ru/fr/de/es）。"
+                    "自动识别源语言失败：请检查模型配置，或用 --source-language "
+                    "指定 ISO 639-1 语言代码（如 ja/en/ko/ru/fr/de/es）。"
                 )
             doc.source_lang = detected
             store.log_event("language_detected", source_lang=doc.source_lang)

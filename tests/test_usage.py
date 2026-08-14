@@ -20,18 +20,9 @@ from unittest.mock import patch
 from tenacity import wait_none
 
 from tests.fake_llm import fake_llm_dict
-from trans_novel.config import (
-    Config,
-    ModelRef,
-    ProviderConfig,
-    ProviderModelConfig,
-    ReasoningConfig,
-)
+from trans_novel.config import Config, LLMConfig, ModelRef
 from trans_novel.llm.providers.fake import FakeClient
-from trans_novel.llm.providers.transport import (
-    DIALECT_DEEPSEEK,
-    OpenAICompatibleTransport,
-)
+from trans_novel.llm.providers.transport import OpenAICompatibleTransport
 from trans_novel.llm.retrying import EmptyResponseError
 from trans_novel.llm.usage import UsageTracker, merge_usage_summaries, usage_delta
 from trans_novel.pipeline.orchestrator import Orchestrator
@@ -91,23 +82,16 @@ class _ClientStub:
         self.chat = _ChatStub(responses)
 
 
-def _provider(models=("m1", "m2")) -> ProviderConfig:
-    return ProviderConfig(
-        type="deepseek",
-        base_url="x",
-        api_key_env="X",
-        timeout=1,
-        max_retries=0,
-        models={m: ProviderModelConfig(id=m) for m in models},
-    )
-
-
 def _transport(tracker: UsageTracker):
+    config = LLMConfig.model_validate(
+        {
+            "provider": "deepseek",
+            "models": {"primary": "m1", "fast": "m2"},
+        }
+    )
     return OpenAICompatibleTransport(
-        "deepseek",
-        _provider(),
+        config,
         tracker,
-        dialect=DIALECT_DEEPSEEK,
         provider_name="DeepSeek",
         default_base_url="https://api.deepseek.com",
         default_api_key_env="DEEPSEEK_API_KEY",
@@ -278,15 +262,17 @@ class TestThinkingFlagWiring(unittest.TestCase):
         t = _transport(tracker)
         t._client = _ClientStub([_make_response("a", None), _make_response("b", None)])
         msgs = [{"role": "user", "content": "x"}]
-        t.cfg.models["m1"] = ProviderModelConfig(
-            id="m1", reasoning=ReasoningConfig(enabled=True, effort="high")
+        t.complete(
+            msgs,
+            ModelRef("deepseek", "m1", reasoning_enabled=True),
+            agent="translator",
+            operation="translate.batch",
         )
         t.complete(
-            msgs, ModelRef("deepseek", "m1"), agent="translator", operation="translate.batch"
-        )
-        t.cfg.models["m1"] = ProviderModelConfig(id="m1", reasoning=ReasoningConfig(enabled=False))
-        t.complete(
-            msgs, ModelRef("deepseek", "m1"), agent="translator", operation="translate.batch"
+            msgs,
+            ModelRef("deepseek", "m1", reasoning_enabled=False),
+            agent="translator",
+            operation="translate.batch",
         )
         on, off = t._client.chat.completions.calls
         self.assertEqual(on["extra_body"], {"thinking": {"type": "enabled"}})
@@ -294,26 +280,22 @@ class TestThinkingFlagWiring(unittest.TestCase):
         self.assertEqual(off["extra_body"], {"thinking": {"type": "disabled"}})
         self.assertNotIn("reasoning_effort", off)
 
-    def test_same_service_id_aliases_keep_independent_reasoning(self):
-        # 同一服务 ID 拆成两个别名（生产如 flash-thinking / flash-fast）：
-        # 每次请求都按所选别名对应的 ProviderModelConfig 独立构建，不会串用配置，也不会共享可变状态。
+    def test_same_service_id_accepts_per_request_reasoning_policy(self):
         tracker = UsageTracker()
         t = _transport(tracker)
-        t.cfg.models = {
-            "think": ProviderModelConfig(
-                id="deepseek-v4-flash", reasoning=ReasoningConfig(enabled=True, effort="high")
-            ),
-            "fast": ProviderModelConfig(
-                id="deepseek-v4-flash", reasoning=ReasoningConfig(enabled=False)
-            ),
-        }
         t._client = _ClientStub([_make_response("a", None), _make_response("b", None)])
         msgs = [{"role": "user", "content": "x"}]
         t.complete(
-            msgs, ModelRef("deepseek", "think"), agent="translator", operation="translate.batch"
+            msgs,
+            ModelRef("deepseek", "deepseek-v4-flash", reasoning_enabled=True),
+            agent="reviewer",
+            operation="review.chapter",
         )
         t.complete(
-            msgs, ModelRef("deepseek", "fast"), agent="translator", operation="translate.batch"
+            msgs,
+            ModelRef("deepseek", "deepseek-v4-flash", reasoning_enabled=False),
+            agent="preparer",
+            operation="prescan.digest",
         )
         think, fast = t._client.chat.completions.calls
         self.assertEqual(think["model"], "deepseek-v4-flash")
@@ -335,7 +317,6 @@ class TestEmptyResponseAccounting(unittest.TestCase):
                 _make_usage(prompt_tokens=5, completion_tokens=2, total_tokens=7),
             ),
         ]
-        t.cfg.max_retries = 1
         t._client = _ClientStub(responses)
         with patch(
             "trans_novel.llm.providers.transport.wait_exponential", return_value=wait_none()
@@ -362,7 +343,6 @@ class TestEmptyResponseAccounting(unittest.TestCase):
     def test_whitespace_empty_retries(self):
         tracker = UsageTracker()
         t = _transport(tracker)
-        t.cfg.max_retries = 1
         t._client = _ClientStub([_make_response(" \n\t", None), _make_response("visible", None)])
         with patch(
             "trans_novel.llm.providers.transport.wait_exponential", return_value=wait_none()
@@ -381,7 +361,6 @@ class TestEmptyResponseAccounting(unittest.TestCase):
     def test_exhaustion_raises_and_keeps_consumed_usage(self):
         tracker = UsageTracker()
         t = _transport(tracker)
-        t.cfg.max_retries = 1
         t._client = _ClientStub(
             [
                 _make_response(
@@ -392,8 +371,9 @@ class TestEmptyResponseAccounting(unittest.TestCase):
                 ),
             ]
         )
-        with patch(
-            "trans_novel.llm.providers.transport.wait_exponential", return_value=wait_none()
+        with (
+            patch("trans_novel.llm.providers.transport.wait_exponential", return_value=wait_none()),
+            patch("trans_novel.llm.providers.transport._MAX_RETRIES", 1),
         ):
             with self.assertRaises(EmptyResponseError):
                 t.complete(
@@ -416,7 +396,6 @@ class TestEmptyResponseAccounting(unittest.TestCase):
         """普通 RuntimeError 是永久错误：传输不重试、立即原样抛出。"""
         tracker = UsageTracker()
         t = _transport(tracker)
-        t.cfg.max_retries = 3  # 即便有重试预算也不消耗
 
         class _Boom:
             def create(self, **kwargs):

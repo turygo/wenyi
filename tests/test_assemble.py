@@ -93,14 +93,11 @@ def _write_vertical_epub(path: str) -> None:
 
 
 def _config(state_dir: str):
-    return Config.from_dict(
-        {
-            "language": {"source": "ja", "target": "zh"},
-            "llm": fake_llm_dict(),
-            "pipeline": {"review": True, "polish": True, "backtranslate_sample": 0.0},
-            "paths": {"state_dir": state_dir},
-        }
-    )
+    config = Config.from_dict({"llm": fake_llm_dict(), "quality": "quality"})
+    config.source_lang = "ja"
+    config.state_dir = state_dir
+    config.pipeline.backtranslate_sample = 0
+    return config
 
 
 def _run(input_path, state_dir):

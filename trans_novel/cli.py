@@ -74,7 +74,6 @@ def _show_version(value: bool) -> None:
 
 @app.callback()
 def _root(
-    ctx: typer.Context,
     config: str = typer.Option("config.yaml", "--config", "-c", help="配置文件路径"),
     version: bool = typer.Option(
         False,
@@ -85,28 +84,10 @@ def _root(
     ),
 ):
     _CONFIG["path"] = config
-    if ctx.invoked_subcommand != "init":
-        _create_default_config(config)
-
-
-def _create_default_config(path: str) -> bool:
-    """若指定配置文件不存在，则从包内唯一的模板创建该文件。"""
-    target = Path(path).expanduser()
-    try:
-        created = Config.create_default_file(str(target))
-    except (OSError, UnicodeError) as error:
-        console.print(f"[red]无法生成配置文件：{target}[/]")
-        console.print(str(error))
-        raise typer.Exit(2) from None
-    if created:
-        console.print(f"[bold green]已生成默认配置文件：{target}[/]")
-    return created
 
 
 def _load_config() -> Config:
     path = Path(_CONFIG["path"]).expanduser()
-    if not path.is_file():
-        _create_default_config(str(path))
     try:
         return Config.load(str(path))
     except (OSError, UnicodeError, TypeError, ValueError, yaml.YAMLError) as error:
@@ -146,7 +127,7 @@ def init_config(
         console.print(str(error))
         raise typer.Exit(1) from None
     console.print(f"[bold green]已生成配置文件：{target}[/]")
-    console.print("下一步：设置 DEEPSEEK_API_KEY，然后运行 trans-novel translate <小说文件>。")
+    console.print("下一步：设置 OPENCODE_API_KEY，然后运行 trans-novel translate <小说文件>。")
 
 
 def _runstore_for(config: Config, input_path: str) -> RunStore:
@@ -162,6 +143,10 @@ def _translate_impl(
     chapter: Optional[int] = None,
     fmt: str = "epub",
     out: Optional[str] = None,
+    quality: Optional[str] = None,
+    source_language: Optional[str] = None,
+    back_matter: Optional[str] = None,
+    honorifics: Optional[str] = None,
     polish: Optional[bool] = None,
     qa: Optional[bool] = None,
     mono: Optional[bool] = None,
@@ -174,6 +159,22 @@ def _translate_impl(
     _require_input_file(input_path)
     fmt = _validate_output_format(fmt)
     config = _load_config()
+    try:
+        if quality is not None:
+            config.apply_quality(quality)
+        if back_matter is not None:
+            if back_matter not in {"skip", "light", "full"}:
+                raise ValueError("--back-matter 必须是 skip、light 或 full")
+            config.pipeline.back_matter = back_matter
+        if honorifics is not None:
+            if honorifics not in {"keep_style", "normalize", "drop"}:
+                raise ValueError("--honorifics 必须是 keep_style、normalize 或 drop")
+            config.honorific_strategy = honorifics
+    except ValueError as error:
+        console.print(f"[red]{error}[/]")
+        raise typer.Exit(2) from None
+    if source_language is not None:
+        config.source_lang = source_language.strip() or "auto"
     if polish is not None:
         config.pipeline.polish = polish
     if mono is not None:
@@ -259,8 +260,8 @@ def _print_back_matter(report: dict) -> None:
     for b in bm:
         console.print(f"  第{b['chapter']}章 {b['title']} —— {mode_desc.get(b['mode'], b['mode'])}")
     console.print(
-        "如果这里混进了需要完整翻译的正文章节，请打开 config.yaml，"
-        "把 pipeline.back_matter 一行改成 full，再重新运行一次，程序会自动重译这些章节。"
+        "如果这里混进了需要完整翻译的正文章节，请用 "
+        "`--back-matter full` 重新运行，程序会自动重译这些章节。"
     )
 
 
@@ -303,25 +304,45 @@ def translate(
     out: Optional[str] = typer.Option(
         None, "--out", help="输出路径（默认 <源文件名>.zh.<ext>，落在源文件目录）"
     ),
+    quality: Optional[str] = typer.Option(
+        None,
+        "--quality",
+        help="本次运行的质量档位：economy | balanced | quality",
+    ),
+    source_language: Optional[str] = typer.Option(
+        None,
+        "--source-language",
+        help="源语言代码；默认由模型自动识别",
+    ),
+    back_matter: Optional[str] = typer.Option(
+        None,
+        "--back-matter",
+        help="附属章处理：skip | light | full",
+    ),
+    honorifics: Optional[str] = typer.Option(
+        None,
+        "--honorifics",
+        help="日文敬称策略：keep_style | normalize | drop",
+    ),
     polish: Optional[bool] = typer.Option(
         None,
         "--polish/--no-polish",
-        help="覆盖配置文件中的润色开关",
+        help="覆盖质量档位中的润色策略",
     ),
     qa: Optional[bool] = typer.Option(
         None,
         "--qa/--no-qa",
-        help="覆盖配置文件中的一致性 QA 开关",
+        help="覆盖质量档位中的一致性 QA 策略",
     ),
     mono: Optional[bool] = typer.Option(
         None,
         "--mono/--no-mono",
-        help="覆盖配置文件中的单语版产出开关",
+        help="是否产出纯中文版",
     ),
     bilingual: Optional[bool] = typer.Option(
         None,
         "--bilingual/--no-bilingual",
-        help="覆盖配置文件中的双语版产出开关",
+        help="是否产出双语对照版",
     ),
     prepare: bool = typer.Option(
         False,
@@ -335,6 +356,10 @@ def translate(
         chapter=chapter,
         fmt=fmt,
         out=out,
+        quality=quality,
+        source_language=source_language,
+        back_matter=back_matter,
+        honorifics=honorifics,
         polish=polish,
         qa=qa,
         mono=mono,

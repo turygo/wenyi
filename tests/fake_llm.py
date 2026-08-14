@@ -5,23 +5,16 @@ from __future__ import annotations
 import json
 import re
 
-from trans_novel.config import PRODUCTION_AGENT_IDS
-
 
 def fake_llm_dict(*, models=("p",), extra_agents=None) -> dict:
-    """构造离线 fake provider 的 llm 配置字典：所有生产 Agent ID 都绑定到 fake:<models[0]>。
-
-    测试直接用 FakeClient(handler=...) 注入行为、不走 AgentRouter；该配置只为让
-    Config 校验通过（生产 Agent 必须全部显式声明路由）。需要区分模型的测试可传
-    models 并自行覆盖 extra_agents 里的个别路由。
-    """
-    primary = f"fake:{models[0]}"
-    agents = {op: {"model": primary, "fallback": []} for op in PRODUCTION_AGENT_IDS}
-    if extra_agents:
-        agents.update(extra_agents)
+    """构造离线 fake provider 的精简配置。"""
+    if extra_agents is not None:
+        raise ValueError("新配置不支持 Agent 路由覆盖")
+    primary = models[0]
+    fast = models[1] if len(models) > 1 else primary
     return {
-        "providers": {"fake": {"type": "fake", "models": {m: {"id": m} for m in models}}},
-        "agents": agents,
+        "provider": "fake",
+        "models": {"primary": primary, "fast": fast},
     }
 
 

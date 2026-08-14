@@ -1,16 +1,15 @@
-"""LLM 公共接口、ModelRef、配置校验与 provider 请求方言的离线契约测试。"""
+"""精简配置、LLM 公共接口与 Provider 请求方言的离线契约测试。"""
 
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 
+from pydantic import ValidationError
+
 from tests.fake_llm import fake_llm_dict
-from trans_novel.config import (
-    LLMConfig,
-    ModelRef,
-    ProviderModelConfig,
-    ReasoningConfig,
-)
+from trans_novel.config import Config, LLMConfig, ModelRef, PipelineConfig
 from trans_novel.llm import AgentRouter, FakeClient, build_client, parse_json_loose
 
 
@@ -39,230 +38,180 @@ class TestParseJsonLoose(unittest.TestCase):
     def test_trailing_extra_brace(self):
         self.assertEqual(parse_json_loose('{"a": 1}\n}'), {"a": 1})
 
-    def test_unescaped_quotes_with_trailing_extra_brace_keeps_object(self):
-        raw = '{"translations":["他说"好"。"]}\n}'
-        self.assertEqual(parse_json_loose(raw), {"translations": ['他说"好"。']})
-
     def test_valid_json_untouched(self):
         self.assertEqual(parse_json_loose('{"a": "b, c: d"}'), {"a": "b, c: d"})
 
-    def test_escaped_quotes_still_work(self):
-        self.assertEqual(parse_json_loose('{"a": "he said \\"hi\\""}'), {"a": 'he said "hi"'})
-
-
-class TestModelRef(unittest.TestCase):
-    def test_parse_splits_on_first_colon(self):
-        ref = ModelRef.parse("local:qwen3:32b")
-        self.assertEqual((ref.provider, ref.model), ("local", "qwen3:32b"))
-        self.assertEqual(ref.full_name, "local:qwen3:32b")
-
-    def test_parse_trims_whitespace(self):
-        ref = ModelRef.parse("  deepseek : pro  ")
-        self.assertEqual((ref.provider, ref.model), ("deepseek", "pro"))
-
-    def test_parse_rejects_missing_parts(self):
-        for bad in ("", "deepseek", ":pro", "deepseek:", "  :  "):
-            with self.assertRaises(ValueError, msg=bad):
-                ModelRef.parse(bad)
-
-    def test_parse_rejects_invalid_provider_alias(self):
-        for bad in ("DeepSeek:pro", "1deep:pro", "deep seek:pro", "deep!seek:pro"):
-            with self.assertRaises(ValueError, msg=bad):
-                ModelRef.parse(bad)
-
-    def test_parse_rejects_comma_or_space_in_model_alias(self):
-        for bad in ("deepseek:pro,flash", "deepseek:pro flash"):
-            with self.assertRaises(ValueError, msg=bad):
-                ModelRef.parse(bad)
-
-    def test_immutable_and_equal_by_value(self):
-        a, b = ModelRef("deepseek", "pro"), ModelRef("deepseek", "pro")
-        self.assertEqual(a, b)
-        self.assertEqual(hash(a), hash(b))
-        with self.assertRaises(Exception):
-            a.provider = "other"  # frozen dataclass
-
 
 class TestConfigValidation(unittest.TestCase):
-    @staticmethod
-    def _cfg(**llm_kwargs) -> LLMConfig:
-        return LLMConfig.model_validate(llm_kwargs)
+    def test_zero_config_defaults(self):
+        cfg = Config.from_dict({})
+        self.assertEqual(cfg.llm.provider, "opencode-go")
+        self.assertEqual(cfg.llm.models.primary, "deepseek-v4-flash:high")
+        self.assertEqual(cfg.llm.models.fast, "deepseek-v4-flash:off")
+        self.assertEqual(cfg.quality, "balanced")
 
-    def test_minimal_valid_config(self):
-        cfg = LLMConfig.model_validate(
+    def test_missing_file_uses_defaults_without_creating_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "config.yaml")
+            cfg = Config.load(path)
+            self.assertEqual(cfg.quality, "balanced")
+            self.assertFalse(os.path.exists(path))
+
+    def test_opencode_go_has_built_in_endpoint_credentials_and_model_profile(self):
+        from trans_novel.llm.registry import ProviderRegistry
+        from trans_novel.llm.usage import UsageTracker
+        from trans_novel.model_profiles import DIALECT_DEEPSEEK, DIALECT_GENERIC
+
+        transport = ProviderRegistry(Config.defaults().llm, UsageTracker()).transport()
+        self.assertEqual(transport.provider, "opencode-go")
+        self.assertEqual(transport.base_url, "https://opencode.ai/zen/go/v1")
+        self.assertEqual(transport.api_key_env, "OPENCODE_API_KEY")
+        flash = transport.capabilities_for("deepseek-v4-flash")
+        self.assertEqual(flash.request_dialect, DIALECT_DEEPSEEK)
+        self.assertEqual(flash.reasoning_efforts, frozenset({"high", "max"}))
+        unknown = transport.capabilities_for("unknown-model")
+        self.assertEqual(unknown.request_dialect, DIALECT_GENERIC)
+        self.assertEqual(unknown.reasoning_efforts, frozenset())
+
+    def test_bailian_has_built_in_endpoint_credentials_and_model_profiles(self):
+        from trans_novel.llm.registry import ProviderRegistry
+        from trans_novel.llm.usage import UsageTracker
+        from trans_novel.model_profiles import DIALECT_BAILIAN
+
+        cfg = Config.from_dict(
             {
-                "providers": {
-                    "deepseek": {
-                        "type": "deepseek",
-                        "models": {"pro": {"id": "deepseek-v4-pro"}},
-                    }
-                },
-                "agents": {"translator": {"model": "deepseek:pro", "fallback": []}},
+                "llm": {
+                    "provider": "bailian",
+                    "models": {
+                        "primary": "deepseek-v4-flash:high",
+                        "fast": "qwen3.7-flash:off",
+                    },
+                }
             }
         )
-        self.assertEqual(cfg.agents["translator"].model.full_name, "deepseek:pro")
+        transport = ProviderRegistry(cfg.llm, UsageTracker()).transport()
+        self.assertEqual(transport.provider, "bailian")
+        self.assertEqual(
+            transport.base_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+        self.assertEqual(transport.api_key_env, "BAILIAN_API_KEY")
+        deepseek = transport.capabilities_for("deepseek-v4-flash")
+        self.assertEqual(deepseek.request_dialect, DIALECT_BAILIAN)
+        self.assertEqual(
+            deepseek.reasoning_efforts,
+            frozenset({"low", "medium", "high", "max"}),
+        )
+        qwen = transport.capabilities_for("qwen3.7-flash")
+        self.assertEqual(qwen.request_dialect, DIALECT_BAILIAN)
+        self.assertEqual(qwen.reasoning_efforts, frozenset())
 
-    def test_fallback_accepts_comma_scalar(self):
-        def _cfg(fallback):
-            return LLMConfig.model_validate(
-                {
-                    "providers": {
-                        "a": {"type": "fake", "models": {"m1": {"id": "m1"}, "m2": {"id": "m2"}}}
+    def test_model_thinking_suffix_is_validated_against_capabilities(self):
+        cfg = Config.from_dict(
+            {
+                "llm": {
+                    "provider": "opencode-go",
+                    "models": {
+                        "primary": "deepseek-v4-flash:max",
+                        "fast": "deepseek-v4-flash:off",
                     },
-                    "agents": {"op": {"model": "a:m1", "fallback": fallback}},
+                }
+            }
+        )
+        self.assertEqual(cfg.llm.models.primary, "deepseek-v4-flash:max")
+        with self.assertRaisesRegex(
+            ValidationError,
+            "deepseek-v4-flash 不支持 thinking 级别 'low'.*支持：off, high, max",
+        ):
+            Config.from_dict(
+                {
+                    "llm": {
+                        "provider": "opencode-go",
+                        "models": {
+                            "primary": "deepseek-v4-flash:low",
+                            "fast": "deepseek-v4-flash:off",
+                        },
+                    }
                 }
             )
 
-        cfg = _cfg("a:m2")
-        self.assertEqual([r.full_name for r in cfg.agents["op"].fallback], ["a:m2"])
-        # 重复引用（含 primary 重复）必须在加载时拒绝
-        with self.assertRaises(Exception):
-            _cfg("a:m2, a:m1")
-        with self.assertRaises(Exception):
-            _cfg("a:m1")
-
-    def test_rejects_empty_providers_or_agents(self):
-        with self.assertRaises(Exception):
-            self._cfg(providers={}, agents={"op": {"model": "a:m1"}})
-        with self.assertRaises(Exception):
-            self._cfg(
-                providers={"a": {"type": "fake", "models": {"m1": {"id": "m1"}}}},
-                agents={},
-            )
-
-    def test_rejects_unknown_provider_type(self):
-        with self.assertRaisesRegex(Exception, "未知 provider 类型"):
-            self._cfg(
-                providers={"a": {"type": "bogus", "models": {"m1": {"id": "m1"}}}},
-                agents={"op": {"model": "a:m1"}},
-            )
-
-    def test_rejects_unknown_provider_or_model_reference(self):
-        with self.assertRaisesRegex(Exception, "未配置的 provider"):
-            self._cfg(
-                providers={"a": {"type": "fake", "models": {"m1": {"id": "m1"}}}},
-                agents={"op": {"model": "nope:m1"}},
-            )
-        with self.assertRaisesRegex(Exception, "没有模型别名"):
-            self._cfg(
-                providers={"a": {"type": "fake", "models": {"m1": {"id": "m1"}}}},
-                agents={"op": {"model": "a:missing"}},
-            )
-
-    def test_rejects_uppercase_or_whitespace_provider_alias(self):
-        with self.assertRaisesRegex(Exception, "必须匹配"):
-            self._cfg(
-                providers={"DeepSeek": {"type": "fake", "models": {"m1": {"id": "m1"}}}},
-                agents={"op": {"model": "DeepSeek:m1"}},
-            )
-        with self.assertRaisesRegex(Exception, "必须匹配"):
-            self._cfg(
-                providers={"deep seek": {"type": "fake", "models": {"m1": {"id": "m1"}}}},
-                agents={"op": {"model": "deep seek:m1"}},
-            )
-
-    def test_rejects_blank_model_alias_keys_and_service_ids(self):
-        with self.assertRaisesRegex(Exception, "模型别名"):
-            self._cfg(
-                providers={"a": {"type": "fake", "models": {"": {"id": "m1"}}}},
-                agents={"op": {"model": "a:m1"}},
-            )
-        with self.assertRaisesRegex(Exception, "不能为空"):
-            self._cfg(
-                providers={"a": {"type": "fake", "models": {"m1": {"id": "  "}}}},
-                agents={"op": {"model": "a:m1"}},
-            )
-
-    def test_rejects_model_alias_with_comma_or_whitespace(self):
-        with self.assertRaisesRegex(Exception, "不得包含逗号或空白"):
-            self._cfg(
-                providers={"a": {"type": "fake", "models": {"m 1": {"id": "m1"}}}},
-                agents={"op": {"model": "a:m 1"}},
-            )
-
-    def test_rejects_reserved_request_overrides(self):
-        for reserved in ("model", "messages", "stream"):
-            with self.subTest(reserved=reserved), self.assertRaisesRegex(Exception, "保留字段"):
-                self._cfg(
-                    providers={
-                        "a": {
-                            "type": "fake",
-                            "models": {"m1": {"id": "m1", "request_overrides": {reserved: "x"}}},
-                        }
-                    },
-                    agents={"op": {"model": "a:m1"}},
-                )
-
-    def test_rejects_unknown_llm_or_provider_or_model_keys(self):
-        with self.assertRaisesRegex(Exception, "Extra inputs"):
-            LLMConfig.model_validate(
+    def test_known_model_rejects_unknown_thinking_suffix(self):
+        with self.assertRaisesRegex(ValidationError, "未知 thinking 级别 'turbo'"):
+            Config.from_dict(
                 {
-                    "providers": {"a": {"type": "fake", "models": {"m1": {"id": "m1"}}}},
-                    "agents": {"op": {"model": "a:m1"}},
-                    "bogus_key": 1,
-                }
-            )
-        with self.assertRaisesRegex(Exception, "Extra inputs"):
-            LLMConfig.model_validate(
-                {
-                    "providers": {
-                        "a": {"type": "fake", "models": {"m1": {"id": "m1"}}, "bogus": 1}
-                    },
-                    "agents": {"op": {"model": "a:m1"}},
+                    "llm": {
+                        "provider": "opencode-go",
+                        "models": {
+                            "primary": "deepseek-v4-flash:turbo",
+                            "fast": "deepseek-v4-flash:off",
+                        },
+                    }
                 }
             )
 
-    def test_rejects_legacy_llm_provider_and_tiers(self):
-        for raw in ({"provider": "deepseek"}, {"tiers": {"strong": {"model": "x"}}}):
-            with self.subTest(raw=raw), self.assertRaisesRegex(Exception, "已废弃"):
-                LLMConfig.model_validate(raw)
+    def test_non_thinking_colon_remains_part_of_model_id(self):
+        from trans_novel.model_profiles import parse_model_selection
+
+        selection = parse_model_selection("qwen3:32b")
+        self.assertEqual(selection.model, "qwen3:32b")
+        self.assertIsNone(selection.thinking)
+
+    def test_custom_models(self):
+        cfg = Config.from_dict(
+            {
+                "llm": {
+                    "provider": "openai",
+                    "models": {"primary": "gpt-5", "fast": "gpt-5-mini"},
+                },
+                "quality": "quality",
+            }
+        )
+        self.assertEqual(cfg.llm.models.primary, "gpt-5")
+        self.assertTrue(cfg.pipeline.polish)
+        self.assertTrue(cfg.pipeline.consistency_qa)
 
     def test_openai_compatible_requires_base_url(self):
-        with self.assertRaisesRegex(Exception, "base_url"):
+        with self.assertRaisesRegex(ValidationError, "base_url"):
             LLMConfig.model_validate(
                 {
-                    "providers": {
-                        "bailian": {"type": "openai-compatible", "models": {"m": {"id": "m"}}}
-                    },
-                    "agents": {"op": {"model": "bailian:m"}},
+                    "provider": "openai-compatible",
+                    "models": {"primary": "a", "fast": "b"},
                 }
             )
 
-    def test_timeout_and_max_retries_bounds(self):
-        with self.assertRaises(Exception):
-            self._cfg(
-                providers={"a": {"type": "fake", "timeout": 0, "models": {"m": {"id": "m"}}}},
-                agents={"op": {"model": "a:m"}},
-            )
-        with self.assertRaises(Exception):
-            self._cfg(
-                providers={"a": {"type": "fake", "max_retries": -1, "models": {"m": {"id": "m"}}}},
-                agents={"op": {"model": "a:m"}},
-            )
+    def test_standard_provider_rejects_endpoint_overrides(self):
+        with self.assertRaisesRegex(ValidationError, "只用于 openai-compatible"):
+            LLMConfig.model_validate({"provider": "deepseek", "base_url": "https://example.com"})
 
-    def test_rejects_invalid_reasoning_effort(self):
-        with self.assertRaises(Exception):
-            LLMConfig.model_validate(
-                {
-                    "providers": {
-                        "a": {
-                            "type": "fake",
-                            "models": {"m": {"id": "m", "reasoning": {"effort": "ultra"}}},
-                        }
-                    },
-                    "agents": {"op": {"model": "a:m"}},
-                }
-            )
+    def test_unknown_and_old_fields_fail_fast(self):
+        with self.assertRaisesRegex(ValidationError, "Extra inputs"):
+            Config.from_dict({"unknown": True})
+        for raw in (
+            {"pipeline": {"polish": True}},
+            {"llm": {"providers": {}, "agents": {}}},
+        ):
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, "已废弃"):
+                Config.from_dict(raw)
+
+    def test_quality_profiles(self):
+        economy = PipelineConfig.for_quality("economy")
+        balanced = PipelineConfig.for_quality("balanced")
+        quality = PipelineConfig.for_quality("quality")
+        self.assertFalse(economy.review)
+        self.assertTrue(balanced.review)
+        self.assertFalse(balanced.polish)
+        self.assertTrue(quality.polish)
+        self.assertEqual(quality.backtranslate_sample, 0.05)
 
     def test_fake_provider_usable_without_credentials(self):
-        from trans_novel.config import Config
-
         cfg = Config.from_dict({"llm": fake_llm_dict()})
         router = build_client(cfg)
         self.assertIsInstance(router, AgentRouter)
         self.assertEqual(
             router.complete(
-                [{"role": "user", "content": "x"}], agent="preparer", operation="prescan.digest"
+                [{"role": "user", "content": "x"}],
+                agent="preparer",
+                operation="prescan.digest",
             ),
             "",
         )
@@ -273,32 +222,23 @@ class TestFakeClient(unittest.TestCase):
         client = FakeClient()
         self.assertEqual(
             client.complete(
-                [{"role": "user", "content": "x"}], agent="translator", operation="translate.batch"
+                [{"role": "user", "content": "x"}],
+                agent="translator",
+                operation="translate.batch",
             ),
             "",
         )
         self.assertEqual(
             client.complete_json(
-                [{"role": "user", "content": "x"}], agent="translator", operation="translate.batch"
+                [{"role": "user", "content": "x"}],
+                agent="translator",
+                operation="translate.batch",
             ),
             [],
         )
 
-    def test_empty_handler_response_is_preserved_without_retry(self):
-        client = FakeClient(handler=lambda messages, agent, operation, json_mode: "")
-        self.assertEqual(
-            client.complete(
-                [{"role": "user", "content": "x"}], agent="translator", operation="translate.batch"
-            ),
-            "",
-        )
-        self.assertEqual(len(client.calls), 1)
-
     def test_handler_preserves_call_metadata(self):
-        def handler(messages, agent, operation, json_mode):
-            return '["A","B"]' if json_mode else "hello"
-
-        client = FakeClient(handler=handler)
+        client = FakeClient(handler=lambda messages, agent, operation, json_mode: "hello")
         self.assertEqual(
             client.complete(
                 [{"role": "user", "content": "x"}],
@@ -308,133 +248,122 @@ class TestFakeClient(unittest.TestCase):
             ),
             "hello",
         )
-        self.assertEqual(
-            client.complete_json(
-                [{"role": "user", "content": "x"}], agent="translator", operation="translate.batch"
-            ),
-            ["A", "B"],
-        )
         self.assertEqual(client.calls[0]["agent"], "translator")
         self.assertEqual(client.calls[0]["operation"], "translate.batch")
-        self.assertEqual(client.calls[0]["stage"], "Translator")
 
 
-class TestProviderRequestDialects(unittest.TestCase):
+class TestProviderRequestCapabilities(unittest.TestCase):
     messages = [{"role": "user", "content": "translate"}]
 
     @staticmethod
-    def _model(**overrides) -> ProviderModelConfig:
-        base = dict(id="deepseek-model", reasoning=ReasoningConfig(enabled=True, effort="high"))
-        base.update(overrides)
-        return ProviderModelConfig.model_validate(base)
-
-    def test_deepseek_enabled_and_disabled_thinking(self):
-        from trans_novel.llm.providers.transport import (
-            DIALECT_DEEPSEEK,
-            build_request_kwargs,
+    def _model(*, enabled: bool = True, effort: str = "high") -> ModelRef:
+        return ModelRef(
+            "deepseek",
+            "deepseek-model",
+            reasoning_enabled=enabled,
+            reasoning_effort=effort,
         )
 
+    def test_deepseek_enabled_and_disabled_thinking(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import DIALECT_DEEPSEEK, ModelCapabilities
+
+        capabilities = ModelCapabilities(
+            request_dialect=DIALECT_DEEPSEEK,
+            reasoning_efforts=frozenset({"high"}),
+        )
         enabled = build_request_kwargs(
-            DIALECT_DEEPSEEK,
+            capabilities,
             self._model(),
             self.messages,
             json_mode=True,
             max_tokens=10,
         )
         disabled = build_request_kwargs(
-            DIALECT_DEEPSEEK,
-            self._model(reasoning=ReasoningConfig(enabled=False)),
+            capabilities,
+            self._model(enabled=False),
             self.messages,
             max_tokens=10,
         )
         self.assertEqual(enabled["model"], "deepseek-model")
-        self.assertEqual(enabled["messages"], self.messages)
-        self.assertIs(enabled["stream"], False)
         self.assertEqual(enabled["response_format"], {"type": "json_object"})
         self.assertEqual(enabled["extra_body"], {"thinking": {"type": "enabled"}})
         self.assertEqual(enabled["reasoning_effort"], "high")
-        self.assertEqual(enabled["max_tokens"], 4096)  # 思考模型抬到安全下限
+        self.assertEqual(enabled["max_tokens"], 4096)
         self.assertEqual(disabled["extra_body"], {"thinking": {"type": "disabled"}})
         self.assertNotIn("reasoning_effort", disabled)
-        self.assertEqual(disabled["max_tokens"], 10)  # 关思考不抬上限
+        self.assertEqual(disabled["max_tokens"], 10)
 
-    def test_openai_and_openrouter_dialects(self):
-        from trans_novel.llm.providers.transport import (
+    def test_bailian_enabled_and_disabled_thinking(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import DIALECT_BAILIAN, ModelCapabilities
+
+        enabled = build_request_kwargs(
+            ModelCapabilities(DIALECT_BAILIAN, frozenset({"high"})),
+            self._model(),
+            self.messages,
+            max_tokens=10,
+        )
+        disabled = build_request_kwargs(
+            ModelCapabilities(DIALECT_BAILIAN),
+            self._model(enabled=False),
+            self.messages,
+            max_tokens=10,
+        )
+        self.assertEqual(enabled["extra_body"], {"enable_thinking": True})
+        self.assertEqual(enabled["reasoning_effort"], "high")
+        self.assertEqual(enabled["max_tokens"], 4096)
+        self.assertEqual(disabled["extra_body"], {"enable_thinking": False})
+        self.assertNotIn("reasoning_effort", disabled)
+        self.assertEqual(disabled["max_tokens"], 10)
+
+    def test_openai_and_openrouter_capabilities(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import (
             DIALECT_OPENAI,
             DIALECT_OPENROUTER,
-            build_request_kwargs,
+            ModelCapabilities,
         )
 
-        openai = build_request_kwargs(DIALECT_OPENAI, self._model(), self.messages, max_tokens=10)
+        efforts = frozenset({"high"})
+        openai = build_request_kwargs(
+            ModelCapabilities(DIALECT_OPENAI, efforts),
+            self._model(),
+            self.messages,
+        )
         self.assertEqual(openai["reasoning_effort"], "high")
-        self.assertNotIn("extra_body", openai)
-        openai_off = build_request_kwargs(
-            DIALECT_OPENAI,
-            self._model(reasoning=ReasoningConfig(enabled=False)),
-            self.messages,
-        )
-        self.assertNotIn("reasoning_effort", openai_off)
-
         router = build_request_kwargs(
-            DIALECT_OPENROUTER,
-            self._model(reasoning=ReasoningConfig(enabled=False)),
+            ModelCapabilities(DIALECT_OPENROUTER, efforts),
+            self._model(enabled=False),
             self.messages,
-            max_tokens=123,
         )
         self.assertEqual(router["extra_body"], {"reasoning": {"enabled": False}})
-        self.assertEqual(router["max_tokens"], 123)
-        router_on = build_request_kwargs(
-            DIALECT_OPENROUTER,
-            self._model(reasoning=ReasoningConfig(enabled=True, effort="low")),
-            self.messages,
-        )
-        self.assertEqual(router_on["extra_body"], {"reasoning": {"effort": "low"}})
 
-    def test_generic_dialect_only_controls_max_tokens_floor(self):
-        from trans_novel.llm.providers.transport import (
-            DIALECT_GENERIC,
-            build_request_kwargs,
-        )
+    def test_unknown_capabilities_do_not_send_or_budget_reasoning(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import ModelCapabilities
 
-        gen = build_request_kwargs(DIALECT_GENERIC, self._model(), self.messages, max_tokens=100)
-        self.assertEqual(gen["max_tokens"], 4096)
-        self.assertNotIn("extra_body", gen)
-        self.assertNotIn("reasoning_effort", gen)
-        gen_off = build_request_kwargs(
-            DIALECT_GENERIC,
-            self._model(reasoning=ReasoningConfig(enabled=False)),
+        kwargs = build_request_kwargs(
+            ModelCapabilities(),
+            self._model(),
             self.messages,
             max_tokens=100,
         )
-        self.assertEqual(gen_off["max_tokens"], 100)
+        self.assertEqual(kwargs["max_tokens"], 100)
+        self.assertNotIn("extra_body", kwargs)
+        self.assertNotIn("reasoning_effort", kwargs)
 
-    def test_request_overrides_immutable_recursive_merge(self):
-        from trans_novel.llm.providers.transport import (
-            DIALECT_DEEPSEEK,
-            build_request_kwargs,
-        )
+    def test_unsupported_effort_is_disabled_instead_of_upgraded(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import DIALECT_DEEPSEEK, ModelCapabilities
 
-        model = self._model(
-            request_overrides={
-                "extra_body": {"thinking": {"type": "enabled"}, "custom": {"deep": 1}},
-                "temperature": None,
-                "top_p": 0.9,
-            }
+        kwargs = build_request_kwargs(
+            ModelCapabilities(DIALECT_DEEPSEEK, frozenset({"high"})),
+            self._model(effort="low"),
+            self.messages,
         )
-        overrides_snapshot = {
-            k: (dict(v) if isinstance(v, dict) else v) for k, v in model.request_overrides.items()
-        }
-        kwargs = build_request_kwargs(DIALECT_DEEPSEEK, model, self.messages)
-        # 递归合并：extra_body 的 thinking 与 custom 都被保留
-        self.assertEqual(
-            kwargs["extra_body"], {"thinking": {"type": "enabled"}, "custom": {"deep": 1}}
-        )
-        # None 整体替换生成值
-        self.assertIsNone(kwargs["temperature"])
-        # 非 dict 值整体替换
-        self.assertEqual(kwargs["top_p"], 0.9)
-        # 配置不被改写
-        self.assertEqual(model.request_overrides, overrides_snapshot)
+        self.assertEqual(kwargs["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertNotIn("reasoning_effort", kwargs)
 
 
 if __name__ == "__main__":

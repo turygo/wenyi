@@ -37,38 +37,18 @@ def _translated_para_count(calls) -> int:
 
 
 def _config(state_dir: str):
-    return Config.from_dict(
-        {
-            "language": {"source": "ja", "target": "zh"},
-            "llm": fake_llm_dict(),
-            "segment": {"max_chars_per_batch": 1800},
-            "pipeline": {
-                "review": True,
-                "polish": True,
-                "backtranslate_sample": 0.0,
-                "consistency_qa": True,
-            },
-            "paths": {"state_dir": state_dir},
-        }
-    )
+    config = Config.from_dict({"llm": fake_llm_dict(), "quality": "quality"})
+    config.source_lang = "ja"
+    config.state_dir = state_dir
+    config.pipeline.backtranslate_sample = 0
+    return config
 
 
 def _epub_config(state_dir: str):
     """供英文源 EPUB 样书使用（write_nested_toc_epub / write_grouped_nav_epub 生成的内容均为英文）。"""
-    return Config.from_dict(
-        {
-            "language": {"source": "en", "target": "zh"},
-            "llm": fake_llm_dict(),
-            "segment": {"max_chars_per_batch": 1800},
-            "pipeline": {
-                "review": True,
-                "polish": True,
-                "backtranslate_sample": 0.0,
-                "consistency_qa": True,
-            },
-            "paths": {"state_dir": state_dir},
-        }
-    )
+    config = _config(state_dir)
+    config.source_lang = "en"
+    return config
 
 
 def _title_calls(calls):
@@ -2385,21 +2365,9 @@ class TestLintTooShortReportOnly(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             self._write(txt)
-            cfg = Config.from_dict(
-                {
-                    "language": {"source": "en", "target": "zh"},
-                    "llm": fake_llm_dict(),
-                    "segment": {"max_chars_per_batch": 1800},
-                    "pipeline": {
-                        "review": False,
-                        "polish": False,
-                        "backtranslate_sample": 0.0,
-                        "consistency_qa": False,
-                        "book_understanding": False,
-                    },
-                    "paths": {"state_dir": os.path.join(d, "state")},
-                }
-            )
+            cfg = Config.from_dict({"llm": fake_llm_dict(), "quality": "economy"})
+            cfg.source_lang = "en"
+            cfg.state_dir = os.path.join(d, "state")
             client = FakeClient(handler=self._handler)
             store = Orchestrator(cfg, client=client).run(txt)
 

@@ -19,14 +19,9 @@ from trans_novel.postprocess.punct import normalize_heading_numbering, normalize
 
 class TestModelLanguageDetection(unittest.TestCase):
     def _cfg(self, state: str) -> Config:
-        return Config.from_dict(
-            {
-                "language": {"source": "auto", "target": "zh"},
-                "llm": fake_llm_dict(),
-                "pipeline": {"book_understanding": False},
-                "paths": {"state_dir": state},
-            }
-        )
+        config = Config.from_dict({"llm": fake_llm_dict(), "quality": "economy"})
+        config.state_dir = state
+        return config
 
     def test_auto_uses_model_detection(self):
         with tempfile.TemporaryDirectory() as d:
@@ -61,20 +56,17 @@ class TestModelLanguageDetection(unittest.TestCase):
                     return json.dumps({"language": ""}, ensure_ascii=False)
                 return routing_handler(messages, agent, operation, json_mode)
 
-            with self.assertRaisesRegex(RuntimeError, "language.source"):
+            with self.assertRaisesRegex(RuntimeError, "--source-language"):
                 Orchestrator(cfg, client=FakeClient(handler=handler)).prepare(txt)
 
     def test_explicit_same_source_and_target_stops_before_model_calls(self):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
-            cfg = Config.from_dict(
-                {
-                    "language": {"source": "ja", "target": "ja-JP"},
-                    "llm": fake_llm_dict(),
-                    "paths": {"state_dir": os.path.join(d, "state")},
-                }
-            )
+            cfg = Config.from_dict({"llm": fake_llm_dict()})
+            cfg.source_lang = "ja"
+            cfg.target_lang = "ja-JP"
+            cfg.state_dir = os.path.join(d, "state")
             client = FakeClient(handler=routing_handler)
 
             with self.assertRaisesRegex(ValueError, "源语言与目标语言相同（ja）"):
@@ -163,19 +155,9 @@ class TestGlossaryAudit(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             state = os.path.join(d, "state")
-            cfg = Config.from_dict(
-                {
-                    "language": {"source": "ja", "target": "zh"},
-                    "llm": fake_llm_dict(),
-                    "pipeline": {
-                        "review": False,
-                        "polish": False,
-                        "backtranslate_sample": 0.0,
-                        "consistency_qa": False,
-                    },
-                    "paths": {"state_dir": state},
-                }
-            )
+            cfg = Config.from_dict({"llm": fake_llm_dict(), "quality": "economy"})
+            cfg.source_lang = "ja"
+            cfg.state_dir = state
             orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
             store = orch.run(txt)
 
@@ -226,19 +208,9 @@ class TestRunAll(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             state = os.path.join(d, "state")
-            cfg = Config.from_dict(
-                {
-                    "language": {"source": "auto", "target": "zh"},
-                    "llm": fake_llm_dict(),
-                    "pipeline": {
-                        "review": True,
-                        "polish": True,
-                        "backtranslate_sample": 0.0,
-                        "consistency_qa": True,
-                    },
-                    "paths": {"state_dir": state},
-                }
-            )
+            cfg = Config.from_dict({"llm": fake_llm_dict(), "quality": "quality"})
+            cfg.state_dir = state
+            cfg.pipeline.backtranslate_sample = 0
             seen = []
             orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
             result = orch.run_all(

@@ -8,5 +8,5 @@ from .router import AgentRouter
 
 
 def build_client(config: Config) -> LLMClient:
-    """构建配置指定的 LLM 客户端：按 llm.agents 路由执行 primary/fallback。"""
+    """构建按内置 Agent 映射 primary / fast 模型的客户端。"""
     return AgentRouter(config)

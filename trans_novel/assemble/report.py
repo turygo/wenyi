@@ -29,8 +29,8 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
         bt_issues.extend(ch.meta.get("backtranslation_issues", []))
         bm_mode = ch.meta.get("back_matter_mode")
         if bm_mode:
-            # 旁路章（skip=原文直通 / light=fast 粗翻）列给人工复核：
-            # 若有正文章被误伤，调高 pipeline.back_matter 重跑即可自动重译。
+            # 旁路章（skip=原文直通 / light=fast 粗翻）列给人工复核；
+            # 若误伤正文，可用 --back-matter full 重跑。
             back_matter.append(
                 {"chapter": c["index"], "title": c.get("title", ""), "mode": bm_mode}
             )

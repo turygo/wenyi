@@ -42,23 +42,13 @@ def _write_doc(path: str) -> None:
 
 
 def _config(state_dir: str, back_matter: str) -> Config:
-    return Config.from_dict(
-        {
-            "language": {"source": "ja", "target": "zh"},
-            "llm": fake_llm_dict(),
-            "segment": {"max_chars_per_batch": 1800},
-            # 打开 review/polish/backtranslate，让「附属章没有这些事件」成为有信号的断言
-            # ——正文章会产生它们，附属章旁路后才不产生。
-            "pipeline": {
-                "review": True,
-                "polish": True,
-                "backtranslate_sample": 1.0,
-                "consistency_qa": True,
-                "back_matter": back_matter,
-            },
-            "paths": {"state_dir": state_dir},
-        }
-    )
+    config = Config.from_dict({"llm": fake_llm_dict(), "quality": "quality"})
+    config.source_lang = "ja"
+    config.state_dir = state_dir
+    # 正文章开启回译，让“附属章没有这些事件”成为有信号的断言。
+    config.pipeline.backtranslate_sample = 1.0
+    config.pipeline.back_matter = back_matter
+    return config
 
 
 def _events(store) -> list[dict]:
@@ -339,13 +329,9 @@ class TestBackMatterResume(unittest.TestCase):
 
 
 class TestBackMatterConfigValidation(unittest.TestCase):
-    """成本开关 fail-fast：非法 back_matter 值加载配置即报错，不静默走最贵路径。"""
-
-    def test_invalid_value_raises(self):
-        from pydantic import ValidationError
-
-        with self.assertRaises(ValidationError):
-            Config.from_dict({"llm": fake_llm_dict(), "pipeline": {"back_matter": "ligth"}})
+    def test_old_pipeline_config_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "已废弃"):
+            Config.from_dict({"llm": fake_llm_dict(), "pipeline": {"back_matter": "light"}})
 
 
 class TestBackMatterUpgradeReopen(unittest.TestCase):

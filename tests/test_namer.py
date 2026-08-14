@@ -19,12 +19,9 @@ _LONG = "x" * 6001
 
 
 def _cfg() -> Config:
-    return Config.from_dict(
-        {
-            "language": {"source": "en", "target": "zh"},
-            "llm": fake_llm_dict(),
-        }
-    )
+    config = Config.from_dict({"llm": fake_llm_dict()})
+    config.source_lang = "en"
+    return config
 
 
 def _candidates(n: int) -> list[Candidate]:

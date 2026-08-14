@@ -1,4 +1,4 @@
-"""LLM 路由与降级的公共异常类型。"""
+"""LLM 路由的公共异常类型。"""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ from ..config import ModelRef
 
 
 class UnknownAgentError(ValueError):
-    """agent 缺失或未在 llm.agents 中声明路由（调用方/配置错误）。"""
+    """agent 缺失或不是内置生产 Agent。"""
 
 
 class AllModelsFailedError(RuntimeError):
-    """全部可降级候选重试耗尽后抛出；records 为不可变的脱敏 (ModelRef, reason) 记录。
+    """当前模型耗尽内部重试后抛出。
 
-    只包含 provider:model 与固定归一化 reason，绝不包含 prompt、API key 或响应正文。
+    只包含 provider:model 与固定归一化原因，绝不包含 prompt、API key 或响应正文。
     """
 
     def __init__(self, records: tuple[tuple[ModelRef, str], ...]) -> None:

@@ -20,12 +20,9 @@ from trans_novel.pipeline.runstore import RunStore
 
 
 def _cfg():
-    return Config.from_dict(
-        {
-            "language": {"source": "ja", "target": "zh"},
-            "llm": fake_llm_dict(),
-        }
-    )
+    config = Config.from_dict({"llm": fake_llm_dict()})
+    config.source_lang = "ja"
+    return config
 
 
 class TestAnalyzer(unittest.TestCase):

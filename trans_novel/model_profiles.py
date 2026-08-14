@@ -1,0 +1,119 @@
+"""模型规格后缀与 Provider/模型能力目录。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal, cast
+
+RequestDialect = Literal["generic", "deepseek", "bailian", "openai", "openrouter"]
+ThinkingLevel = Literal["off", "low", "medium", "high", "max"]
+ReasoningEffort = Literal["low", "medium", "high", "max"]
+
+DIALECT_GENERIC: RequestDialect = "generic"
+DIALECT_DEEPSEEK: RequestDialect = "deepseek"
+DIALECT_BAILIAN: RequestDialect = "bailian"
+DIALECT_OPENAI: RequestDialect = "openai"
+DIALECT_OPENROUTER: RequestDialect = "openrouter"
+THINKING_LEVELS: tuple[ThinkingLevel, ...] = ("off", "low", "medium", "high", "max")
+
+
+@dataclass(frozen=True)
+class ModelSelection:
+    """从 `<model-id>:<thinking-level>` 解析出的模型选择。"""
+
+    model: str
+    thinking: ThinkingLevel | None = None
+
+
+@dataclass(frozen=True)
+class ModelCapabilities:
+    """某个模型的请求方言与可下发推理强度。未知能力一律不发送。"""
+
+    request_dialect: RequestDialect = DIALECT_GENERIC
+    reasoning_efforts: frozenset[ReasoningEffort] = frozenset()
+
+
+_GENERIC_CAPABILITIES = ModelCapabilities()
+_DEFAULT_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "deepseek": ModelCapabilities(
+        request_dialect=DIALECT_DEEPSEEK,
+        reasoning_efforts=frozenset({"low", "medium", "high"}),
+    ),
+    "opencode-go": _GENERIC_CAPABILITIES,
+    "bailian": _GENERIC_CAPABILITIES,
+    "openai": ModelCapabilities(
+        request_dialect=DIALECT_OPENAI,
+        reasoning_efforts=frozenset({"low", "medium", "high"}),
+    ),
+    "openrouter": ModelCapabilities(
+        request_dialect=DIALECT_OPENROUTER,
+        reasoning_efforts=frozenset({"low", "medium", "high"}),
+    ),
+    "openai-compatible": _GENERIC_CAPABILITIES,
+    "ollama": _GENERIC_CAPABILITIES,
+    "vllm": _GENERIC_CAPABILITIES,
+    "fake": _GENERIC_CAPABILITIES,
+}
+_MODEL_CAPABILITIES: dict[tuple[str, str], ModelCapabilities] = {
+    # Pi 的发布模型目录将该模型标为 DeepSeek thinking 格式，仅支持 high/max。
+    ("opencode-go", "deepseek-v4-flash"): ModelCapabilities(
+        request_dialect=DIALECT_DEEPSEEK,
+        reasoning_efforts=frozenset({"high", "max"}),
+    ),
+    # 百炼的 DeepSeek V4 使用 enable_thinking，并接受四档 reasoning_effort。
+    ("bailian", "deepseek-v4-flash"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+        reasoning_efforts=frozenset({"low", "medium", "high", "max"}),
+    ),
+    ("bailian", "deepseek-v4-flash-0731"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+        reasoning_efforts=frozenset({"low", "medium", "high", "max"}),
+    ),
+    # 千问 3.7 Flash 支持开关思考，但不接受本项目的 reasoning_effort 档位。
+    ("bailian", "qwen3.7-flash"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+    ),
+    ("bailian", "qwen3.7-flash-2026-07-15"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+    ),
+}
+
+
+def parse_model_selection(value: str) -> ModelSelection:
+    """仅把最右侧的已知级别识别为后缀；`qwen:32b` 等模型 ID 保持不变。"""
+
+    model, separator, suffix = value.rpartition(":")
+    if separator and model and suffix in THINKING_LEVELS:
+        return ModelSelection(model=model, thinking=cast(ThinkingLevel, suffix))
+    return ModelSelection(model=value)
+
+
+def capabilities_for(provider: str, model: str) -> ModelCapabilities:
+    return _MODEL_CAPABILITIES.get(
+        (provider, model),
+        _DEFAULT_CAPABILITIES.get(provider, _GENERIC_CAPABILITIES),
+    )
+
+
+def validate_model_selection(provider: str, value: str) -> ModelSelection:
+    """校验显式 thinking 后缀；不支持时列出该模型可用级别。"""
+
+    selection = parse_model_selection(value)
+    if selection.thinking is None:
+        model, separator, suffix = value.rpartition(":")
+        if separator and (provider, model) in _MODEL_CAPABILITIES:
+            allowed = ", ".join(THINKING_LEVELS)
+            raise ValueError(f"未知 thinking 级别 {suffix!r}；可选：{allowed}")
+        return selection
+
+    capabilities = capabilities_for(provider, selection.model)
+    if selection.thinking != "off" and selection.thinking not in capabilities.reasoning_efforts:
+        supported = [
+            "off",
+            *(level for level in THINKING_LEVELS if level in capabilities.reasoning_efforts),
+        ]
+        raise ValueError(
+            f"{provider}:{selection.model} 不支持 thinking 级别 {selection.thinking!r}；"
+            f"支持：{', '.join(supported)}"
+        )
+    return selection

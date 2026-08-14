@@ -37,8 +37,8 @@ class Agent:
 
         异常时返回 default（未给 default 则照常抛出，如 Translator 交由重试逻辑处理）。
         key 给出时：结果为 dict 取 data[key]（缺失回退）；结果为非空 list 直接用；否则回退。
-        agent：功能 Agent 路由键（llm.agents 中声明的六键之一）；operation：内部业务标签
-        （telemetry/调试归因）。两者都在调用点显式硬编码，缺一不可。
+        agent 是内置功能标识；operation 是内部业务标签。两者都在调用点显式硬编码，
+        缺一不可。
         """
         try:
             data = self.client.complete_json(

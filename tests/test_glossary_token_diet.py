@@ -43,23 +43,18 @@ def _cfg(
     consistency_qa=True,
     inflight_glossary=True,
 ):
-    return Config.from_dict(
-        {
-            "language": {"source": "ja", "target": "zh"},
-            "llm": fake_llm_dict(),
-            "segment": {"max_chars_per_batch": max_chars_per_batch, "max_chars_per_segment": 1200},
-            "pipeline": {
-                "review": review,
-                "polish": polish,
-                "backtranslate_sample": backtranslate,
-                "consistency_qa": consistency_qa,
-                "book_understanding": book_understanding,
-                "back_matter": back_matter,
-                "inflight_glossary": inflight_glossary,
-            },
-            "paths": {"state_dir": state_dir},
-        }
-    )
+    config = Config.from_dict({"llm": fake_llm_dict()})
+    config.source_lang = "ja"
+    config.state_dir = state_dir
+    config.segment.max_chars_per_batch = max_chars_per_batch
+    config.pipeline.review = review
+    config.pipeline.polish = polish
+    config.pipeline.backtranslate_sample = backtranslate
+    config.pipeline.consistency_qa = consistency_qa
+    config.pipeline.book_understanding = book_understanding
+    config.pipeline.back_matter = back_matter
+    config.pipeline.inflight_glossary = inflight_glossary
+    return config
 
 
 def _write(path: str, text: str) -> None:

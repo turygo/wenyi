@@ -141,20 +141,13 @@ class TestRenderChapterHtmlBilingual(unittest.TestCase):
 
 
 def _config(state_dir: str, output: dict | None = None):
-    raw = {
-        "language": {"source": "ja", "target": "zh"},
-        "llm": fake_llm_dict(),
-        "pipeline": {
-            "review": True,
-            "polish": False,
-            "backtranslate_sample": 0.0,
-            "consistency_qa": False,
-        },
-        "paths": {"state_dir": state_dir},
-    }
+    config = Config.from_dict({"llm": fake_llm_dict()})
+    config.source_lang = "ja"
+    config.state_dir = state_dir
     if output is not None:
-        raw["output"] = output
-    return Config.from_dict(raw)
+        for key, value in output.items():
+            setattr(config.output, key, value)
+    return config
 
 
 def _run(input_path, state_dir, output=None):
@@ -237,17 +230,12 @@ class TestDefaultOutBilingual(unittest.TestCase):
         self.assertEqual(os.path.basename(out), "novel.zh.epub")
 
 
-class TestOutputConfigParsing(unittest.TestCase):
+class TestOutputRuntimeDefaults(unittest.TestCase):
     def test_defaults(self):
         cfg = Config.from_dict({"llm": fake_llm_dict()})
         self.assertTrue(cfg.output.mono)
         self.assertTrue(cfg.output.bilingual)
         self.assertEqual(cfg.output.bilingual_order, "target_first")
-
-    def test_bilingual_off_keeps_mono_default(self):
-        cfg = Config.from_dict({"llm": fake_llm_dict(), "output": {"bilingual": False}})
-        self.assertFalse(cfg.output.bilingual)
-        self.assertIs(cfg.output.mono, True)
 
 
 class TestOrchestratorMultiOutput(unittest.TestCase):
