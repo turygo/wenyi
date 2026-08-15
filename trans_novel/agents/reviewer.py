@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..llm.json_parser import parse_json_loose
-from . import langprofile, prompts
-from .base import Agent
+from trans_novel.agents import langprofile, prompts
+from trans_novel.agents.base import Agent
+from trans_novel.llm.json_parser import parse_json_loose
 
 
 def _backtrans_compare_system(src: str) -> str:
@@ -117,7 +117,7 @@ class Reviewer(Agent):
 class BackTranslator(Agent):
     """回译抽检。两步：译文→源语言，再与原文比对。"""
 
-    def backtranslate(self, targets: list[str]) -> list[str]:
+    def backtranslate(self, targets: list[str], *, strict: bool = False) -> list[str]:
         if not targets:
             return []
         system = prompts.render("backtranslate_system", src=self.src, tgt=self.tgt)
@@ -135,16 +135,28 @@ class BackTranslator(Agent):
             default=[],
             agent="light-translator",
             operation="backtranslate.translate",
+            strict=strict,
         )
         return [str(x) for x in items] if isinstance(items, list) else []
 
-    def check(self, sources: list[str], targets: list[str]) -> list[dict[str, Any]]:
-        """对给定（已抽样的）段做回译并比对，返回偏离问题。index 为传入列表内的下标。"""
-        back = self.backtranslate(targets)
+    def check(
+        self,
+        sources: list[str],
+        targets: list[str],
+        *,
+        strict: bool = False,
+    ) -> list[dict[str, Any]]:
+        """对给定（已抽样的）段做回译并比对，返回偏离问题。index 为传入列表内的下标。
+
+        strict=True（workflow 必需节点用）：provider 失败原样抛出；回译数量对不齐
+        属于窄协议恢复（跳过本样本、不阻塞），与旧行为一致。
+        """
+        back = self.backtranslate(targets, strict=strict)
         if len(back) != len(sources):
             return []  # 回译对齐失败则跳过，不阻塞
         pairs = "\n".join(
-            f"[{i}] 原文：{s}\n    回译：{b}" for i, (s, b) in enumerate(zip(sources, back))
+            f"[{i}] 原文：{s}\n    回译：{b}"
+            for i, (s, b) in enumerate(zip(sources, back, strict=False))
         )
         return self.dict_items(
             self._ask_json(
@@ -154,5 +166,7 @@ class BackTranslator(Agent):
                 default=[],
                 agent="reviewer",
                 operation="backtranslate.check",
+                strict=strict,
+                items_are_dicts=strict,
             )
         )

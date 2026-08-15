@@ -13,7 +13,7 @@ from tests.sample_data import write_sample_txt
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
 from trans_novel.llm import FakeClient
-from trans_novel.pipeline.orchestrator import Orchestrator
+from trans_novel.pipeline.bootstrap import Application
 from trans_novel.postprocess.punct import normalize_heading_numbering, normalize_zh
 
 
@@ -39,8 +39,8 @@ class TestModelLanguageDetection(unittest.TestCase):
                 return routing_handler(messages, agent, operation, json_mode)
 
             client = FakeClient(handler=handler)
-            store = Orchestrator(cfg, client=client).prepare(txt)
-            self.assertEqual(cfg.source_lang, "ru")
+            store = Application(cfg, client=client).prepare(txt)
+            # 解析后的源语言以运行状态（manifest/identity）为权威，不再改写全局 config
             self.assertEqual(store.load_manifest()["source_lang"], "ru")
             self.assertEqual(captured["agent"], "reviewer")
             self.assertEqual(captured["operation"], "language.detect")
@@ -57,7 +57,21 @@ class TestModelLanguageDetection(unittest.TestCase):
                 return routing_handler(messages, agent, operation, json_mode)
 
             with self.assertRaisesRegex(RuntimeError, "--source-language"):
-                Orchestrator(cfg, client=FakeClient(handler=handler)).prepare(txt)
+                Application(cfg, client=FakeClient(handler=handler)).prepare(txt)
+
+    def test_auto_detection_request_error_is_not_hidden(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = self._cfg(os.path.join(d, "state"))
+
+            def handler(messages, agent, operation, json_mode):
+                if "语言识别器" in messages[0]["content"]:
+                    raise RuntimeError("missing provider credential")
+                return routing_handler(messages, agent, operation, json_mode)
+
+            with self.assertRaisesRegex(RuntimeError, "missing provider credential"):
+                Application(cfg, client=FakeClient(handler=handler)).prepare(txt)
 
     def test_explicit_same_source_and_target_stops_before_model_calls(self):
         with tempfile.TemporaryDirectory() as d:
@@ -70,7 +84,7 @@ class TestModelLanguageDetection(unittest.TestCase):
             client = FakeClient(handler=routing_handler)
 
             with self.assertRaisesRegex(ValueError, "源语言与目标语言相同（ja）"):
-                Orchestrator(cfg, client=client).prepare(txt)
+                Application(cfg, client=client).prepare(txt)
 
             self.assertEqual(client.calls, [])
 
@@ -86,7 +100,7 @@ class TestModelLanguageDetection(unittest.TestCase):
                 raise AssertionError("相同语言不应继续进入分析或翻译")
 
             with self.assertRaisesRegex(ValueError, "源语言与目标语言相同（zh）"):
-                Orchestrator(cfg, client=FakeClient(handler=handler)).prepare(txt)
+                Application(cfg, client=FakeClient(handler=handler)).prepare(txt)
 
 
 class TestPunct(unittest.TestCase):
@@ -158,7 +172,7 @@ class TestGlossaryAudit(unittest.TestCase):
             cfg = Config.from_dict({"llm": fake_llm_dict(), "quality": "economy"})
             cfg.source_lang = "ja"
             cfg.state_dir = state
-            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+            orch = Application(cfg, client=FakeClient(handler=routing_handler))
             store = orch.run(txt)
 
             # 人为制造译法漂移：术语表写入 佳穂子，章节正文里混入 佳穗子（3字，避开防线2的2字上限）
@@ -212,7 +226,7 @@ class TestRunAll(unittest.TestCase):
             cfg.state_dir = state
             cfg.pipeline.backtranslate_sample = 0
             seen = []
-            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+            orch = Application(cfg, client=FakeClient(handler=routing_handler))
             result = orch.run_all(
                 txt,
                 progress=lambda done, total, label: seen.append((done, total)),
@@ -223,11 +237,11 @@ class TestRunAll(unittest.TestCase):
             # 进度回调被触发，且最终 done==total
             self.assertTrue(seen)
             self.assertEqual(seen[-1][0], seen[-1][1])
-            # auto 通过模型检测把源语言定为 ja
-            self.assertEqual(cfg.source_lang, "ja")
+            # auto 通过模型检测把源语言定为 ja（以运行状态为权威，不改写全局 config）
+            self.assertEqual(result["store"].load_manifest()["source_lang"], "ja")
             # 报告含一致性字段；术语审计不在连续流程中自动运行
             self.assertIn("consistency_issues", result["report"])
-            with open(result["store"].event_log_path, "r", encoding="utf-8") as f:
+            with open(result["store"].event_log_path, encoding="utf-8") as f:
                 events = [json.loads(line) for line in f if line.strip()]
             event_names = [e["event"] for e in events]
             self.assertIn("run_initialized", event_names)

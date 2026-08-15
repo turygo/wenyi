@@ -33,7 +33,7 @@ from trans_novel.ingest.epub_reader import annotate_epub_resource
 from trans_novel.ingest.models import Chapter
 from trans_novel.ingest.segmenter import load_document
 from trans_novel.llm import FakeClient
-from trans_novel.pipeline.orchestrator import Orchestrator
+from trans_novel.pipeline.bootstrap import Application
 from trans_novel.pipeline.runstore import RunStore
 
 _FB2_WITH_IMAGES = """\
@@ -102,8 +102,24 @@ def _config(state_dir: str):
 
 def _run(input_path, state_dir):
     cfg = _config(state_dir)
-    orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
-    return orch.run(input_path), cfg
+    orch = Application(cfg, client=FakeClient(handler=routing_handler))
+    store = orch.run(input_path)
+    _stamp_formal_prereqs(store)
+    return store, cfg
+
+
+def _stamp_formal_prereqs(store):
+    """直接 writer 单测的正式前置：GOAL_TRANSLATE 不跑 report/consistency，
+    正式 assemble goal 会执行它们——测试按“正式链路已完成”stamp titles/report。
+    backtranslate 抽样策略（sample=0）的 skipped 是 policy-authorized，无需 stamp。
+    """
+    from trans_novel.pipeline.state import NodeState
+
+    state = store.load_state()
+    for node_id in ("titles", "report"):
+        state.nodes.setdefault(node_id, NodeState(node_id=node_id, status="succeeded"))
+    store.save_state(state)
+    return store
 
 
 class TestAssembleText(unittest.TestCase):
@@ -328,6 +344,7 @@ class TestAssembleEpub(unittest.TestCase):
         for segment, target in zip(
             segments,
             ["作者", "第一章", "第二章", "献词一", "献词二"],
+            strict=False,
         ):
             segment.target = target
         chapter = Chapter(
@@ -503,7 +520,7 @@ class TestTitleTranslation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
-            store, cfg = _run(txt, os.path.join(d, "state"))
+            store, _cfg = _run(txt, os.path.join(d, "state"))
             # 手动写入含变体的标题译名
             m = store.load_manifest()
             m["title_translated"] = "佳穂传"
@@ -794,8 +811,11 @@ class TestAssembleEpubLegacySchema(unittest.TestCase):
                 href="OEBPS/ch1.xhtml",
                 template=template,
             )
-            store = RunStore(os.path.join(d, "state"))
-            store.save_chapter(chapter)
+            # 直接写 V1 磁盘状态（模拟迁移前的旧版本产物），由 RunStore 打开时自动迁移。
+            run_dir = os.path.join(d, "state")
+            os.makedirs(os.path.join(run_dir, "chapters"), exist_ok=True)
+            with open(os.path.join(run_dir, "chapters", "ch0.json"), "w", encoding="utf-8") as f:
+                json.dump(chapter.to_dict(), f, ensure_ascii=False)
             manifest = {
                 "title": "Legacy",
                 "fmt": "epub",
@@ -807,8 +827,13 @@ class TestAssembleEpubLegacySchema(unittest.TestCase):
                     {"index": 0, "title": chapter.title, "href": chapter.href, "status": "done"}
                 ],
             }
-            store.save_manifest(manifest)
-            self.assertEqual(store.load_resource_templates(), {})  # 无 resource_templates.json
+            with open(os.path.join(run_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(manifest, f, ensure_ascii=False)
+
+            store = RunStore(run_dir)
+            self.assertEqual(store.load_state().run_state_schema, 2)  # 打开即迁移
+            self.assertEqual(store.load_resource_templates(), {})
+            _stamp_formal_prereqs(store)  # 无 resource_templates.json
 
             out = assemble(store, ep, out_format="epub")
             with zipfile.ZipFile(out) as z:
@@ -827,8 +852,11 @@ class TestTocRoutingAndSchemaFindings(unittest.TestCase):
             ep = os.path.join(d, "novel.epub")
             write_sample_epub(ep)
             chapter = Chapter(index=0, title="第一章", href="OEBPS/ch1.xhtml")
-            store = RunStore(os.path.join(d, "state"))
-            store.save_chapter(chapter)
+            # 直接写 V1 磁盘状态，由 RunStore 打开时自动迁移（迁移须保留 meta）。
+            run_dir = os.path.join(d, "state")
+            os.makedirs(os.path.join(run_dir, "chapters"), exist_ok=True)
+            with open(os.path.join(run_dir, "chapters", "ch0.json"), "w", encoding="utf-8") as f:
+                json.dump(chapter.to_dict(), f, ensure_ascii=False)
             manifest = {
                 "title": "Schema2NoTemplates",
                 "fmt": "epub",
@@ -843,8 +871,13 @@ class TestTocRoutingAndSchemaFindings(unittest.TestCase):
                     {"index": 0, "title": chapter.title, "href": chapter.href, "status": "done"}
                 ],
             }
-            store.save_manifest(manifest)
+            with open(os.path.join(run_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(manifest, f, ensure_ascii=False)
+
+            store = RunStore(run_dir)
+            self.assertEqual(store.load_state().run_state_schema, 2)  # 打开即迁移
             self.assertEqual(store.load_resource_templates(), {})
+            _stamp_formal_prereqs(store)
 
             with self.assertRaises(ValueError):
                 assemble(store, ep, out_format="epub")

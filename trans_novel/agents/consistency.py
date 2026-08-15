@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..glossary.store import GlossaryStore
-from ..pipeline.runstore import STATUS_DONE, RunStore
-from . import prompts
-from .base import Agent
+from trans_novel.agents import prompts
+from trans_novel.agents.base import Agent
+from trans_novel.glossary.store import GlossaryStore
+from trans_novel.pipeline.runstore import STATUS_DONE, RunStore
 
 
 class ConsistencyChecker(Agent):
@@ -19,7 +19,7 @@ class ConsistencyChecker(Agent):
         m = store.load_manifest()
         parts: list[str] = []
         for c in m["chapters"]:
-            if c["status"] != STATUS_DONE:
+            if store.load_progress(c["index"]).status != STATUS_DONE:
                 continue
             ch = store.load_chapter(c["index"])
             targets = [s.target or "" for s in ch.text_segments]
@@ -29,8 +29,14 @@ class ConsistencyChecker(Agent):
             parts.append(f"[第{c['index']}章 {c['title']}]\n{snippet}")
         return "\n\n".join(parts)
 
-    def check(self, store: RunStore, glossary: GlossaryStore) -> list[dict[str, Any]]:
-        """跨章一致性扫描：汇总术语表与各章译文摘要，让模型报出译法漂移等问题。"""
+    def check(
+        self, store: RunStore, glossary: GlossaryStore, *, strict: bool = False
+    ) -> list[dict[str, Any]]:
+        """跨章一致性扫描：汇总术语表与各章译文摘要，让模型报出译法漂移等问题。
+
+        strict=True（workflow 必需节点用）：provider 失败原样抛出；空摘要等
+        确定性的“无事可扫”仍返回空列表（成功零发现，绝非失败）。
+        """
         digests = self._chapter_digests(store)
         if not digests.strip():
             return []
@@ -50,5 +56,7 @@ class ConsistencyChecker(Agent):
                 default=[],
                 agent="reviewer",
                 operation="consistency.check",
+                strict=strict,
+                items_are_dicts=strict,
             )
         )

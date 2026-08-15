@@ -146,7 +146,7 @@ class TestCliConfig(unittest.TestCase):
 
         with (
             patch("trans_novel.cli._load_config", return_value=cfg),
-            patch("trans_novel.pipeline.orchestrator.Orchestrator", FakeOrchestrator),
+            patch("trans_novel.pipeline.bootstrap.Application", FakeOrchestrator),
             patch("trans_novel.cli.os.path.isfile", return_value=True),
         ):
             result = CliRunner().invoke(app, ["translate", "input.txt"])
@@ -190,7 +190,7 @@ class TestCliConfig(unittest.TestCase):
 
         with (
             patch("trans_novel.cli._load_config", return_value=cfg),
-            patch("trans_novel.pipeline.orchestrator.Orchestrator", FakeOrchestrator),
+            patch("trans_novel.pipeline.bootstrap.Application", FakeOrchestrator),
             patch("trans_novel.cli.os.path.isfile", return_value=True),
         ):
             result = CliRunner().invoke(
@@ -239,11 +239,11 @@ class TestCliConfig(unittest.TestCase):
                 return {"book_synopsis": "overview"}
 
             @staticmethod
-            def load_chapter(index):
-                class PreparedChapter:
-                    meta = {"source_digest": f"digest-{index}"}
+            def load_progress(index):
+                class PreparedProgress:
+                    source_digest = f"digest-{index}"
 
-                return PreparedChapter()
+                return PreparedProgress()
 
         class FakeOrchestrator:
             def __init__(self, loaded_config):
@@ -259,7 +259,7 @@ class TestCliConfig(unittest.TestCase):
 
         with (
             patch("trans_novel.cli._load_config", return_value=config),
-            patch("trans_novel.pipeline.orchestrator.Orchestrator", FakeOrchestrator),
+            patch("trans_novel.pipeline.bootstrap.Application", FakeOrchestrator),
             patch("trans_novel.cli.os.path.isfile", return_value=True),
         ):
             result = CliRunner().invoke(app, ["translate", "input.txt", "--prepare"])
@@ -318,7 +318,7 @@ class TestCliConfig(unittest.TestCase):
 
         with (
             patch("trans_novel.cli._load_config", return_value=cfg),
-            patch("trans_novel.pipeline.orchestrator.Orchestrator", FakeOrchestrator),
+            patch("trans_novel.pipeline.bootstrap.Application", FakeOrchestrator),
             patch("trans_novel.cli.os.path.isfile", return_value=True),
         ):
             result = CliRunner().invoke(
@@ -395,7 +395,7 @@ class TestCliConfig(unittest.TestCase):
 
         with (
             patch("trans_novel.cli._load_config", return_value=cfg),
-            patch("trans_novel.pipeline.orchestrator.Orchestrator", FakeOrchestrator),
+            patch("trans_novel.pipeline.bootstrap.Application", FakeOrchestrator),
             patch("trans_novel.cli.os.path.isfile", return_value=True),
         ):
             result = CliRunner().invoke(app, ["translate", "input.txt", "--chapter", "9"])

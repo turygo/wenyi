@@ -86,7 +86,7 @@ class TestCastNamerConcurrency(unittest.TestCase):
         self.assertTrue(all(n == self.N for _, n in calls))
 
     def test_single_group_failure_propagates(self):
-        """一组抛异常 → name_terms 整体冒泡（交 orchestrator 放弃落 term_mining_done）。"""
+        """一组抛异常 → name_terms 整体冒泡（交由 workflow 节点放弃落 term_mining_done）。"""
 
         def handler(messages, agent, operation, json_mode):
             if _surface_of(messages[1]["content"]) == "SURF2":

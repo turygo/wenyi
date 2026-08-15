@@ -2,17 +2,29 @@
 
 各 agent 的"渲染 system/user → complete_json → 失败回退默认值"模式收敛到这里；
 默认值语义留在 agent 层（LLM provider 层不掺业务回退）。
-orchestrator._apply_language 依赖每个 agent 都有 .src 属性——基类把该契约显式化。
+workflow 组合根按解析后的语言构造每个 agent，依赖每个 agent 都有 .src 属性——基类把该契约显式化。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from ..config import Config
-from ..llm.base import LLMClient
+from trans_novel.config import Config
+from trans_novel.llm.base import LLMClient
 
 _RAISE = object()  # 哨兵：未提供 default 时异常照常抛出，由调用方自理
+
+
+class WorkflowProtocolError(RuntimeError):
+    """Agent 输出的协议错误（缺失键/形状错误/数量不符等）。
+
+    workflow 必需节点据此按 protocol 失败分类（可重试、失败态落盘），
+    与“provider 失败”和“业务拒绝”保持可区分。reason 是稳定标识。
+    """
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
 
 
 class Agent:
@@ -32,13 +44,16 @@ class Agent:
         key: str | None = None,
         default: Any = _RAISE,
         max_tokens: int | None = None,
+        strict: bool = False,
+        items_are_dicts: bool = False,
     ) -> Any:
         """system/user → complete_json。
 
-        异常时返回 default（未给 default 则照常抛出，如 Translator 交由重试逻辑处理）。
-        key 给出时：结果为 dict 取 data[key]（缺失回退）；结果为非空 list 直接用；否则回退。
-        agent 是内置功能标识；operation 是内部业务标签。两者都在调用点显式硬编码，
-        缺一不可。
+        异常时返回 default（未给 default 则照常抛出，如 Translator 交由重试逻辑处理）；
+        strict=True 时异常一律照常抛出（workflow 必需节点用，杜绝“provider 失败伪装
+        成成功空结果”）。key 给出时：结果为 dict 取 data[key]（缺失回退）；结果为
+        非空 list 直接用；否则回退。agent 是内置功能标识；operation 是内部业务标签。
+        两者都在调用点显式硬编码，缺一不可。
         """
         try:
             data = self.client.complete_json(
@@ -48,15 +63,43 @@ class Agent:
                 agent=agent,
                 operation=operation,
             )
-        except Exception:
-            if default is _RAISE:
+        except Exception as exc:
+            if default is _RAISE or strict:
+                if (
+                    strict
+                    and isinstance(exc, ValueError)
+                    and not isinstance(exc, WorkflowProtocolError)
+                ):
+                    # 解析失败（parse_json_loose 抛 ValueError）归一为协议错误，
+                    # 否则会被业务分类误判为永久拒绝。
+                    raise WorkflowProtocolError("invalid_json") from exc
                 raise
             return default
         if key is None:
             return data
         fb = None if default is _RAISE else default
         if isinstance(data, dict):
-            return data.get(key, fb)
+            if key in data:
+                value = data.get(key, fb)
+                if strict:
+                    if value is None:
+                        # 必需节点：显式 null 不是合法的空结果（须为有效空列表）。
+                        raise WorkflowProtocolError(f"null_value:{key}")
+                    if not isinstance(value, list):
+                        # 必需节点的键控响应必须是集合（列表）；错误形状不得被
+                        # dict_items() 宽松过滤成成功空结果。
+                        raise WorkflowProtocolError(f"invalid_collection:{key}")
+                    if items_are_dicts and not all(isinstance(item, dict) for item in value):
+                        # 集合元素必须是 dict：malformed 元素不得被 dict_items()
+                        # 静默丢弃成“零发现成功”。
+                        raise WorkflowProtocolError(f"invalid_items:{key}")
+                return value
+            if strict:
+                # 必需节点：缺失键 = 协议错误（不得把默认值伪装成成功空结果）。
+                raise WorkflowProtocolError(f"missing_key:{key}")
+            return fb
+        if strict:
+            raise WorkflowProtocolError("invalid_schema")
         return data if data else fb
 
     def _ask_text(
@@ -68,8 +111,9 @@ class Agent:
         operation: str,
         default: str = "",
         max_tokens: int | None = None,
+        strict: bool = False,
     ) -> str:
-        """complete 纯文本并 strip；异常返回 default。"""
+        """complete 纯文本并 strip；异常返回 default（strict=True 时照常抛出）。"""
         try:
             return (
                 self.client.complete(
@@ -82,6 +126,8 @@ class Agent:
                 or ""
             ).strip()
         except Exception:
+            if strict:
+                raise
             return default
 
     @staticmethod

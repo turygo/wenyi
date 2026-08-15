@@ -1,4 +1,4 @@
-"""编排器端到端 + 断点续跑测试（离线 FakeClient）。"""
+"""工作流端到端 + 断点续跑测试（离线 FakeClient）。"""
 
 from __future__ import annotations
 
@@ -22,9 +22,63 @@ from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.models import Chapter, Segment
 from trans_novel.llm import FakeClient
-from trans_novel.pipeline.orchestrator import Orchestrator, _normalize_lang
-from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING, RunStore
-from trans_novel.postprocess.punct import normalize_zh
+from trans_novel.pipeline.bootstrap import Application
+from trans_novel.pipeline.contracts import ExecutionGoal, assemble_goal
+from trans_novel.pipeline.nodes.prepare import _normalize_lang
+from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING, RunStore, slugify
+from trans_novel.pipeline.state import (
+    NODE_ANALYZE,
+    NODE_BACKTRANSLATE,
+    NODE_BOOK_SYNOPSIS,
+    NODE_DIGEST,
+    NODE_MINE_TERMS,
+    NODE_NAME_TERMS,
+    NODE_NATURALIZE,
+    NODE_POLISH,
+    NODE_PREPARE,
+    NODE_REVIEW,
+    NODE_TITLES,
+    NODE_TRANSLATE,
+    RUN_STATE_SCHEMA_VERSION,
+    ChapterIndex,
+    ChapterProgress,
+    NodeState,
+    PolishBatch,
+    RunIdentity,
+    RunState,
+    chapter_node_key,
+)
+
+
+def _stamp_completed_store(store, *, chapters: int) -> None:
+    """模拟“已完整翻译的书”：为手工构造的 RunStore 补全节点成功态。
+
+    服务目标（translate_titles 等）经依赖闭包只信任持久化 succeeded 状态；手工
+    fixture 缺节点状态会被闭包误判为“未翻译”而重新规划整条链，进而触发身份校验
+    （合成状态没有可读源文件）。补全后闭包直接满足，只跑目标节点。
+    """
+    state = store.load_state()
+    for node_id in (
+        NODE_PREPARE,
+        NODE_ANALYZE,
+        NODE_MINE_TERMS,
+        NODE_NAME_TERMS,
+        NODE_BOOK_SYNOPSIS,
+    ):
+        state.nodes[node_id] = NodeState(node_id=node_id, status="succeeded")
+    # 不补 NODE_TITLES：标题测试需要 titles 节点真的执行（补上会被闭包判为已满足）。
+    for ci in range(chapters):
+        for node_id in (
+            NODE_DIGEST,
+            NODE_TRANSLATE,
+            NODE_POLISH,
+            NODE_NATURALIZE,
+            NODE_REVIEW,
+            NODE_BACKTRANSLATE,
+        ):
+            key = chapter_node_key(node_id, ci)
+            state.nodes[key] = NodeState(node_id=key, status="succeeded")
+    store.save_state(state)
 
 
 def _translated_para_count(calls) -> int:
@@ -55,7 +109,26 @@ def _title_calls(calls):
     return [c for c in calls if "标题翻译" in c["messages"][0]["content"]]
 
 
-class TestOrchestrator(unittest.TestCase):
+def _review_node(cfg, client):
+    """构造一个可直接调用 review_chapter 的 ReviewNode（绕过 runner）。"""
+    import tempfile
+
+    from trans_novel.agents.reviewer import Reviewer
+    from trans_novel.agents.translator import Translator
+    from trans_novel.glossary.store import GlossaryStore
+    from trans_novel.pipeline.nodes.quality import ReviewNode
+
+    glossary = GlossaryStore(os.path.join(tempfile.mkdtemp(), "glossary.db"))
+    return ReviewNode(
+        reviewer=Reviewer(client, cfg),
+        translator=Translator(client, cfg),
+        glossary=glossary,
+        config=cfg,
+        style_brief="",
+    )
+
+
+class TestApplication(unittest.TestCase):
     def test_prepare_retries_after_analysis_failure(self):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -66,13 +139,13 @@ class TestOrchestrator(unittest.TestCase):
                 raise RuntimeError("temporary model failure")
 
             with self.assertRaisesRegex(RuntimeError, "temporary model failure"):
-                Orchestrator(cfg, client=FakeClient(handler=fail_analysis)).prepare(txt)
+                Application(cfg, client=FakeClient(handler=fail_analysis)).prepare(txt)
 
             run_dirs = [os.path.join(cfg.state_dir, name) for name in os.listdir(cfg.state_dir)]
             self.assertEqual(len(run_dirs), 1)
             self.assertFalse(os.path.isfile(os.path.join(run_dirs[0], "manifest.json")))
 
-            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).prepare(txt)
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).prepare(txt)
             self.assertTrue(store.exists())
             self.assertTrue(store.load_manifest()["initialized"])
             self.assertIsNotNone(store.load_analysis())
@@ -85,13 +158,15 @@ class TestOrchestrator(unittest.TestCase):
             cfg = _config(state)
 
             client = FakeClient(handler=routing_handler)
-            orch = Orchestrator(cfg, client=client)
+            orch = Application(cfg, client=client)
             store = orch.run(txt)
 
             # 全部章节标记 done
             m = store.load_manifest()
             self.assertEqual(len(m["chapters"]), 2)
-            self.assertTrue(all(c["status"] == STATUS_DONE for c in m["chapters"]))
+            self.assertTrue(
+                all(store.chapter_status(c["index"]) == STATUS_DONE for c in m["chapters"])
+            )
 
             # 每段都有译文（润色后为 "润{i}"）
             ch0 = store.load_chapter(0)
@@ -113,12 +188,11 @@ class TestOrchestrator(unittest.TestCase):
                 if "术语" in c["messages"][0]["content"] and "抽取器" in c["messages"][0]["content"]
             ]
             self.assertEqual(len(extractor_calls), 0, "默认路径不得调用旧版抽取器")
-            analysis = store.load_analysis() or {}
-            self.assertTrue(analysis.get("term_mining_done"))
+            self.assertTrue(store.load_state().analysis_flags.term_mining_done)
 
             # ── 续跑：所有章已 done，不应再产生翻译调用；也不应重复定名 ──
             client2 = FakeClient(handler=routing_handler)
-            orch2 = Orchestrator(cfg, client=client2)
+            orch2 = Application(cfg, client=client2)
             orch2.run(txt)  # resume 语义
             translate_calls = [
                 c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
@@ -135,19 +209,20 @@ class TestOrchestrator(unittest.TestCase):
             cfg = _config(state)
 
             client = FakeClient(handler=routing_handler)
-            orch = Orchestrator(cfg, client=client)
+            orch = Application(cfg, client=client)
             # 只翻第 0 章
             store = orch.run(txt, only_chapter=0)
-            m = store.load_manifest()
-            self.assertEqual(m["chapters"][0]["status"], STATUS_DONE)
-            self.assertNotEqual(m["chapters"][1]["status"], STATUS_DONE)
+            self.assertEqual(store.chapter_status(0), STATUS_DONE)
+            self.assertNotEqual(store.chapter_status(1), STATUS_DONE)
 
             # 续跑应只补翻第 1 章
             client2 = FakeClient(handler=routing_handler)
-            orch2 = Orchestrator(cfg, client=client2)
+            orch2 = Application(cfg, client=client2)
             store2 = orch2.run(txt)
             m2 = store2.load_manifest()
-            self.assertTrue(all(c["status"] == STATUS_DONE for c in m2["chapters"]))
+            self.assertTrue(
+                all(store2.chapter_status(c["index"]) == STATUS_DONE for c in m2["chapters"])
+            )
 
 
 class TestSegmentLevelResume(unittest.TestCase):
@@ -180,7 +255,7 @@ class TestSegmentLevelResume(unittest.TestCase):
 
             # 第一次：用 R1 译完第 0 章
             c1 = FakeClient(handler=self._tr_handler("R1"))
-            store = Orchestrator(cfg, client=c1).run(txt, only_chapter=0)
+            store = Application(cfg, client=c1).run(txt, only_chapter=0)
             ch = store.load_chapter(0)
             self.assertTrue(all(s.target and s.target.startswith("R1") for s in ch.text_segments))
 
@@ -191,7 +266,7 @@ class TestSegmentLevelResume(unittest.TestCase):
 
             # 第二次：用 R2 续跑——只应补译被清空的那 1 段
             c2 = FakeClient(handler=self._tr_handler("R2"))
-            Orchestrator(cfg, client=c2).run(txt, only_chapter=0)
+            Application(cfg, client=c2).run(txt, only_chapter=0)
             self.assertEqual(_translated_para_count(c2.calls), 1)  # 仅 1 段被重翻
 
             ch2 = store.load_chapter(0)
@@ -209,7 +284,7 @@ class TestSegmentLevelResume(unittest.TestCase):
             cfg.pipeline.polish = False
 
             first_client = FakeClient(handler=self._tr_handler("R1"))
-            store = Orchestrator(cfg, client=first_client).run(txt, only_chapter=0)
+            store = Application(cfg, client=first_client).run(txt, only_chapter=0)
             chapter = store.load_chapter(0)
             chapter.text_segments[-1].target = ""
             store.save_chapter(chapter)
@@ -218,7 +293,7 @@ class TestSegmentLevelResume(unittest.TestCase):
             # 改变预算后，新分批仍可能把已完成的段与待翻译的段放在一起。
             cfg.segment.max_chars_per_batch = 50_000
             second_client = FakeClient(handler=self._tr_handler("R2"))
-            Orchestrator(cfg, client=second_client).run(txt, only_chapter=0)
+            Application(cfg, client=second_client).run(txt, only_chapter=0)
 
             self.assertEqual(_translated_para_count(second_client.calls), 1)
             resumed = store.load_chapter(0).text_segments
@@ -244,10 +319,10 @@ class TestBookUnderstanding(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
 
             client = FakeClient(handler=routing_handler)
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
-            # 逐章梗概落盘到 chapter.meta
-            self.assertTrue(store.load_chapter(0).meta.get("source_digest"))
+            # 逐章梗概落盘到 ChapterProgress
+            self.assertTrue(store.load_progress(0).source_digest)
             # 全书概览落盘到 analysis
             self.assertTrue((store.load_analysis() or {}).get("book_synopsis"))
 
@@ -265,7 +340,7 @@ class TestBookUnderstanding(unittest.TestCase):
             config = _config(os.path.join(directory, "state"))
             client = FakeClient(handler=routing_handler)
 
-            store = Orchestrator(config, client=client).prepare_for_translation(text_path)
+            store = Application(config, client=client).prepare_for_translation(text_path)
 
             manifest = store.load_manifest()
             self.assertTrue((store.load_analysis() or {}).get("book_synopsis"))
@@ -276,7 +351,7 @@ class TestBookUnderstanding(unittest.TestCase):
                 glossary.close()
             for item in manifest["chapters"]:
                 chapter = store.load_chapter(item["index"])
-                self.assertTrue(chapter.meta.get("source_digest"))
+                self.assertTrue(store.load_progress(item["index"]).source_digest)
                 self.assertTrue(all(segment.target is None for segment in chapter.segments))
             self.assertEqual(_translated_para_count(client.calls), 0)
 
@@ -289,11 +364,11 @@ class TestBookUnderstanding(unittest.TestCase):
             cfg.pipeline.prescan_concurrency = 3
 
             client = FakeClient(handler=routing_handler)
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
             m = store.load_manifest()
             for c in m["chapters"]:
-                self.assertTrue(store.load_chapter(c["index"]).meta.get("source_digest"))
+                self.assertTrue(store.load_progress(c["index"]).source_digest)
             self.assertTrue((store.load_analysis() or {}).get("book_synopsis"))
             user = self._translate_user(client.calls)
             self.assertIn("【本章梗概】", user)
@@ -304,10 +379,10 @@ class TestBookUnderstanding(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
-            Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+            Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
 
             c2 = FakeClient(handler=routing_handler)
-            Orchestrator(cfg, client=c2).run(txt)
+            Application(cfg, client=c2).run(txt)
             prepass = [
                 c
                 for c in c2.calls
@@ -325,9 +400,9 @@ class TestBookUnderstanding(unittest.TestCase):
             cfg.pipeline.book_understanding = False
 
             client = FakeClient(handler=routing_handler)
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
-            self.assertFalse(store.load_chapter(0).meta.get("source_digest"))
+            self.assertFalse(store.load_progress(0).source_digest)
             self.assertFalse((store.load_analysis() or {}).get("book_synopsis"))
             prepass = [
                 c
@@ -361,11 +436,11 @@ class TestTermMiningRobustness(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
 
             client = FakeClient(handler=failing_handler)
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
-            analysis = store.load_analysis() or {}
             self.assertFalse(
-                analysis.get("term_mining_done"), "定名异常时不得落盘 term_mining_done"
+                store.load_state().analysis_flags.term_mining_done,
+                "定名异常时不得落盘 term_mining_done",
             )
             g = GlossaryStore(store.glossary_path)
             self.assertIsNone(g.get_term("堀北"))
@@ -375,9 +450,8 @@ class TestTermMiningRobustness(unittest.TestCase):
 
             # 续跑：换正常 handler，应重试挖掘/定名并成功落盘（不是静默永久跳过）
             client2 = FakeClient(handler=routing_handler)
-            store2 = Orchestrator(cfg, client=client2).run(txt)
-            analysis2 = store2.load_analysis() or {}
-            self.assertTrue(analysis2.get("term_mining_done"))
+            store2 = Application(cfg, client=client2).run(txt)
+            self.assertTrue(store2.load_state().analysis_flags.term_mining_done)
             g2 = GlossaryStore(store2.glossary_path)
             self.assertIsNotNone(g2.get_term("堀北"))
             g2.close()
@@ -391,7 +465,7 @@ class TestTermMiningRobustness(unittest.TestCase):
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
 
-            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+            orch = Application(cfg, client=FakeClient(handler=routing_handler))
             store = orch.prepare(txt)
             g = GlossaryStore(store.glossary_path)
             # 模拟 seed_glossary 种入的未锁定人物：source 与 mining 固定候选「堀北」同名，
@@ -408,7 +482,7 @@ class TestTermMiningRobustness(unittest.TestCase):
             )
             g.close()
 
-            Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+            Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
 
             g2 = GlossaryStore(store.glossary_path)
             term = g2.get_term("堀北")
@@ -433,7 +507,7 @@ class TestTermMiningRobustness(unittest.TestCase):
             cfg.pipeline.back_matter = "full"
 
             client = FakeClient(handler=routing_handler)
-            Orchestrator(cfg, client=client).run(txt)
+            Application(cfg, client=client).run(txt)
 
             mining_calls = [
                 c for c in client.calls if "术语候选挖掘" in c["messages"][0]["content"]
@@ -452,7 +526,7 @@ class TestTermMiningRobustness(unittest.TestCase):
         直接拦截 mine_candidates 的真实调用参数比对，而不仅凭候选词是否漏出判断。"""
         from unittest.mock import patch
 
-        import trans_novel.pipeline.orchestrator as orchestrator_module
+        import trans_novel.pipeline.nodes.prescan as prescan_module
 
         marker = "ZZQ_NOTES_MINING_MARKER"
         body = "綾小路は教室の窓際に座っていた。空はどこまでも青く鳥が鳴いていた。" + "あ" * 220
@@ -468,14 +542,14 @@ class TestTermMiningRobustness(unittest.TestCase):
             cfg.pipeline.back_matter = "full"  # _back_matter_mode 恒不旁路，正文照常入 digest
 
             client = FakeClient(handler=routing_handler)
-            orch = Orchestrator(cfg, client=client)
+            orch = Application(cfg, client=client)
             store = orch.prepare(txt)
             manifest = store.load_manifest()
             chapters = manifest["chapters"]
 
             from trans_novel.pipeline.backmatter import is_back_matter
 
-            # 改动前的推导逻辑（与 orchestrator._build_understanding 里未变的过滤条件
+            # 改动前的推导逻辑（与迁移前 _build_understanding 里未变的过滤条件
             # 完全一致）：只用 is_back_matter 排除，不受 back_matter=full 的
             # _back_matter_mode 影响；顺序=manifest 章序。
             expected_chapter_indices = [
@@ -487,13 +561,13 @@ class TestTermMiningRobustness(unittest.TestCase):
             ]
 
             captured = {}
-            real_mine_candidates = orchestrator_module.mine_candidates
+            real_mine_candidates = prescan_module.mine_candidates
 
             def _spy(src_lang, chapters_arg, agent, **kwargs):
                 captured["chapters"] = list(chapters_arg)
                 return real_mine_candidates(src_lang, chapters_arg, agent, **kwargs)
 
-            with patch.object(orchestrator_module, "mine_candidates", _spy):
+            with patch.object(prescan_module, "mine_candidates", _spy):
                 orch.run(txt)
 
             self.assertIn("chapters", captured, "mine_candidates 必须被真实调用一次")
@@ -520,7 +594,7 @@ class TestTitleReuse(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
 
             client = FakeClient(handler=routing_handler)
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
             m = store.load_manifest()
             for c in m["chapters"]:
@@ -538,7 +612,7 @@ class TestTitleReuse(unittest.TestCase):
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
 
-            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
 
             # 模拟章 0 无可复用 heading（如非文本源、或首段未译）：清空首段译文
             ch0 = store.load_chapter(0)
@@ -564,7 +638,7 @@ class TestTitleReuse(unittest.TestCase):
 
             glossary = GlossaryStore(store.glossary_path)
             client2 = FakeClient(handler=handler)
-            Orchestrator(cfg, client=client2)._translate_titles(store, glossary)
+            Application(cfg, client=client2).translate_titles(store)
             glossary.close()
 
             self.assertIn("user", captured)
@@ -591,7 +665,7 @@ class TestEpubTitleTranslation(unittest.TestCase):
             cfg = _epub_config(os.path.join(d, "state"))
 
             client = FakeClient(handler=routing_handler)
-            store = Orchestrator(cfg, client=client).run(epub)
+            store = Application(cfg, client=client).run(epub)
 
             m = store.load_manifest()
             entries = m["meta"]["toc_entries"]
@@ -618,7 +692,7 @@ class TestEpubTitleTranslation(unittest.TestCase):
             cfg = _epub_config(os.path.join(d, "state"))
 
             client = FakeClient(handler=routing_handler)
-            store = Orchestrator(cfg, client=client).run(epub)
+            store = Application(cfg, client=client).run(epub)
 
             m = store.load_manifest()
             entries_by_id = {e["entry_id"]: e for e in m["meta"]["toc_entries"]}
@@ -646,7 +720,7 @@ class TestEpubTitleTranslation(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))  # write_sample_epub 内容为日文
 
             client = FakeClient(handler=routing_handler)
-            store = Orchestrator(cfg, client=client).run(epub)
+            store = Application(cfg, client=client).run(epub)
 
             m = store.load_manifest()
             self.assertEqual(len(m["chapters"]), 2)
@@ -658,14 +732,14 @@ class TestEpubTitleTranslation(unittest.TestCase):
             self.assertEqual(len(_title_calls(client.calls)), 0)
 
     def test_title_translation_idempotent_on_rerun(self):
-        """全部标题已译（含 entry 同步）后重复调用 _translate_titles：零新增标题
+        """全部标题已译（含 entry 同步）后重复调用标题翻译：零新增标题
         请求，manifest 内容不变。"""
         with tempfile.TemporaryDirectory() as d:
             epub = os.path.join(d, "nested.epub")
             write_nested_toc_epub(epub)
             cfg = _epub_config(os.path.join(d, "state"))
 
-            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(epub)
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(epub)
             m1 = store.load_manifest()
             self.assertTrue(all(c.get("title_translated") for c in m1["chapters"]))
             self.assertTrue(all(e.get("title_translated") for e in m1["meta"]["toc_entries"]))
@@ -676,7 +750,7 @@ class TestEpubTitleTranslation(unittest.TestCase):
 
             glossary = GlossaryStore(store.glossary_path)
             client2 = FakeClient(handler=routing_handler)
-            Orchestrator(cfg, client=client2)._translate_titles(store, glossary)
+            Application(cfg, client=client2).translate_titles(store)
             glossary.close()
 
             self.assertEqual(len(_title_calls(client2.calls)), 0)
@@ -707,36 +781,35 @@ class TestEpubTitleTranslation(unittest.TestCase):
                     index=1, title="Same Title", segments=[Segment(index=0, source="Body two.")]
                 )
             )
-            store.save_manifest(
-                {
-                    "title": "Book",
-                    "fmt": "epub",
-                    "source_path": "",
-                    "source_lang": "en",
-                    "target_lang": "zh",
-                    "meta": {
+            store.save_state(
+                RunState(
+                    identity=RunIdentity(
+                        source_bytes_sha256="test-hash",
+                        run_input_schema_version=1,
+                        source_lang="en",
+                        target_lang="zh",
+                    ),
+                    title="Book",
+                    fmt="epub",
+                    source_path="",
+                    source_lang="en",
+                    target_lang="zh",
+                    meta={
                         "toc_entries": [
                             {"entry_id": "toc.ncx:0", "title": "Same Title", "external": False}
                         ]
                     },
-                    "chapters": [
-                        {
-                            "index": 0,
-                            "title": "Same Title",
-                            "href": "a.xhtml",
-                            "toc_entry_id": None,
-                            "status": "done",
-                        },
-                        {
-                            "index": 1,
-                            "title": "Same Title",
-                            "href": "b.xhtml",
-                            "toc_entry_id": None,
-                            "status": "done",
-                        },
+                    chapters=[
+                        ChapterIndex(index=0, title="Same Title", href="a.xhtml"),
+                        ChapterIndex(index=1, title="Same Title", href="b.xhtml"),
                     ],
-                }
+                    progress={
+                        0: ChapterProgress(status=STATUS_DONE),
+                        1: ChapterProgress(status=STATUS_DONE),
+                    },
+                )
             )
+            _stamp_completed_store(store, chapters=2)
 
             captured = {}
 
@@ -746,7 +819,7 @@ class TestEpubTitleTranslation(unittest.TestCase):
                 return routing_handler(messages, agent, operation, json_mode)
 
             glossary = GlossaryStore(store.glossary_path)
-            Orchestrator(cfg, client=FakeClient(handler=handler))._translate_titles(store, glossary)
+            Application(cfg, client=FakeClient(handler=handler)).translate_titles(store)
             glossary.close()
 
             self.assertIn("user", captured)
@@ -761,16 +834,16 @@ class TestEpubTitleTranslation(unittest.TestCase):
 
 class TestRunSteps(unittest.TestCase):
     def test_subset_only_assemble(self):
-        """run_steps 步骤子集：仅回填时不应再产生翻译调用（幂等）。"""
+        """步骤目标：仅回填时不应再产生翻译调用（幂等）。"""
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
-            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
-            orch.run_steps(txt, {"translate"})
+            orch = Application(cfg, client=FakeClient(handler=routing_handler))
+            orch.run(txt)
             # 仅回填，不应再翻译
             client2 = FakeClient(handler=routing_handler)
-            res = Orchestrator(cfg, client=client2).run_steps(txt, {"assemble"})
+            res = Application(cfg, client=client2).run_goal_result(txt, assemble_goal())
             self.assertTrue(res["output"].endswith(".epub"))
             self.assertTrue(os.path.isfile(res["output"]))
             translate_calls = [
@@ -820,14 +893,16 @@ class TestReviewReporting(unittest.TestCase):
         cfg = _config(os.path.join(d, "state"))
         cfg.pipeline.autofix_severe = autofix
         handler = self._handler(fix_text or self.FIX_TEXT)
-        return Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+        return Application(cfg, client=FakeClient(handler=handler)).run(txt)
 
     def test_autofix_adopts_retranslation(self):
         """autofix 开：严重项定向重译被采纳 → target 更新、fixed=True。"""
         with tempfile.TemporaryDirectory() as d:
             store = self._run(d, autofix=True)
             ch = store.load_chapter(0)
-            flagged = [i for i in ch.meta["review_issues"] if i.get("type") == "missing"]
+            flagged = [
+                i for i in store.load_progress(0).review_issue_dicts() if i.get("type") == "missing"
+            ]
             self.assertTrue(flagged)
             self.assertTrue(all(i.get("fixed") is True for i in flagged))
             self.assertTrue(all(i.get("stage") == "review" for i in flagged))
@@ -840,8 +915,9 @@ class TestReviewReporting(unittest.TestCase):
         不在此断言范围——只验证 review 通道未触发 autofix_applied）。"""
         with tempfile.TemporaryDirectory() as d:
             store = self._run(d, autofix=False)
-            ch = store.load_chapter(0)
-            flagged = [i for i in ch.meta["review_issues"] if i.get("type") == "missing"]
+            flagged = [
+                i for i in store.load_progress(0).review_issue_dicts() if i.get("type") == "missing"
+            ]
             self.assertTrue(flagged)
             self.assertTrue(all(i.get("fixed") is False for i in flagged))
             with open(store.event_log_path, encoding="utf-8") as f:
@@ -856,7 +932,9 @@ class TestReviewReporting(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             store = self._run(d, autofix=True, fix_text="短")
             ch = store.load_chapter(0)
-            flagged = [i for i in ch.meta["review_issues"] if i.get("type") == "missing"]
+            flagged = [
+                i for i in store.load_progress(0).review_issue_dicts() if i.get("type") == "missing"
+            ]
             self.assertTrue(flagged)
             self.assertTrue(all(i.get("fixed") is False for i in flagged))
             self.assertNotEqual(ch.text_segments[0].target, "短")
@@ -891,10 +969,12 @@ class TestReviewReporting(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
             cfg.segment.max_chars_per_batch = 8  # 审校块预算=24 → 每段自成一块
             cfg.pipeline.autofix_severe = False
-            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt)
             ch = store.load_chapter(0)
             idxs = sorted(
-                i["index"] for i in ch.meta["review_issues"] if i.get("type") == "missing"
+                i["index"]
+                for i in store.load_progress(0).review_issue_dicts()
+                if i.get("type") == "missing"
             )
             # 每块报 index 0 → 映射后应为各块首段的章内段号（0,1,2,...互不相同）
             self.assertEqual(idxs, list(range(len(ch.text_segments))))
@@ -927,9 +1007,9 @@ class TestReviewReporting(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
             cfg.pipeline.autofix_severe = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
 
-            issues = store.load_chapter(0).meta["review_issues"]
+            issues = store.load_progress(0).review_issue_dicts()
             self.assertTrue(issues)
             self.assertEqual(issues[0]["index"], 0)
 
@@ -961,13 +1041,11 @@ class TestReviewReporting(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
             cfg.pipeline.autofix_severe = False
             cfg.pipeline.review_output_retries = 0
-            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
 
             self.assertIn(0, store.review_pending_chapters())
             review_issues = [
-                i
-                for i in store.load_chapter(0).meta.get("review_issues", [])
-                if i.get("stage") == "review"
+                i for i in store.load_progress(0).review_issue_dicts() if i.get("stage") == "review"
             ]
             self.assertEqual(review_issues, [])
             with open(store.event_log_path, encoding="utf-8") as f:
@@ -996,12 +1074,14 @@ class TestStyleAnalysis(unittest.TestCase):
 
     def test_sample_text_multipoint(self):
         """labeled=True 多点采样带三个标注；labeled=False 为纯源文单段。"""
+        from trans_novel.pipeline.nodes.common import sample_text
+
         with tempfile.TemporaryDirectory() as d:
             doc = self._long_doc(d)
-            labeled = Orchestrator._sample_text(doc)
+            labeled = sample_text(doc)
             for tag in ("【开头样章】", "【中部样章】", "【结尾样章】"):
                 self.assertIn(tag, labeled)
-            plain = Orchestrator._sample_text(doc, labeled=False)
+            plain = sample_text(doc, labeled=False)
             self.assertNotIn("样章】", plain)
             self.assertIn("章0の段落0です", plain)
 
@@ -1009,12 +1089,13 @@ class TestStyleAnalysis(unittest.TestCase):
         """单章书：三个采样点重合，只取一次、不重复。"""
         with tempfile.TemporaryDirectory() as d:
             from trans_novel.ingest.segmenter import load_document
+            from trans_novel.pipeline.nodes.common import sample_text
 
             txt = os.path.join(d, "short.txt")
             with open(txt, "w", encoding="utf-8") as f:
                 f.write("# 唯一章\n\n" + "长段落。" + "あ" * 300)
             doc = load_document(txt, "ja", "zh")
-            sample = Orchestrator._sample_text(doc)
+            sample = sample_text(doc)
             self.assertEqual(sample.count("【开头样章】"), 1)
             self.assertNotIn("【中部样章】", sample)
             self.assertNotIn("【结尾样章】", sample)
@@ -1057,7 +1138,7 @@ class TestGlossaryScope(unittest.TestCase):
         cfg = _config(os.path.join(d, "state"))
         cfg.pipeline.glossary_scope = scope
 
-        orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+        orch = Application(cfg, client=FakeClient(handler=routing_handler))
         store = orch.prepare(txt)
         g = GlossaryStore(store.glossary_path)
         # ①锁定人物（全章无任何形式出现）②无关术语 ③alias 在正文出现
@@ -1075,7 +1156,7 @@ class TestGlossaryScope(unittest.TestCase):
         g.close()
 
         client = FakeClient(handler=routing_handler)
-        Orchestrator(cfg, client=client).run(txt)
+        Application(cfg, client=client).run(txt)
         return [
             "\n".join(m["content"] for m in c["messages"])
             for c in client.calls
@@ -1159,7 +1240,7 @@ class TestGlossaryScope(unittest.TestCase):
             cfg.segment.max_chars_per_batch = 10
 
             client = FakeClient(handler=handler)
-            Orchestrator(cfg, client=client).run(txt)
+            Application(cfg, client=client).run(txt)
 
             translate_prompts = [
                 "\n".join(m["content"] for m in c["messages"])
@@ -1215,7 +1296,7 @@ class TestGlossaryScope(unittest.TestCase):
             cfg.pipeline.inflight_glossary = True
             cfg.segment.max_chars_per_batch = 200
 
-            Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+            Application(cfg, client=FakeClient(handler=handler)).run(txt)
 
 
 class TestInflightGlossary(unittest.TestCase):
@@ -1229,7 +1310,7 @@ class TestInflightGlossary(unittest.TestCase):
             cfg.pipeline.inflight_glossary = True
 
             client = FakeClient(handler=routing_handler)
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
             extractor_calls = [
                 c
@@ -1287,14 +1368,13 @@ class TestNaturalizePipeline(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
 
             client = FakeClient(handler=self._naturalize_handler)
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
             m = store.load_manifest()
             for ci in range(len(m["chapters"])):
-                ch = store.load_chapter(ci)
                 self.assertTrue(
-                    ch.meta.get("naturalized"),
-                    f"第 {ci} 章 naturalize 后应标记 meta['naturalized']",
+                    store.load_progress(ci).naturalized,
+                    f"第 {ci} 章 naturalize 后应标记进度 naturalized",
                 )
 
             with open(store.event_log_path, encoding="utf-8") as f:
@@ -1310,7 +1390,7 @@ class TestNaturalizePipeline(unittest.TestCase):
             cfg.pipeline.naturalize = False
 
             client = FakeClient(handler=self._naturalize_handler)
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
             self.assertEqual(
                 self._naturalize_calls(client.calls),
@@ -1319,7 +1399,7 @@ class TestNaturalizePipeline(unittest.TestCase):
             )
             m = store.load_manifest()
             for ci in range(len(m["chapters"])):
-                self.assertFalse(store.load_chapter(ci).meta.get("naturalized"))
+                self.assertFalse(store.load_progress(ci).naturalized)
 
     def test_naturalize_idempotent_on_resume(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1327,20 +1407,20 @@ class TestNaturalizePipeline(unittest.TestCase):
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
 
-            store = Orchestrator(cfg, client=FakeClient(handler=self._naturalize_handler)).run(txt)
-            self.assertTrue(store.load_chapter(0).meta.get("naturalized"))
+            store = Application(cfg, client=FakeClient(handler=self._naturalize_handler)).run(txt)
+            self.assertTrue(store.load_progress(0).naturalized)
 
-            # 模拟"naturalize 已完成、meta 已落盘，但章末 DONE 标记前中断"续跑：
-            # 章状态改回 pending，meta["naturalized"] 保持 True（幂等标记未丢）。
+            # 模拟"naturalize 已完成、进度已落盘，但章末 DONE 标记前中断"续跑：
+            # 章状态改回 pending，进度 naturalized 保持 True（幂等标记未丢）。
             store.set_chapter_status(0, STATUS_PENDING)
 
             client2 = FakeClient(handler=self._naturalize_handler)
-            Orchestrator(cfg, client=client2).run(txt, only_chapter=0)
+            Application(cfg, client=client2).run(txt, only_chapter=0)
 
             self.assertEqual(
                 self._naturalize_calls(client2.calls),
                 [],
-                "meta 标记已置位，续跑不应重复 naturalize",
+                "进度标记已置位，续跑不应重复 naturalize",
             )
 
 
@@ -1382,7 +1462,7 @@ class TestOperationRouting(unittest.TestCase):
                 return routing_handler(messages, agent, operation, json_mode)
 
             client = FakeClient(handler=handler)
-            Orchestrator(cfg, client=client).run(txt)
+            Application(cfg, client=client).run(txt)
 
             expect = {
                 "章节梗概员": "prescan.digest",
@@ -1476,7 +1556,7 @@ class TestPolishAsync(unittest.TestCase):
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(
                 txt, only_chapter=0
             )
 
@@ -1499,7 +1579,7 @@ class TestPolishAsync(unittest.TestCase):
                     self.assertTrue(seg["target"].startswith("润"))
             # run() 返回时排干已完成：正文与 meta 均为最终态，无残留 pending 标记
             ch = store.load_chapter(0)
-            self.assertFalse(ch.meta.get("pending_polish"))
+            self.assertFalse(store.load_progress(0).pending_polish)
             self.assertTrue(all(s.target.startswith("润") for s in ch.text_segments))
 
 
@@ -1515,23 +1595,25 @@ class TestPendingPolishResume(unittest.TestCase):
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(
                 txt, only_chapter=0
             )
             ch = store.load_chapter(0)
             self.assertTrue(all(s.target and s.target.startswith("润") for s in ch.text_segments))
-            self.assertFalse(ch.meta.get("pending_polish"))
+            self.assertFalse(store.load_progress(0).pending_polish)
 
             # 模拟"批已落盘但章末排干润色前中断"：把最后一段的译文改回未润色的 raw
             # （"译{i}"），补回 pending_polish 标记，章状态改回 pending。
             last_idx = len(ch.text_segments) - 1
             ch.segments[last_idx].target = f"译{last_idx}"
-            ch.meta["pending_polish"] = [{"start": last_idx, "count": 1}]
+            pg = store.load_progress(0)
+            pg.pending_polish = [PolishBatch(start=last_idx, count=1)]
+            store.save_progress(0, pg)
             store.save_chapter(ch)
             store.set_chapter_status(0, STATUS_PENDING)
 
             client2 = FakeClient(handler=routing_handler)
-            Orchestrator(cfg, client=client2).run(txt, only_chapter=0)
+            Application(cfg, client=client2).run(txt, only_chapter=0)
             translate_calls = [
                 c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
             ]
@@ -1541,7 +1623,7 @@ class TestPendingPolishResume(unittest.TestCase):
             # routing_handler 的润色输出按"本次调用内"的局部下标编号：该批只含 1 段
             # （原始的第 last_idx 段），单独重新提交润色后局部下标为 0 → "润0"。
             self.assertEqual(ch2.text_segments[last_idx].target, "润0")
-            self.assertFalse(ch2.meta.get("pending_polish"))
+            self.assertFalse(store.load_progress(0).pending_polish)
 
             with open(store.event_log_path, encoding="utf-8") as f:
                 events = [json.loads(line) for line in f if line.strip()]
@@ -1557,7 +1639,7 @@ class TestPendingPolishResume(unittest.TestCase):
 
 class TestReviewAsync(unittest.TestCase):
     """review=true 且 autofix_severe=false：章末审校提交共享线程池异步跑，
-    run() 返回前必须排干——issues 合并写入 chapter.meta["review_issues"]
+    run() 返回前必须排干——issues 合并写入 ChapterProgress.review_issues
     并发 chapter_reviewed 事件；review worker 出错不得中断 run。"""
 
     @staticmethod
@@ -1590,14 +1672,17 @@ class TestReviewAsync(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
             cfg.pipeline.autofix_severe = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
 
             m = store.load_manifest()
-            self.assertTrue(all(c["status"] == STATUS_DONE for c in m["chapters"]))
+            self.assertTrue(
+                all(store.chapter_status(c["index"]) == STATUS_DONE for c in m["chapters"])
+            )
             for ci in range(len(m["chapters"])):
-                ch = store.load_chapter(ci)
                 found = [
-                    i for i in ch.meta.get("review_issues", []) if i.get("type") == "terminology"
+                    i
+                    for i in store.load_progress(ci).review_issue_dicts()
+                    if i.get("type") == "terminology"
                 ]
                 self.assertTrue(found, f"第 {ci} 章异步审校结果未写回 meta")
                 for it in found:
@@ -1613,33 +1698,36 @@ class TestReviewAsync(unittest.TestCase):
             )
 
     def test_review_worker_failure_does_not_break_run(self):
-        # review 未来（_review_chapter）本身抛异常 → 触发 _drain_ready_reviews 的
+        # review 未来（review_chapter）本身抛异常 → 触发 runner 异步排干的
         # except 分支（记 chapter_review_failed 后 continue，不中断 run）。
         # 注意：不能靠 handler 对 '译文审校' 抛异常来验证——Reviewer.review 内部
         # _ask_json(..., default=[]) 会吞掉 LLM 异常返回 []，future 正常完成、照常
         # 发 chapter_reviewed，except 分支永不执行（旧版删掉错误处理测试仍会通过）。
-        # 故直接以实例属性遮蔽绑定方法 _review_chapter，让提交到线程池的 future 真抛。
+        # 故直接遮蔽 ReviewNode.review_chapter 类方法，让提交到线程池的 future 真抛。
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
             cfg.pipeline.autofix_severe = False  # 异步审校路径
 
-            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+            from unittest.mock import patch
+
+            from trans_novel.pipeline.nodes.quality import ReviewNode
+
+            app = Application(cfg, client=FakeClient(handler=routing_handler))
 
             def _boom(*_a, **_k):
                 raise RuntimeError("审校崩")
 
-            orch._review_chapter = _boom  # 遮蔽类方法：future 执行即抛
-
-            store = orch.run(txt)
+            with patch.object(ReviewNode, "review_chapter", _boom):
+                store = app.run(txt)
 
             m = store.load_manifest()
             chapters = set(range(len(m["chapters"])))
 
             # (a) 审校 future 全崩，run 仍走完，每章保持 DONE（未被异常中断）
             self.assertTrue(
-                all(c["status"] == STATUS_DONE for c in m["chapters"]),
+                all(store.chapter_status(c["index"]) == STATUS_DONE for c in m["chapters"]),
                 "审校 worker 抛异常不得阻断整章完成",
             )
 
@@ -1660,7 +1748,7 @@ class TestReviewAsync(unittest.TestCase):
             for ci in chapters:
                 review_stage_issues = [
                     i
-                    for i in store.load_chapter(ci).meta.get("review_issues", [])
+                    for i in store.load_progress(ci).review_issue_dicts()
                     if i.get("stage") == "review"
                 ]
                 self.assertEqual(
@@ -1671,7 +1759,7 @@ class TestReviewAsync(unittest.TestCase):
 
     def test_crash_resume_reruns_pending_review(self):
         # review 断点续跑不变量（异步审校版）：章已标 DONE 但异步审校结果还没写回
-        # 就宕机时，靠 manifest 里的 review_pending 持久标记 + run() 开头的
+        # 就宕机时，靠进度里的 review_pending 持久标记 + run() 开头的
         # _resume_pending_reviews 补跑，审校结果不静默丢失。没有标记或补跑逻辑，
         # 崩溃后该章审校结果永久缺失，本测试必失败。
         with tempfile.TemporaryDirectory() as d:
@@ -1681,16 +1769,16 @@ class TestReviewAsync(unittest.TestCase):
             cfg.pipeline.autofix_severe = False
 
             # (1) 正常跑一遍：审校结果写回、标记清空（前置条件）
-            store = Orchestrator(cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=self._issue_handler)).run(txt)
             self.assertEqual(
                 store.review_pending_chapters(), [], "正常收尾后不应残留任何 review_pending 标记"
             )
 
             # (2) 模拟崩溃窗口：章 0 已 DONE，但标记残留且审校结果被抹掉
             store.set_review_pending(0, True)
-            ch = store.load_chapter(0)
-            ch.meta["review_issues"] = []
-            store.save_chapter(ch)
+            pg = store.load_progress(0)
+            pg.set_review_issue_dicts([])
+            store.save_progress(0, pg)
             self.assertIn(
                 0, store.review_pending_chapters(), "崩溃模拟：章 0 应带 review_pending 标记"
             )
@@ -1700,10 +1788,10 @@ class TestReviewAsync(unittest.TestCase):
 
             # (3) 续跑：所有章已 DONE → targets 为空，补跑只能来自 _resume_pending_reviews
             client2 = FakeClient(handler=self._issue_handler)
-            Orchestrator(cfg, client=client2).run(txt)
+            Application(cfg, client=client2).run(txt)
 
             # (4a) 载荷断言：章 0 审校结果被重新写回（术语项，字段完整）
-            issues = store.load_chapter(0).meta.get("review_issues", [])
+            issues = store.load_progress(0).review_issue_dicts()
             found = [i for i in issues if i.get("type") == "terminology"]
             self.assertTrue(found, "续跑必须重跑章 0 审校并写回 review_issues")
             for it in found:
@@ -1759,12 +1847,12 @@ class TestReviewRecovery(unittest.TestCase):
         cfg = _config("state")
         cfg.segment.max_chars_per_batch = 100
         cfg.pipeline.review_output_retries = 0
-        orch = Orchestrator(cfg, client=FakeClient(handler=handler))
+        node = _review_node(cfg, FakeClient(handler=handler))
         pairs = [(f"SRC{i}", f"TGT{i}") for i in range(4)]
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=4) as review_executor:
-            issues = orch._review_chapter(pairs, [], review_executor)
+            issues = node.review_chapter(pairs, [], review_executor)
         self.assertEqual([it["index"] for it in issues], list(range(4)))
         self.assertEqual([it["detail"] for it in issues], [f"segment{i}" for i in range(4)])
 
@@ -1783,12 +1871,12 @@ class TestReviewRecovery(unittest.TestCase):
 
         cfg = _config("state")
         cfg.pipeline.review_output_retries = 2
-        orch = Orchestrator(cfg, client=FakeClient(handler=handler))
+        node = _review_node(cfg, FakeClient(handler=handler))
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=2) as review_executor:
             self.assertEqual(
-                orch._review_chapter([("SRC", "TGT")], [], review_executor),
+                node.review_chapter([("SRC", "TGT")], [], review_executor),
                 [],
             )
         self.assertEqual(calls, 2)
@@ -1803,12 +1891,14 @@ class TestReviewRecovery(unittest.TestCase):
 
         cfg = _config("state")
         cfg.pipeline.review_output_retries = 2
-        orch = Orchestrator(cfg, client=FakeClient(handler=handler))
+        node = _review_node(cfg, FakeClient(handler=handler))
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=2) as review_executor:
-            with self.assertRaises(ReviewOutputError):
-                orch._review_chapter([("SRC", "TGT")], [], review_executor)
+        with (
+            ThreadPoolExecutor(max_workers=2) as review_executor,
+            self.assertRaises(ReviewOutputError),
+        ):
+            node.review_chapter([("SRC", "TGT")], [], review_executor)
         self.assertEqual(calls, 3)
 
     def test_provider_exception_propagates_without_retry(self):
@@ -1821,12 +1911,14 @@ class TestReviewRecovery(unittest.TestCase):
 
         cfg = _config("state")
         cfg.pipeline.review_output_retries = 2
-        orch = Orchestrator(cfg, client=FakeClient(handler=handler))
+        node = _review_node(cfg, FakeClient(handler=handler))
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=2) as review_executor:
-            with self.assertRaisesRegex(RuntimeError, "provider down"):
-                orch._review_chapter([("SRC", "TGT")], [], review_executor)
+        with (
+            ThreadPoolExecutor(max_workers=2) as review_executor,
+            self.assertRaisesRegex(RuntimeError, "provider down"),
+        ):
+            node.review_chapter([("SRC", "TGT")], [], review_executor)
         self.assertEqual(calls, 1)
 
 
@@ -1896,11 +1988,11 @@ class TestReviewChunkConcurrency(unittest.TestCase):
         cfg = _config("state")
         cfg.segment.max_chars_per_batch = 1  # budget=3，强制每对独立成块
         client = FakeClient(handler=handler)
-        orch = Orchestrator(cfg, client=client)
+        node = _review_node(cfg, client)
         pairs = [(f"MARK{c} " + "源文" * 10, f"译文{c}") for c in range(n_chunks)]
 
         with ThreadPoolExecutor(max_workers=4) as review_executor:
-            issues = orch._review_chapter(pairs, [], review_executor)
+            issues = node.review_chapter(pairs, [], review_executor)
 
         self.assertEqual([it["detail"] for it in issues], [f"chunk{c}" for c in range(n_chunks)])
         # chunk 0 确实先于其余 chunk 完成；其余 chunk 之间完成顺序被反转（证明真并发）。
@@ -1937,12 +2029,14 @@ class TestReviewChunkConcurrency(unittest.TestCase):
             cfg = _config(os.path.join(d, "state"))
             cfg.pipeline.autofix_severe = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt)
             # 未死锁即已经证明池分离设计成立；再断言并发确实发生过且没有超过硬上限 4。
             self.assertGreaterEqual(max_concurrent, 1)
             self.assertLessEqual(max_concurrent, 4)
             m = store.load_manifest()
-            self.assertTrue(all(c["status"] == STATUS_DONE for c in m["chapters"]))
+            self.assertTrue(
+                all(store.chapter_status(c["index"]) == STATUS_DONE for c in m["chapters"])
+            )
 
 
 class TestPrescanOverlap(unittest.TestCase):
@@ -1972,13 +2066,13 @@ class TestPrescanOverlap(unittest.TestCase):
                     return json.dumps({"candidates": ["堀北"]}, ensure_ascii=False)
                 return routing_handler(messages, agent, operation, json_mode)
 
-            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt)
 
             self.assertTrue(
                 overlapped.is_set(),
                 "digest 与 term mining 必须真正同时在跑，而非先后串行执行",
             )
-            self.assertTrue((store.load_analysis() or {}).get("term_mining_done"))
+            self.assertTrue(store.load_state().analysis_flags.term_mining_done)
 
     def test_naming_waits_for_slower_mining_branch(self):
         """mining 分支人为拖慢：naming（全书定名）调用必须等它彻底收尾才发生。"""
@@ -2003,7 +2097,7 @@ class TestPrescanOverlap(unittest.TestCase):
                         naming_started_at.append(time.monotonic())
                 return routing_handler(messages, agent, operation, json_mode)
 
-            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt)
 
             self.assertTrue(mining_finished_at and naming_started_at)
             self.assertGreaterEqual(
@@ -2011,7 +2105,7 @@ class TestPrescanOverlap(unittest.TestCase):
                 max(mining_finished_at),
                 "naming 必须等挖掘分支（含人为拖慢的每一章）全部收尾才能开始",
             )
-            self.assertTrue((store.load_analysis() or {}).get("term_mining_done"))
+            self.assertTrue(store.load_state().analysis_flags.term_mining_done)
             g = GlossaryStore(store.glossary_path)
             self.assertIsNotNone(g.get_term("堀北"), "naming 必须拿到挖掘分支的完整候选")
             g.close()
@@ -2023,21 +2117,27 @@ class TestPrescanOverlap(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
+            from unittest.mock import patch
+
+            from trans_novel.agents.synopsis import Synopsizer
+
             client = FakeClient(handler=routing_handler)
-            orch = Orchestrator(cfg, client=client)
-            store = orch.prepare(txt)
+            app = Application(cfg, client=client)
+            store = app.prepare(txt)
 
             def _boom(source_text):
                 raise RuntimeError("digest 崩")
 
-            orch.synopsizer.digest_chapter = _boom  # 遮蔽实例方法，绕过 _ask_text 的吞异常
+            # 遮蔽 Synopsizer.digest_chapter_strict（节点实际使用的 strict 调用），
+            # 绕过 _ask_text 的吞异常；并行层 join 后排干挖掘分支再整体冒泡。
+            with (
+                patch.object(Synopsizer, "digest_chapter_strict", _boom),
+                self.assertRaises(RuntimeError),
+            ):
+                app.run(txt)
 
-            with self.assertRaises(RuntimeError):
-                orch.run(txt)
-
-            reloaded_analysis = store.load_analysis() or {}
             self.assertFalse(
-                reloaded_analysis.get("term_mining_done"),
+                store.load_state().analysis_flags.term_mining_done,
                 "digest 异常时挖掘/定名结果不得被落盘为完成",
             )
 
@@ -2051,7 +2151,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))  # polish=True
             client = FakeClient(handler=routing_handler)
-            Orchestrator(cfg, client=client).run(txt)
+            Application(cfg, client=client).run(txt)
 
             op = client.usage_summary()["by_operation"]["polish.batch"]
             self.assertGreater(op["accepted"], 0)
@@ -2085,7 +2185,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
             client = FakeClient(handler=handler)
-            Orchestrator(cfg, client=client).run(txt)
+            Application(cfg, client=client).run(txt)
 
             op = client.usage_summary()["by_operation"]["polish.batch"]
             self.assertGreaterEqual(op["rejected"], 1)
@@ -2115,7 +2215,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
             client = FakeClient(handler=handler)
-            Orchestrator(cfg, client=client).run(txt)
+            Application(cfg, client=client).run(txt)
 
             op = client.usage_summary()["by_operation"]["translate.lint_fix"]
             self.assertEqual(op["accepted"], 1)
@@ -2158,7 +2258,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
             cfg_accept = _config(os.path.join(d, "state_accept"))
             cfg_accept.pipeline.autofix_severe = True
             accepted_client = FakeClient(handler=handler(FIX_TEXT))
-            Orchestrator(cfg_accept, client=accepted_client).run(txt)
+            Application(cfg_accept, client=accepted_client).run(txt)
             op = accepted_client.usage_summary()["by_operation"]["translate.review_fix"]
             self.assertGreaterEqual(op["accepted"], 1)
             self.assertEqual(op["rejected"], 0)
@@ -2166,7 +2266,7 @@ class TestOperationOutcomeAccounting(unittest.TestCase):
             cfg_reject = _config(os.path.join(d, "state_reject"))
             cfg_reject.pipeline.autofix_severe = True
             rejected_client = FakeClient(handler=handler("短"))  # 过短，长度校验不通过
-            Orchestrator(cfg_reject, client=rejected_client).run(txt)
+            Application(cfg_reject, client=rejected_client).run(txt)
             op2 = rejected_client.usage_summary()["by_operation"]["translate.review_fix"]
             self.assertEqual(op2["accepted"], 0)
             self.assertGreaterEqual(op2["rejected"], 1)
@@ -2183,8 +2283,15 @@ class TestOperationLabelCompleteness(unittest.TestCase):
             cfg.pipeline.backtranslate_sample = 1.0  # 强制触发回译抽检
 
             client = FakeClient(handler=routing_handler)
-            orch = Orchestrator(cfg, client=client)
-            orch.run_steps(txt, {"translate", "qa", "report"})
+            orch = Application(cfg, client=client)
+            orch.run_goal_result(
+                txt,
+                ExecutionGoal(
+                    name="translate-qa-report",
+                    phases=("prepare", "prescan", "translate", "titles", "qa", "report"),
+                    do_qa=True,
+                ),
+            )
 
             blank = [c for c in client.calls if not c.get("operation")]
             self.assertEqual(
@@ -2197,8 +2304,11 @@ class TestOperationLabelCompleteness(unittest.TestCase):
 
 class TestPolishFailureFallback(unittest.TestCase):
     def test_polish_failure_falls_back_to_raw_translation(self):
-        """润色调用失败（handler 抛异常）：该批最终 target 回退为未润色译文
-        （经标点规范化），run() 正常完成，无 pending_polish 残留。"""
+        """workflow 必需润色路径：provider 失败必须传播（runner 落失败态并重试），
+        不得伪装成“润色成功”；pending_polish 保留供续跑重试。"""
+        from trans_novel.ingest.segmenter import load_document
+        from trans_novel.pipeline.runner import RequiredNodeFailed
+        from trans_novel.pipeline.state import NODE_POLISH
 
         def handler(messages, agent, operation, json_mode):
             if "中文润色编辑" in messages[0]["content"]:
@@ -2213,16 +2323,22 @@ class TestPolishFailureFallback(unittest.TestCase):
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
+            doc = load_document(txt, "ja", "zh")
+            store = RunStore(os.path.join(cfg.state_dir, slugify(doc.title)))
 
-            m = store.load_manifest()
-            self.assertEqual(m["chapters"][0]["status"], STATUS_DONE, "润色失败不得阻断整章完成")
+            with self.assertRaises(RequiredNodeFailed):
+                Application(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
+            node = store.load_state().nodes[chapter_node_key(NODE_POLISH, 0)]
+            self.assertEqual(node.status, "failed_permanent")
+            self.assertEqual(node.failure.kind, "provider_permanent")
+            self.assertTrue(
+                store.load_progress(0).pending_polish,
+                "provider 失败必须保留 pending_polish 供续跑重试（不得清空伪装成功）",
+            )
             ch = store.load_chapter(0)
-            # 单批：routing_handler 译文按批内下标编号 → 段 i 的 raw 译文为 "译{i}"
-            expected = [normalize_zh(f"译{i}") for i in range(len(ch.text_segments))]
-            self.assertEqual([s.target for s in ch.text_segments], expected)
-            self.assertFalse(
-                ch.meta.get("pending_polish"), "润色失败的批次也必须清掉 pending_polish 标记"
+            self.assertTrue(
+                all(s.target and s.target.startswith("译") for s in ch.text_segments),
+                "失败批次译文保持未润色原文",
             )
 
 
@@ -2260,7 +2376,7 @@ class TestLintQuoteRefix(unittest.TestCase):
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=self._handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=self._handler)).run(txt)
             ch = store.load_chapter(0)
             target = ch.text_segments[1].target
             # 最终译文带引号（定向重译采纳，替换了丢引号的首译）
@@ -2320,7 +2436,7 @@ class TestPolishQuoteRejection(unittest.TestCase):
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=self._handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=self._handler)).run(txt)
             ch = store.load_chapter(0)
             target = ch.text_segments[1].target
             # 润色剥引号被拒：保留润色前（带引号）译文，而非润色后的无引号文本
@@ -2369,7 +2485,7 @@ class TestLintTooShortReportOnly(unittest.TestCase):
             cfg.source_lang = "en"
             cfg.state_dir = os.path.join(d, "state")
             client = FakeClient(handler=self._handler)
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
             translate_calls = [c for c in client.calls if "文学翻译" in c["messages"][0]["content"]]
             self.assertEqual(
@@ -2385,10 +2501,9 @@ class TestLintTooShortReportOnly(unittest.TestCase):
                 "过短译文应被 lint 发现并记入 batch_linted",
             )
 
-            ch = store.load_chapter(0)
             recorded = [
                 i
-                for i in ch.meta["review_issues"]
+                for i in store.load_progress(0).review_issue_dicts()
                 if i.get("type") == "too_short" and i.get("stage") == "lint"
             ]
             self.assertTrue(recorded, "too_short 应作为 report-only 记入 review_issues")
@@ -2426,33 +2541,32 @@ class TestLintSkipBranchRecordsIssue(unittest.TestCase):
             cfg.pipeline.consistency_qa = False
             cfg.pipeline.book_understanding = False
 
-            store = Orchestrator(cfg, client=FakeClient(handler=self._handler)).run(txt)
-            ch = store.load_chapter(0)
+            store = Application(cfg, client=FakeClient(handler=self._handler)).run(txt)
             unresolved = [
                 i
-                for i in ch.meta["review_issues"]
+                for i in store.load_progress(0).review_issue_dicts()
                 if i.get("type") == "quote_loss" and i.get("stage") == "lint"
             ]
             self.assertTrue(unresolved, "首译丢引号且重译未修复，应作为未解决 lint issue 记录")
 
             # 模拟崩溃窗口：章已 DONE 但 review_issues 被清空、状态改回 pending，
             # 段译文原样保留（已落盘、未变）——续跑应走批跳过分支，不重译。
-            ch.meta["review_issues"] = []
-            store.save_chapter(ch)
+            pg = store.load_progress(0)
+            pg.set_review_issue_dicts([])
+            store.save_progress(0, pg)
             store.set_chapter_status(0, STATUS_PENDING)
 
             client2 = FakeClient(handler=self._handler)
-            store2 = Orchestrator(cfg, client=client2).run(txt)
+            Application(cfg, client=client2).run(txt)
 
             translate_calls = [
                 c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
             ]
             self.assertEqual(len(translate_calls), 0, "跳过分支不得重译")
 
-            ch2 = store2.load_chapter(0)
             recovered = [
                 i
-                for i in ch2.meta["review_issues"]
+                for i in store.load_progress(0).review_issue_dicts()
                 if i.get("type") == "quote_loss" and i.get("stage") == "lint"
             ]
             self.assertTrue(recovered, "跳过分支应重新记录未修复的 lint issue，不静默丢失")
@@ -2472,10 +2586,22 @@ class TestProgressLabels(unittest.TestCase):
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))
             labels: list[str] = []
-            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
-            orch.run_steps(
+            orch = Application(cfg, client=FakeClient(handler=routing_handler))
+            orch.run_goal_result(
                 txt,
-                {"translate", "qa", "report", "assemble"},
+                ExecutionGoal(
+                    name="full",
+                    phases=(
+                        "prepare",
+                        "prescan",
+                        "translate",
+                        "titles",
+                        "qa",
+                        "report",
+                        "assemble",
+                    ),
+                    do_qa=True,
+                ),
                 progress=lambda done, total, label: labels.append(label),
             )
             for label in (
@@ -2559,7 +2685,7 @@ class TestLintFixMerged(unittest.TestCase):
 
             fix_calls: list[str] = []
             client = FakeClient(handler=self._handler(fix_calls))
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
             self.assertEqual(
                 len(fix_calls), 1, "3 个待修复段落应合并为一次调用，而不是分别发起调用。"
@@ -2591,7 +2717,7 @@ class TestLintFixMerged(unittest.TestCase):
 
             unresolved = [
                 i
-                for i in ch.meta["review_issues"]
+                for i in store.load_progress(0).review_issue_dicts()
                 if i.get("type") == "quote_loss" and i.get("stage") == "lint"
             ]
             self.assertEqual(
@@ -2644,7 +2770,7 @@ class TestLintFixMergeFallback(unittest.TestCase):
 
             fix_calls: list[str] = []
             client = FakeClient(handler=self._handler(fix_calls))
-            store = Orchestrator(cfg, client=client).run(txt)
+            store = Application(cfg, client=client).run(txt)
 
             # 1 次合并调用（长度不符失败）+ 2 次逐段兜底调用 = 共 3 次带审校意见的调用
             self.assertEqual(len(fix_calls), 3)
@@ -2704,6 +2830,7 @@ class TestTitleTermTrim(unittest.TestCase):
                 ],
             }
         )
+        _stamp_completed_store(store, chapters=1)
         glossary = GlossaryStore(store.glossary_path)
         # 锁定人物：标题里只出现「Vane」这个部分称呼（非全名），仍应命中保留。
         glossary.upsert_term(
@@ -2723,7 +2850,7 @@ class TestTitleTermTrim(unittest.TestCase):
             return routing_handler(messages, agent, operation, json_mode)
 
         glossary2 = GlossaryStore(store.glossary_path)
-        Orchestrator(cfg, client=FakeClient(handler=handler))._translate_titles(store, glossary2)
+        Application(cfg, client=FakeClient(handler=handler)).translate_titles(store)
         glossary2.close()
         self.assertIn("user", captured)
         return captured["user"]
@@ -2742,6 +2869,443 @@ class TestTitleTermTrim(unittest.TestCase):
             self.assertIn("Duel → 决斗", user)
             self.assertIn("Alden Vane → 奥尔登·韦恩", user)
             self.assertNotIn("Excalibur", user)
+
+
+class TestStrictFailurePropagation(unittest.TestCase):
+    """必需节点的 provider 失败必须冒泡（失败态落盘 + 计划中止/应用边界抛出），
+    不得伪装成成功空结果（reviewer finding 10）。"""
+
+    @staticmethod
+    def _boom(exc):
+        def handler(messages, agent, operation, json_mode):
+            raise exc
+
+        return handler
+
+    def test_digest_strict_propagates(self):
+        from trans_novel.agents.synopsis import Synopsizer
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = _config(os.path.join(d, "state"))
+            client = FakeClient(handler=self._boom(RuntimeError("digest down")))
+            agent = Synopsizer(client, cfg)
+            agent.src, agent.tgt = "ja", "zh"
+            with self.assertRaisesRegex(RuntimeError, "digest down"):
+                agent.digest_chapter_strict("テキスト")
+            # 非 strict 变体保留旧回退语义（空串）
+            self.assertEqual(agent.digest_chapter("テキスト"), "")
+
+    def test_book_synopsis_strict_propagates(self):
+        from trans_novel.agents.synopsis import Synopsizer
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = _config(os.path.join(d, "state"))
+            client = FakeClient(handler=self._boom(RuntimeError("synopsis down")))
+            agent = Synopsizer(client, cfg)
+            agent.src, agent.tgt = "ja", "zh"
+            with self.assertRaisesRegex(RuntimeError, "synopsis down"):
+                agent.book_synopsis_strict(["梗概一", "梗概二"], "风格")
+            self.assertEqual(agent.book_synopsis(["梗概一", "梗概二"], "风格"), "")
+
+    def _complete_store(self, d: str) -> RunStore:
+        txt = os.path.join(d, "novel.txt")
+        write_sample_txt(txt)
+        cfg = _config(os.path.join(d, "state"))
+        store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+        return cfg, store
+
+    def test_consistency_strict_propagates(self):
+        from trans_novel.agents.consistency import ConsistencyChecker
+        from trans_novel.glossary.store import GlossaryStore
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg, store = self._complete_store(d)
+            glossary = GlossaryStore(store.glossary_path)
+            try:
+                checker = ConsistencyChecker(
+                    FakeClient(handler=self._boom(RuntimeError("qa down"))), cfg
+                )
+                checker.src, checker.tgt = "ja", "zh"
+                with self.assertRaisesRegex(RuntimeError, "qa down"):
+                    checker.check(store, glossary, strict=True)
+                # 非 strict 变体保持旧回退语义（空 issue 列表）
+                self.assertEqual(checker.check(store, glossary), [])
+            finally:
+                glossary.close()
+
+    def test_backtranslate_strict_propagates(self):
+        from trans_novel.agents.reviewer import BackTranslator
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = _config(os.path.join(d, "state"))
+            agent = BackTranslator(FakeClient(handler=self._boom(RuntimeError("bt down"))), cfg)
+            agent.src, agent.tgt = "ja", "zh"
+            with self.assertRaisesRegex(RuntimeError, "bt down"):
+                agent.check(["源一", "源二"], ["译一", "译二"], strict=True)
+            # 回译数量对不齐是窄协议恢复：跳过样本、不抛
+            agent2 = BackTranslator(FakeClient(handler=routing_handler), cfg)
+            agent2.src, agent2.tgt = "ja", "zh"
+            self.assertEqual(agent2.check(["源一"], ["译一", "译二"], strict=True), [])
+
+    def test_titles_provider_failure_fails_node(self):
+        from trans_novel.pipeline.runner import RequiredNodeFailed
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg, store = self._complete_store(d)
+            # 完整 run 已把 titles 标 succeeded 且标题已译 → 闭包判已满足、titles
+            # 幂等跳过，provider 失败不会触发。清掉 titles 状态，并把章标题改成与
+            # 正文 heading 源文不匹配的独立标题（绕过 heading 复用缓存），确保
+            # titles 节点真正发起 LLM 调用。
+            state = store.load_state()
+            state.nodes.pop(NODE_TITLES, None)
+            for ci, c in enumerate(state.chapters):
+                c.title = f"待译标题{ci}"
+                c.title_translated = None
+            raw_toc = state.meta.get("toc_entries") if isinstance(state.meta, dict) else None
+            if isinstance(raw_toc, list):
+                for e in raw_toc:
+                    if isinstance(e, dict):
+                        e.pop("title_translated", None)
+            store.save_state(state)
+
+            def handler(messages, agent, operation, json_mode):
+                if operation == "title.translate":
+                    raise RuntimeError("title provider down")
+                return routing_handler(messages, agent, operation, json_mode)
+
+            with self.assertRaisesRegex(RequiredNodeFailed, "title provider down"):
+                Application(cfg, client=FakeClient(handler=handler)).translate_titles(store)
+            node = store.load_state().nodes[NODE_TITLES]
+            self.assertEqual(node.status, "failed_permanent")
+            self.assertEqual(node.failure.kind, "provider_permanent")
+
+    def test_naturalize_screen_failure_not_marked(self):
+        from trans_novel.agents.naturalizer import Naturalizer, naturalize_chapter
+        from trans_novel.glossary.store import GlossaryStore
+        from trans_novel.ingest.models import Chapter, Segment
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = _config(os.path.join(d, "state"))
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            store = RunStore(os.path.join(d, "run"))
+            store.save_state(
+                RunState(
+                    run_state_schema=RUN_STATE_SCHEMA_VERSION,
+                    identity=RunIdentity(source_lang="ja", target_lang="zh"),
+                    title="T",
+                    fmt="text",
+                    source_lang="ja",
+                    target_lang="zh",
+                    chapters=[ChapterIndex(index=0, title="第一章")],
+                    progress={0: ChapterProgress()},
+                )
+            )
+            chapter = Chapter(
+                index=0,
+                title="第一章",
+                segments=[Segment(index=0, source="S0", target="翻译腔很重的句子。")],
+            )
+            store.save_chapter(chapter)
+            glossary = GlossaryStore(store.glossary_path)
+            try:
+                agent = Naturalizer(
+                    FakeClient(handler=self._boom(RuntimeError("screen down"))), cfg
+                )
+                agent.src, agent.tgt = "ja", "zh"
+                with self.assertRaisesRegex(RuntimeError, "screen down"):
+                    naturalize_chapter(
+                        agent,
+                        chapter,
+                        0,
+                        1,
+                        [],
+                        cfg,
+                        store,
+                        dry_run=False,
+                        remaining=None,
+                        strict_screen=True,
+                    )
+                # 筛查失败不得把整章标记为已自然化
+                self.assertFalse(store.load_progress(0).naturalized)
+            finally:
+                glossary.close()
+
+
+class TestGlossaryAfterPolish(unittest.TestCase):
+    """inflight_glossary + polish：章级术语兜底抽取必须发生在润色落盘之后
+    （润色前的译文可能含被润色修正的术语变体，reviewer finding 17）。"""
+
+    def test_chapter_glossary_extracted_after_polish(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.polish = True
+            cfg.pipeline.inflight_glossary = True
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            polished = [e for e in events if e["event"] == "batch_polished"]
+            fallback = [e for e in events if e["event"] == "chapter_glossary_extracted"]
+            self.assertTrue(polished, "润色应产生 batch_polished")
+            self.assertTrue(fallback, "章级兜底抽取应运行")
+            # 逐章比较：每章的兜底抽取必须发生在该章最后一次 batch_polished 之后
+            for ci in range(len(store.load_manifest()["chapters"])):
+                ch_polished = [
+                    i
+                    for i, e in enumerate(events)
+                    if e["event"] == "batch_polished" and e["chapter"] == ci
+                ]
+                ch_fallback = [
+                    i
+                    for i, e in enumerate(events)
+                    if e["event"] == "chapter_glossary_extracted" and e["chapter"] == ci
+                ]
+                if not ch_fallback:
+                    continue
+                self.assertTrue(ch_polished, f"第 {ci} 章应先润色")
+                self.assertGreater(
+                    ch_fallback[0],
+                    ch_polished[-1],
+                    f"第 {ci} 章兜底抽取必须发生在润色落盘之后（否则锁死润色前的术语变体）",
+                )
+
+
+class TestTranslateRunBookkeeping(unittest.TestCase):
+    """翻译边界的进度计数与生命周期事件（reviewer finding 18）。"""
+
+    def test_progress_totals_initialized_and_run_events(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            seen: list[tuple[int, int, str]] = []
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(
+                txt, progress=lambda done, total, label: seen.append((done, total, label))
+            )
+
+            mid = [(d, t) for d, t, _ in seen if t > 0]
+            self.assertTrue(mid, "翻译中回调必须携带真实 total（不得恒为 0）")
+            self.assertEqual(seen[-1][2], "翻译完成")
+            self.assertEqual(seen[-1][0], seen[-1][1])
+
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            names = [e["event"] for e in events]
+            self.assertIn("translate_run_started", names)
+            self.assertIn("translate_run_finished", names)
+            started = next(e for e in events if e["event"] == "translate_run_started")
+            self.assertGreater(started["total_segments"], 0)
+            finished = next(e for e in events if e["event"] == "translate_run_finished")
+            self.assertGreaterEqual(finished["total_segments"], 0)
+
+
+class TestInitCrashRecovery(unittest.TestCase):
+    """初始化崩溃窗口：analysis.json 已落盘但 manifest 未落盘 → 重试必须补完初始化。"""
+
+    def test_analysis_without_manifest_recovers_on_retry(self):
+        from trans_novel.ingest.segmenter import load_document
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            doc = load_document(txt, "ja", "zh")
+            # 模拟 save_analysis 之后、save_manifest 之前的崩溃：analysis.json 存在、
+            # 章节文件存在、manifest 不存在。
+            store = RunStore(os.path.join(d, "state", slugify(doc.title)))
+            store.ensure_dirs()
+            store.save_analysis({"style": {"tone": "cool"}})
+            for ci, title in ((0, "第一章　出会い"), (1, "第二章　放課後")):
+                store.save_chapter(
+                    Chapter(
+                        index=ci,
+                        title=title,
+                        segments=[Segment(index=0, source="源文", kind="heading")],
+                    )
+                )
+            self.assertFalse(store.exists())
+
+            retried = Application(cfg, client=FakeClient(handler=routing_handler)).prepare(txt)
+            self.assertTrue(retried.exists(), "重试必须原子补完初始化 manifest")
+            self.assertTrue(retried.load_manifest()["initialized"])
+            self.assertIsNotNone(retried.load_analysis())
+
+
+class TestTitlesMismatchRetry(unittest.TestCase):
+    """标题数量不符是协议错误：节点失败可重试；随后正常返回时成功。"""
+
+    def _handler(self, fail_first):
+        state = {"fail": fail_first}
+
+        def handler(messages, agent, operation, json_mode):
+            if operation == "title.translate":
+                if state["fail"]:
+                    state["fail"] = False
+                    return json.dumps({"titles": ["只有一条"]}, ensure_ascii=False)  # 数量不符
+                return routing_handler(messages, agent, operation, json_mode)
+            return routing_handler(messages, agent, operation, json_mode)
+
+        return handler
+
+    def test_mismatch_then_valid_resume(self):
+        from trans_novel.pipeline.runner import RequiredNodeFailed
+        from trans_novel.pipeline.state import NODE_TITLES
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+
+            handler = self._handler(fail_first=True)
+            app = Application(cfg, client=FakeClient(handler=handler))
+            state = store.load_state()
+            state.nodes.pop(NODE_TITLES, None)
+            for ci, c in enumerate(state.chapters):
+                c.title = f"待译标题{ci}"
+                c.title_translated = None
+            store.save_state(state)
+            with self.assertRaises(RequiredNodeFailed):
+                app.translate_titles(store)
+            node = store.load_state().nodes[NODE_TITLES]
+            self.assertEqual(node.status, "failed_retryable")
+            self.assertEqual(node.failure.kind, "protocol")
+
+            # 恢复：再次 translate_titles → 正常数量 → 成功且标题落盘
+            client2 = FakeClient(handler=self._handler(fail_first=False))
+            Application(cfg, client=client2).translate_titles(store)
+            self.assertEqual(store.load_state().nodes[NODE_TITLES].status, "succeeded")
+            m = store.load_manifest()
+            self.assertTrue(
+                all(c.get("title_translated") for c in m["chapters"]),
+                "重试成功后标题必须落盘",
+            )
+
+
+class TestQaPersistence(unittest.TestCase):
+    """一致性 QA 产物跨调用持久化：tools qa 后 tools report 不丢问题。"""
+
+    @staticmethod
+    def _issue_handler(messages, agent, operation, json_mode):
+        if operation == "consistency.check":
+            return json.dumps(
+                {"issues": [{"type": "terminology", "detail": "译法漂移"}]},
+                ensure_ascii=False,
+            )
+        return routing_handler(messages, agent, operation, json_mode)
+
+    def test_qa_then_report_across_invocations_keeps_issues(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+
+            issues = Application(cfg, client=FakeClient(handler=self._issue_handler)).qa(store)
+            self.assertTrue(issues, "tools qa 应返回问题")
+            # 换新 client（模拟新进程）跑 tools report：仍应拿到持久化的问题
+            report = Application(cfg, client=FakeClient(handler=routing_handler)).report(store)
+            self.assertEqual(
+                report["consistency_issues"],
+                issues,
+                "跨调用 report 不得丢 QA 问题（回退为 []）",
+            )
+
+
+class TestStrictSchemaValidation(unittest.TestCase):
+    """必需节点的严格 schema 校验：缺失键/错误形状 = 协议错误，不是成功空结果。"""
+
+    def test_consistency_missing_key_is_protocol_error(self):
+        from trans_novel.agents.consistency import ConsistencyChecker
+        from trans_novel.glossary.store import GlossaryStore
+        from trans_novel.pipeline.contracts import classify_failure
+
+        def handler(messages, agent, operation, json_mode):
+            if operation == "consistency.check":
+                return json.dumps({"wrong_key": []}, ensure_ascii=False)
+            return routing_handler(messages, agent, operation, json_mode)
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+            glossary = GlossaryStore(store.glossary_path)
+            try:
+                checker = ConsistencyChecker(FakeClient(handler=handler), cfg)
+                checker.src, checker.tgt = "ja", "zh"
+                with self.assertRaises(Exception) as ctx:
+                    checker.check(store, glossary, strict=True)
+                self.assertEqual(
+                    classify_failure(ctx.exception),
+                    "protocol",
+                    "缺失键必须是协议错误（可重试），不是成功空结果",
+                )
+            finally:
+                glossary.close()
+
+
+class TestPolishEnablement(unittest.TestCase):
+    """polish 从禁用切到启用：已译章一次性补润色（不清除/不重译）。"""
+
+    def test_polish_enabled_later_polishes_existing_translations(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.polish = False
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+            ch = store.load_chapter(0)
+            self.assertTrue(all(s.target and s.target.startswith("译") for s in ch.text_segments))
+
+            cfg.pipeline.polish = True
+            client2 = FakeClient(handler=routing_handler)
+            Application(cfg, client=client2).run(txt)
+            ch2 = store.load_chapter(0)
+            self.assertTrue(
+                all(s.target and s.target.startswith("润") for s in ch2.text_segments),
+                "启用 polish 后已译章必须被润色",
+            )
+            self.assertFalse(store.load_progress(0).pending_polish)
+            # 未重译：续跑只补润色
+            translate_calls = [
+                c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
+            ]
+            self.assertEqual(len(translate_calls), 0)
+
+
+class TestReportFailedNodes(unittest.TestCase):
+    """尽力而为节点失败必须出现在 QA 报告里（不能呈现一切正常）。"""
+
+    def test_failed_best_effort_node_visible_in_report(self):
+        from trans_novel.assemble.report import build_report
+        from trans_novel.glossary.store import GlossaryStore
+        from trans_novel.pipeline.state import NODE_MINE_TERMS
+
+        def handler(messages, agent, operation, json_mode):
+            if operation == "prescan.mine_terms" or "术语候选挖掘" in messages[0]["content"]:
+                raise RuntimeError("mining down")
+            return routing_handler(messages, agent, operation, json_mode)
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt)
+            state = store.load_state()
+            self.assertEqual(state.nodes[NODE_MINE_TERMS].status, "failed_permanent")
+            glossary = GlossaryStore(store.glossary_path)
+            try:
+                report = build_report(store, glossary)
+            finally:
+                glossary.close()
+            self.assertGreater(report["summary"]["failed_nodes"], 0)
+            self.assertTrue(
+                any(n["node"] == NODE_MINE_TERMS for n in report["failed_nodes"]),
+                "报告必须列出失败的尽力而为节点",
+            )
 
 
 if __name__ == "__main__":

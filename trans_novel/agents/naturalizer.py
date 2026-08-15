@@ -6,7 +6,7 @@
 关卡③双语忠实度判断（对照源文，防止改写偷改信息）→
 关卡②成对判断（正反两序皆胜才采纳，两次调用最贵放最后）。
 
-作为主流水线章级环节接入（见 orchestrator._translate_chapter，config: pipeline.naturalize），
+作为主流水线章级环节接入（见 pipeline/nodes/translate.py 的 TranslateNode，config: pipeline.naturalize），
 也保留为独立的 `tools naturalize` 命令供单独跑批/补跑。
 """
 
@@ -16,14 +16,14 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from ..glossary.store import GlossaryStore, GlossaryTerm
-from ..ingest.models import KIND_TEXT, Chapter, Segment
-from ..pipeline import lint
-from ..pipeline.backmatter import is_back_matter
-from ..pipeline.runstore import RunStore
-from ..postprocess.punct import normalize_zh
-from . import prompts
-from .base import Agent
+from trans_novel.agents import prompts
+from trans_novel.agents.base import Agent
+from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
+from trans_novel.ingest.models import KIND_TEXT, Chapter, Segment
+from trans_novel.pipeline import checkpoint, lint
+from trans_novel.pipeline.backmatter import is_back_matter
+from trans_novel.pipeline.runstore import RunStore
+from trans_novel.postprocess.punct import normalize_zh
 
 _SCREEN_BATCH_SIZE = 20
 _HAN_RATIO_MIN = 0.2  # 汉字占比阈值：≤ 视为非中文段，跳过
@@ -61,8 +61,12 @@ def candidate_segments(chapter: Chapter) -> list[Segment]:
 class Naturalizer(Agent):
     """审读/改写/成对判断三合一 agent。"""
 
-    def screen(self, texts: list[str]) -> list[dict]:
-        """批量审读中文段，返回 [{index,quote,reason}]（单语，宁缺勿滥）。"""
+    def screen(self, texts: list[str], *, strict: bool = False) -> list[dict]:
+        """批量审读中文段，返回 [{index,quote,reason}]（单语，宁缺勿滥）。
+
+        strict=True（workflow 必需节点用）：provider 失败原样抛出，杜绝“筛查
+        失败却把整章标记为已自然化”的空成功。
+        """
         if not texts:
             return []
         system = prompts.render("naturalize_screen_system")
@@ -77,6 +81,8 @@ class Naturalizer(Agent):
                 default=[],
                 agent="reviewer",
                 operation="naturalize.screen",
+                strict=strict,
+                items_are_dicts=strict,
             )
         )
 
@@ -101,7 +107,7 @@ class Naturalizer(Agent):
         return winner if winner in ("A", "B", "tie") else "tie"
 
     def pairwise_accept(
-        self, orig: str, rewritten: str, executor: "ThreadPoolExecutor | None" = None
+        self, orig: str, rewritten: str, executor: ThreadPoolExecutor | None = None
     ) -> bool:
         """正反两序各判一次；改写版两序皆胜才采纳，tie/负任一次即拒。
 
@@ -142,7 +148,7 @@ def _lint_introduces_new_issue(
     locked_terms: list[GlossaryTerm],
     src_lang: str,
 ) -> bool:
-    """关卡①：与 orchestrator L1013-1020 的 polish 回退用的是相同逻辑——按 issue 类型集合比较。"""
+    """关卡①：与 pipeline/nodes/translate.py 的 polish 回退用的是相同逻辑——按 issue 类型集合比较。"""
     orig_types = {
         it.type
         for it in lint.lint_targets([source], [orig], locked_terms=locked_terms, src_lang=src_lang)
@@ -167,14 +173,17 @@ def naturalize_chapter(
     *,
     dry_run: bool,
     remaining: int | None,
+    strict_screen: bool = False,
 ) -> dict[str, Any]:
     """处理单章，返回统计并按需写回（save_chapter + log_event）。
 
     remaining：本次运行剩余可采纳配额（None=无限）；用尽即停止本章后续审读，控制预算。
-    非 dry_run 时，无论本章是否有改写被采纳，函数末尾都会置
-    chapter.meta["naturalized"] = True 并调用一次 store.save_chapter(chapter)——
-    标记与（可能存在的）改写在同一次保存中一并落盘，避免 caller 二次保存造成的
-    崩溃窗口（改写已落盘但标记未写，续跑重复审读）。dry_run 不置标记、不落盘。
+    strict_screen：workflow 必需节点用，筛查调用 provider 失败原样抛出（整章不落
+    自然化标记）；其余环节（改写/忠实度/成对判断）保持保守回退——失败即拒收该段，
+    属于窄协议恢复，不会把失败伪装成成功。
+    非 dry_run 时，无论本章是否有改写被采纳，函数末尾都会先落盘章节（改写），再
+    store.set_naturalized(ci) 置续跑幂等标记——先章后标，避免"标记已落但改写未落"
+    的崩溃窗口造成静默跳过去腔。dry_run 不置标记、不落盘。
     """
     stats = {
         "screened": 0,
@@ -197,7 +206,7 @@ def naturalize_chapter(
             batch = cands[start : start + _SCREEN_BATCH_SIZE]
             texts = [s.target or "" for s in batch]
             stats["screened"] += len(texts)
-            issues = agent.screen(texts)
+            issues = agent.screen(texts, strict=strict_screen)
             for issue in issues:
                 if remaining is not None and remaining <= 0:
                     break
@@ -218,7 +227,7 @@ def naturalize_chapter(
                 stats["rewritten"] += 1
 
                 if _lint_introduces_new_issue(
-                    seg.source, before, rewritten, locked_terms, config.source_lang
+                    seg.source, before, rewritten, locked_terms, agent.src
                 ):
                     stats["lint_rejected"] += 1
                     agent.client.usage.record_outcome(
@@ -289,8 +298,14 @@ def naturalize_chapter(
                     )
 
     if not dry_run:
-        chapter.meta["naturalized"] = True
+        # 崩溃一致性：改写写章节文件、naturalized 标记写 manifest，两次独立原子写。
+        # 先记检查点日志再落盘，崩溃后由锁内恢复补标记/回滚（不重放改写）。
+        applied = [(e["index"], e["after"]) for e in stats["applied_entries"]]
+        if applied:
+            checkpoint.begin_naturalize(store, ci, applied)
         store.save_chapter(chapter)
+        store.set_naturalized(ci)
+        checkpoint.clear(store)
     return stats
 
 
@@ -322,7 +337,7 @@ def run_naturalize(
     target_indices = chapters if chapters is not None else all_indices
     locked_terms = [t for t in glossary.all_terms() if t.locked]
 
-    totals: dict[str, Any] = {k: 0 for k in _STAT_KEYS}
+    totals: dict[str, Any] = dict.fromkeys(_STAT_KEYS, 0)
     totals["applied_entries"] = []
     remaining = limit
     for ci in target_indices:

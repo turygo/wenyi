@@ -7,9 +7,9 @@
 
 from __future__ import annotations
 
-from ..glossary.store import GlossaryTerm
-from . import prompts
-from .base import Agent
+from trans_novel.agents import prompts
+from trans_novel.agents.base import Agent, WorkflowProtocolError
+from trans_novel.glossary.store import GlossaryTerm
 
 
 class Polisher(Agent):
@@ -20,6 +20,7 @@ class Polisher(Agent):
         *,
         glossary_terms: list[GlossaryTerm] | None = None,
         style: str = "",
+        strict: bool = False,
     ) -> list[str]:
         if not targets:
             return []
@@ -36,8 +37,18 @@ class Polisher(Agent):
             numbered_target=prompts.numbered(targets),
         )
         items = self._ask_json(
-            system, user, key="polished", default=None, agent="editor", operation="polish.batch"
+            system,
+            user,
+            key="polished",
+            default=None,
+            agent="editor",
+            operation="polish.batch",
+            strict=strict,
         )
         if isinstance(items, list) and len(items) == n:
             return [str(x) for x in items]
-        return list(targets)  # 失败/段数不符 → 保守保留原译
+        if strict:
+            # workflow 必需路径：provider/协议失败必须冒泡（runner 落失败态并重试），
+            # 不得伪装成“润色成功”。
+            raise WorkflowProtocolError("polish_count_mismatch")
+        return list(targets)  # 独立/宽松路径：失败/段数不符 → 保守保留原译

@@ -23,7 +23,7 @@ from trans_novel.config import Config
 from trans_novel.ingest.epub_reader import annotate_epub_resource
 from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
 from trans_novel.llm import FakeClient
-from trans_novel.pipeline.orchestrator import Orchestrator
+from trans_novel.pipeline.bootstrap import Application
 
 
 def _chapter_with_template() -> Chapter:
@@ -152,8 +152,24 @@ def _config(state_dir: str, output: dict | None = None):
 
 def _run(input_path, state_dir, output=None):
     cfg = _config(state_dir, output)
-    orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
-    return orch.run(input_path), cfg
+    orch = Application(cfg, client=FakeClient(handler=routing_handler))
+    store = orch.run(input_path)
+    _stamp_formal_prereqs(store)
+    return store, cfg
+
+
+def _stamp_formal_prereqs(store):
+    """直接 writer 单测的正式前置：GOAL_TRANSLATE 不跑 report/consistency，
+    正式 assemble goal 会执行它们——测试按“正式链路已完成”stamp titles/report。
+    backtranslate 抽样策略（sample=0）的 skipped 是 policy-authorized，无需 stamp。
+    """
+    from trans_novel.pipeline.state import NodeState
+
+    state = store.load_state()
+    for node_id in ("titles", "report"):
+        state.nodes.setdefault(node_id, NodeState(node_id=node_id, status="succeeded"))
+    store.save_state(state)
+    return store
 
 
 class TestBuildEpubFromChaptersBilingual(unittest.TestCase):
@@ -238,13 +254,13 @@ class TestOutputRuntimeDefaults(unittest.TestCase):
         self.assertEqual(cfg.output.bilingual_order, "target_first")
 
 
-class TestOrchestratorMultiOutput(unittest.TestCase):
+class TestMultiOutput(unittest.TestCase):
     def test_default_config_produces_mono_and_bilingual(self):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"))  # 不传 output -> 默认 mono+bilingual 都开
-            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+            orch = Application(cfg, client=FakeClient(handler=routing_handler))
             result = orch.run_all(txt, out_format="epub")
             outputs = result["outputs"]
             self.assertEqual(len(outputs), 2)
@@ -259,7 +275,7 @@ class TestOrchestratorMultiOutput(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
             cfg = _config(os.path.join(d, "state"), output={"bilingual": False})
-            orch = Orchestrator(cfg, client=FakeClient(handler=routing_handler))
+            orch = Application(cfg, client=FakeClient(handler=routing_handler))
             result = orch.run_all(txt, out_format="epub")
             outputs = result["outputs"]
             self.assertEqual(len(outputs), 1)
@@ -311,7 +327,7 @@ class TestCliBilingualFlags(unittest.TestCase):
 
         with (
             patch("trans_novel.cli._load_config", return_value=cfg),
-            patch("trans_novel.pipeline.orchestrator.Orchestrator", FakeOrchestrator),
+            patch("trans_novel.pipeline.bootstrap.Application", FakeOrchestrator),
             patch("trans_novel.cli.os.path.isfile", return_value=True),
         ):
             result = CliRunner().invoke(app, ["translate", "input.txt", "--no-mono", "--bilingual"])

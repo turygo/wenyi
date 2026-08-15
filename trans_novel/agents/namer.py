@@ -3,18 +3,18 @@
 源文侧挖出候选（见 glossary/miner.py）后，一次性裁定全书统一译名——取代译后
 逐批抽取，避免把首译直译固化成铁律、避免普通名词/一次性修辞污染术语库。
 有权丢弃不值得入表的候选（普通名词短语、亲属称谓、引文/文献标题、一次性习语）。
-产物写入术语库后，翻译期只读（见 orchestrator._build_understanding）。
+产物写入术语库后，翻译期只读（见 pipeline/nodes/prescan.py 的预扫节点）。
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable
 
-from ..glossary.miner import Candidate
-from ..glossary.store import TYPE_PERSON, GlossaryTerm
-from . import prompts
-from .base import Agent
+from trans_novel.agents import prompts
+from trans_novel.agents.base import Agent
+from trans_novel.glossary.miner import Candidate
+from trans_novel.glossary.store import TYPE_PERSON, GlossaryTerm
 
 # 候选分组的字符预算：组内一次模型调用，量级参考 agents/synopsis.py 的 _REDUCE_BUDGET。
 _GROUP_CHAR_BUDGET = 6000
@@ -49,7 +49,7 @@ class CastNamer(Agent):
 
         各组相互独立（同一 existing 快照、无跨组 reduce）→ 按 concurrency 并行，
         输出按输入组序合并，与串行完全一致。on_progress(done, total) 按完成组数回调
-        （主线程触发，供进度条使用）。任一组异常整体冒泡，交 orchestrator 捕获后
+        （主线程触发，供进度条使用）。任一组异常整体冒泡，交由 workflow 节点捕获后
         放弃本次落 term_mining_done（下次续跑重试），绝不静默吞成空定名。
         """
         if not candidates:
@@ -106,7 +106,7 @@ class CastNamer(Agent):
             candidates=_render_candidates(group),
         )
         # 不设 default：一次模型调用失败若被兜成空列表，term_mining_done 会静默永久落盘，
-        # 续跑再也不重试——异常整体冒泡，交由 orchestrator 捕获并放弃本次落标记。
+        # 续跑再也不重试——异常整体冒泡，交由 workflow 节点捕获并放弃本次落标记。
         raw = self._ask_json(
             system, user, key="terms", agent="analyst", operation="prescan.name_terms"
         )

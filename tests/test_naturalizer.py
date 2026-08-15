@@ -21,6 +21,7 @@ from trans_novel.config import Config
 from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.runstore import RunStore
+from trans_novel.pipeline.state import ChapterIndex, ChapterProgress, RunIdentity, RunState
 from trans_novel.postprocess.punct import normalize_zh
 
 
@@ -39,19 +40,23 @@ def _seg(
 
 def _make_store(d: str, chapters: list[Chapter]) -> RunStore:
     store = RunStore(os.path.join(d, "state"))
-    manifest = {
-        "title": "T",
-        "fmt": "text",
-        "source_path": "",
-        "meta": {},
-        "source_lang": "en",
-        "target_lang": "zh",
-        "chapters": [
-            {"index": c.index, "title": c.title, "href": None, "status": "pending"}
-            for c in chapters
-        ],
-    }
-    store.save_manifest(manifest)
+    store.save_state(
+        RunState(
+            identity=RunIdentity(
+                source_bytes_sha256="test-hash",
+                run_input_schema_version=1,
+                source_lang="en",
+                target_lang="zh",
+            ),
+            title="T",
+            fmt="text",
+            source_path="",
+            source_lang="en",
+            target_lang="zh",
+            chapters=[ChapterIndex(index=c.index, title=c.title, href=None) for c in chapters],
+            progress={c.index: ChapterProgress() for c in chapters},
+        )
+    )
     for c in chapters:
         store.save_chapter(c)
     return store
@@ -220,7 +225,7 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
             self.assertEqual(seg1.target, ORIG1, "lint 拒绝后原译必须保留")
             self.assertEqual(seg5.target, normalize_zh(REWRITE5))
             self.assertTrue(
-                reloaded.meta.get("naturalized"),
+                store.load_progress(0).naturalized,
                 "非 dry_run 后应由 naturalize_chapter 自行落盘 naturalized 标记，"
                 "不依赖 caller 二次保存",
             )
@@ -285,7 +290,7 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
             seg1 = next(s for s in reloaded.segments if s.index == 1)
             self.assertEqual(seg5.target, ORIG5, "dry-run 不落盘")
             self.assertEqual(seg1.target, ORIG1)
-            self.assertFalse(reloaded.meta.get("naturalized"), "dry_run 不置 naturalized 标记")
+            self.assertFalse(store.load_progress(0).naturalized, "dry_run 不置 naturalized 标记")
             events = _events(store)
             self.assertFalse(any(e["event"] == "naturalize_applied" for e in events))
             self.assertFalse(any(e["event"] == "naturalize_rejected" for e in events))
@@ -413,7 +418,7 @@ class TestFidelityGate(unittest.TestCase):
             reloaded = store.load_chapter(0)
             self.assertEqual(reloaded.segments[0].target, ORIG5, "拒绝后原译必须保留")
             self.assertTrue(
-                reloaded.meta.get("naturalized"),
+                store.load_progress(0).naturalized,
                 "即使无改写被采纳，非 dry_run 也应置 naturalized 标记并落盘",
             )
             events = _events(store)
@@ -454,7 +459,7 @@ class TestFidelityGate(unittest.TestCase):
 
             self.assertEqual(stats["fidelity_rejected"], 1)
             self.assertEqual(stats["applied"], 0)
-            self.assertTrue(store.load_chapter(0).meta.get("naturalized"))
+            self.assertTrue(store.load_progress(0).naturalized)
 
     def test_missing_field_rejects(self):
         with tempfile.TemporaryDirectory() as d:
@@ -469,7 +474,7 @@ class TestFidelityGate(unittest.TestCase):
 
             self.assertEqual(stats["fidelity_rejected"], 1)
             self.assertEqual(stats["applied"], 0)
-            self.assertTrue(store.load_chapter(0).meta.get("naturalized"))
+            self.assertTrue(store.load_progress(0).naturalized)
 
 
 class _FakeGlossary:

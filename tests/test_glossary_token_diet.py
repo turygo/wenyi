@@ -28,7 +28,7 @@ from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.backmatter import is_back_matter
-from trans_novel.pipeline.orchestrator import Orchestrator
+from trans_novel.pipeline.bootstrap import Application
 
 
 def _cfg(
@@ -119,7 +119,7 @@ class TestBackMatterFullNoExtraction(unittest.TestCase):
             txt = os.path.join(d, "novel.txt")
             _write(txt, doc)
             cfg = _cfg(os.path.join(d, "state"), back_matter="full")
-            store = Orchestrator(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
 
             m = store.load_manifest()
             bm = next(c["index"] for c in m["chapters"] if is_back_matter(c["title"]))
@@ -176,7 +176,7 @@ class TestBatchExtractionPruning(unittest.TestCase):
                 book_understanding=False,
                 consistency_qa=False,
             )
-            orch = Orchestrator(cfg, client=FakeClient(handler=self._extractor_returns_nothing))
+            orch = Application(cfg, client=FakeClient(handler=self._extractor_returns_nothing))
             store = orch.prepare(txt)
             g = GlossaryStore(store.glossary_path)
             g.upsert_term(GlossaryTerm(source="红猫", target="红色猫", type="术语"))
@@ -184,7 +184,7 @@ class TestBatchExtractionPruning(unittest.TestCase):
             g.close()
 
             client = FakeClient(handler=self._extractor_returns_nothing)
-            Orchestrator(cfg, client=client).run(txt)
+            Application(cfg, client=client).run(txt)
 
             # 内联抽取：原文只含单个词条那批 → 分别定位；章末兜底原文含两者 → 天然排除。
             cat_only = dog_only = None
@@ -235,7 +235,7 @@ class TestBatchSnapshotFreeze(unittest.TestCase):
                 book_understanding=False,
                 consistency_qa=False,
             )
-            orch = Orchestrator(cfg, client=FakeClient(handler=handler))
+            orch = Application(cfg, client=FakeClient(handler=handler))
             store = orch.prepare(txt)
             g = GlossaryStore(store.glossary_path)
             # 章内每段都含的基准词：让术语块非空、可作逐字节比较的稳定内容。
@@ -243,7 +243,7 @@ class TestBatchSnapshotFreeze(unittest.TestCase):
             g.close()
 
             client = FakeClient(handler=handler)
-            Orchestrator(cfg, client=client).run(txt)
+            Application(cfg, client=client).run(txt)
 
             blocks: dict[str, str] = {}
             for prompt in _lit_prompts(client):

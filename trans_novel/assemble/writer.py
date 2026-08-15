@@ -16,11 +16,11 @@ import zipfile
 
 from bs4 import BeautifulSoup, Comment, Tag, UnicodeDammit
 
-from ..ingest.epub_toc import nav_root_list, nav_toc_scopes
-from ..ingest.fb2_reader import read_fb2_binaries
-from ..ingest.models import KIND_HEADING, Chapter, Segment
-from ..pipeline.runstore import RunStore
-from ..postprocess.punct import normalize_heading_numbering
+from trans_novel.ingest.epub_toc import nav_root_list, nav_toc_scopes
+from trans_novel.ingest.fb2_reader import read_fb2_binaries
+from trans_novel.ingest.models import KIND_HEADING, Chapter, Segment
+from trans_novel.pipeline.runstore import RunStore
+from trans_novel.postprocess.punct import normalize_heading_numbering
 
 _ILLEGAL_FN = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 _HTML_EXTS = (".xhtml", ".html", ".htm")
@@ -130,7 +130,7 @@ def _merged_paragraphs(chapter: Chapter) -> list[tuple[str, str, str]]:
             normalize_heading_numbering("".join(p)) if k == KIND_HEADING else "".join(p),
             "".join(sr),
         )
-        for k, p, sr in zip(kinds, paras, srcs)
+        for k, p, sr in zip(kinds, paras, srcs, strict=False)
     ]
 
 
@@ -975,6 +975,11 @@ def assemble(
     bilingual=True 时额外输出原文（淡背景块），order 控制译文/原文先后。
     """
     m = store.load_manifest()
+    # 唯一权威就绪门禁：身份核验 + 完整度检查。不完整状态直接拒绝，
+    # 绝不静默回退成“部分原文 + 部分译文”的混合产物。
+    from trans_novel.pipeline.readiness import ensure_assemble_ready
+
+    ensure_assemble_ready(store, source_path)
     if out_format == "txt":
         out_path = out_path or _default_out(source_path, "txt", "", bilingual=bilingual)
         return _assemble_text(store, out_path, bilingual=bilingual, order=order)

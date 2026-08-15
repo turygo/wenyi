@@ -11,8 +11,8 @@
 
 from __future__ import annotations
 
-from . import prompts
-from .base import Agent
+from trans_novel.agents import prompts
+from trans_novel.agents.base import Agent
 
 # 归并时单次喂入的各章梗概字符预算；超过则分组先归并再合并。
 _REDUCE_BUDGET = 12000
@@ -21,6 +21,13 @@ _REDUCE_BUDGET = 12000
 class Synopsizer(Agent):
     def digest_chapter(self, source_text: str) -> str:
         """把单章源文压成一段中文梗概；空文本或失败返回空串。"""
+        return self._digest(source_text, strict=False)
+
+    def digest_chapter_strict(self, source_text: str) -> str:
+        """workflow 必需节点用：provider 失败原样抛出，绝不回退空串。"""
+        return self._digest(source_text, strict=True)
+
+    def _digest(self, source_text: str, *, strict: bool) -> str:
         if not source_text.strip():
             return ""
         system = prompts.render("chapter_digest_system", src=self.src, tgt=self.tgt)
@@ -29,20 +36,32 @@ class Synopsizer(Agent):
         )
         # 机械任务（免思考路由）；梗概 ≤200 字，上限留足裕量防输出失控
         return self._ask_text(
-            system, user, max_tokens=600, agent="preparer", operation="prescan.digest"
+            system,
+            user,
+            max_tokens=600,
+            agent="preparer",
+            operation="prescan.digest",
+            strict=strict,
         )
 
     def book_synopsis(self, digests: list[str], analysis_brief: str, cast: str = "") -> str:
         """把各章梗概 + 前期分析 + 人物定名表归并成全书概览。超长则分组 map-reduce。"""
+        return self._synopsis(digests, analysis_brief, cast, strict=False)
+
+    def book_synopsis_strict(self, digests: list[str], analysis_brief: str, cast: str = "") -> str:
+        """workflow 必需节点用：provider 失败原样抛出，绝不回退空串。"""
+        return self._synopsis(digests, analysis_brief, cast, strict=True)
+
+    def _synopsis(self, digests: list[str], analysis_brief: str, cast: str, *, strict: bool) -> str:
         items = [d.strip() for d in digests if d and d.strip()]
         if not items:
             return ""
         while True:
             groups = self._group(items, _REDUCE_BUDGET)
             if len(groups) == 1:
-                return self._synth(groups[0], analysis_brief, cast)
+                return self._synth(groups[0], analysis_brief, cast, strict=strict)
             # 多组：每组先归并为一段较粗的概览，再进入下一轮归并
-            items = [self._synth(g, analysis_brief, cast) for g in groups]
+            items = [self._synth(g, analysis_brief, cast, strict=strict) for g in groups]
             items = [s for s in items if s.strip()]
             if not items:
                 return ""
@@ -64,7 +83,9 @@ class Synopsizer(Agent):
             groups.append(cur)
         return groups
 
-    def _synth(self, digests: list[str], analysis_brief: str, cast: str = "") -> str:
+    def _synth(
+        self, digests: list[str], analysis_brief: str, cast: str = "", *, strict: bool = False
+    ) -> str:
         numbered = "\n".join(f"[{i}] {d}" for i, d in enumerate(digests))
         system = prompts.render("book_synopsis_system", src=self.src, tgt=self.tgt)
         user = prompts.render(
@@ -77,5 +98,10 @@ class Synopsizer(Agent):
         )
         # 概览 ≤500 字，机械任务路由 + 上限
         return self._ask_text(
-            system, user, max_tokens=1200, agent="preparer", operation="prescan.book_synopsis"
+            system,
+            user,
+            max_tokens=1200,
+            agent="preparer",
+            operation="prescan.book_synopsis",
+            strict=strict,
         )

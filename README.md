@@ -215,7 +215,7 @@ trans_novel/
   llm/          LLM 抽象接口、provider factory、内置 providers、FakeClient
   glossary/     SQLite 术语库、源文候选挖掘、译后抽取（可选）、冲突处理
   agents/       分析、翻译、审校、润色、定名、一致性、提示词
-  pipeline/     编排器、断点状态、滚动上下文、确定性 lint、校验
+  pipeline/     workflow（声明式节点/planner/runner）、断点状态、滚动上下文、确定性 lint、校验
   postprocess/  标点规范化
   assemble/     EPUB/TXT 回填导出、QA 报告
 tests/          离线测试

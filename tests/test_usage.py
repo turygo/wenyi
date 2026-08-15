@@ -25,7 +25,7 @@ from trans_novel.llm.providers.fake import FakeClient
 from trans_novel.llm.providers.transport import OpenAICompatibleTransport
 from trans_novel.llm.retrying import EmptyResponseError
 from trans_novel.llm.usage import UsageTracker, merge_usage_summaries, usage_delta
-from trans_novel.pipeline.orchestrator import Orchestrator
+from trans_novel.pipeline.bootstrap import Application
 from trans_novel.pipeline.runstore import RunStore
 
 
@@ -374,15 +374,15 @@ class TestEmptyResponseAccounting(unittest.TestCase):
         with (
             patch("trans_novel.llm.providers.transport.wait_exponential", return_value=wait_none()),
             patch("trans_novel.llm.providers.transport._MAX_RETRIES", 1),
+            self.assertRaises(EmptyResponseError),
         ):
-            with self.assertRaises(EmptyResponseError):
-                t.complete(
-                    [{"role": "user", "content": "x"}],
-                    ModelRef("deepseek", "m1"),
-                    stage="Translator",
-                    agent="translator",
-                    operation="translate.batch",
-                )
+            t.complete(
+                [{"role": "user", "content": "x"}],
+                ModelRef("deepseek", "m1"),
+                stage="Translator",
+                agent="translator",
+                operation="translate.batch",
+            )
         summary = tracker.summary()
         self.assertEqual(summary["by_stage"]["Translator"]["calls"], 2)
         self.assertEqual(summary["by_stage"]["Translator"]["total_tokens"], 9)
@@ -518,13 +518,13 @@ class TestUsageDeltaAndMerge(unittest.TestCase):
 
 
 class TestUsageIncrementalPersistence(unittest.TestCase):
-    def test_usage_accumulates_across_orchestrators_for_one_book(self):
+    def test_usage_accumulates_across_applications_for_one_book(self):
         with tempfile.TemporaryDirectory() as d:
             store = RunStore(os.path.join(d, "state", "book"))
             config = Config.from_dict({"llm": fake_llm_dict()})
 
             first_client = FakeClient()
-            first = Orchestrator(config, client=first_client)
+            first = Application(config, client=first_client)
             first_client.usage.record(
                 provider="fake",
                 model_ref=ModelRef("fake", "p"),
@@ -532,16 +532,16 @@ class TestUsageIncrementalPersistence(unittest.TestCase):
                 operation="translate.batch",
                 usage=_make_usage(prompt_tokens=100, completion_tokens=20, total_tokens=120),
             )
-            cumulative = first._flush_usage(store, scope="translate")
+            cumulative = first.flush_usage(store, scope="translate")
             self.assertEqual(cumulative["totals"]["total_tokens"], 120)
 
             # 同一进程再次 flush 没有新增调用，不能重复累计。
-            unchanged = first._flush_usage(store, scope="pipeline")
+            unchanged = first.flush_usage(store, scope="pipeline")
             self.assertEqual(unchanged["totals"]["total_tokens"], 120)
 
-            # 模拟 resume：新 client / Orchestrator 的增量继续累加到同一本书。
+            # 模拟 resume：新 client / Application 的增量继续累加到同一本书。
             resumed_client = FakeClient()
-            resumed = Orchestrator(config, client=resumed_client)
+            resumed = Application(config, client=resumed_client)
             resumed_client.usage.record(
                 provider="fake",
                 model_ref=ModelRef("fake", "p"),
@@ -549,7 +549,7 @@ class TestUsageIncrementalPersistence(unittest.TestCase):
                 operation="polish.batch",
                 usage=_make_usage(prompt_tokens=40, completion_tokens=10, total_tokens=50),
             )
-            cumulative = resumed._flush_usage(store, scope="translate")
+            cumulative = resumed.flush_usage(store, scope="translate")
 
             self.assertEqual(cumulative["totals"]["total_tokens"], 170)
             self.assertEqual(cumulative["totals"]["calls"], 2)
@@ -564,7 +564,7 @@ class TestUsageIncrementalPersistence(unittest.TestCase):
     def test_operation_only_failure_persists_and_second_flush_does_not_duplicate(self):
         """由 Agent 的 default 兜底处理的失败调用：totals/by_stage 全零（无成功响应），
         但 by_agent/by_operation 中的 attempts/failed_attempts/logical_calls 仍会增长——
-        _flush_usage 不得因 totals.calls==0 就跳过持久化。"""
+        flush_usage 不得因 totals.calls==0 就跳过持久化。"""
         from trans_novel.agents.base import Agent
 
         with tempfile.TemporaryDirectory() as d:
@@ -575,7 +575,7 @@ class TestUsageIncrementalPersistence(unittest.TestCase):
                 raise RuntimeError("model down")
 
             client = FakeClient(handler=_boom)
-            orch = Orchestrator(config, client=client)
+            orch = Application(config, client=client)
             agent = Agent(client, config)
 
             result = agent._ask_json(
@@ -592,7 +592,7 @@ class TestUsageIncrementalPersistence(unittest.TestCase):
                 client.usage_summary()["by_agent"]["translator"]["attempts"], before["attempts"]
             )
 
-            cumulative = orch._flush_usage(store, scope="translate")
+            cumulative = orch.flush_usage(store, scope="translate")
             persisted = store.load_usage()
             self.assertIsNotNone(persisted)
             assert persisted is not None
@@ -612,7 +612,7 @@ class TestUsageIncrementalPersistence(unittest.TestCase):
             )
 
             # 第二次 flush：没有新调用，增量为 0，不得重复累加或再次写盘造成翻倍。
-            unchanged = orch._flush_usage(store, scope="translate")
+            unchanged = orch.flush_usage(store, scope="translate")
             self.assertEqual(unchanged, cumulative)
             self.assertEqual(store.load_usage(), cumulative)
 

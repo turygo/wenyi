@@ -1,0 +1,386 @@
+"""章级质量节点：naturalize / review / backtranslate。
+
+- naturalize：去翻译腔闭环（三道关卡），幂等靠进度 naturalized 标记；
+- review：整章分块审校；autofix_severe 时同步并含严重项定向重译（写回正文），
+  否则异步提交（独立 review_executor 防嵌套死锁），结果由 runner 排干后
+  finish() 写回；协议错误只做块内恢复，provider 异常原样冒泡；
+- backtranslate：按采样率回译抽检；rate=0 时清残留回译问题并收尾本章
+  （章链末节点，finalize_chapter）。
+"""
+
+from __future__ import annotations
+
+import random
+
+from trans_novel.agents.naturalizer import naturalize_chapter
+from trans_novel.agents.reviewer import ReviewOutputError
+from trans_novel.config import Config
+from trans_novel.glossary.store import GlossaryStore
+from trans_novel.pipeline import checks
+from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
+from trans_novel.pipeline.fingerprints import (
+    backtranslate_input_fingerprint,
+    fast_model_profile,
+    model_profile,
+    naturalize_input_fingerprint,
+    review_input_fingerprint,
+)
+from trans_novel.pipeline.nodes.common import chapter_term_snapshot
+from trans_novel.pipeline.state import (
+    NODE_BACKTRANSLATE,
+    NODE_NATURALIZE,
+    NODE_REVIEW,
+    SCOPE_CHAPTER,
+)
+from trans_novel.postprocess.punct import normalize_zh
+
+
+class NaturalizeNode:
+    """去翻译腔闭环：审读 → 改写 → 三道关卡 → 写回（幂等：已处理过则跳过）。"""
+
+    node_id = NODE_NATURALIZE
+    scope = SCOPE_CHAPTER
+
+    def __init__(self, *, naturalizer, glossary: GlossaryStore, config: Config):
+        self.naturalizer = naturalizer
+        self.glossary = glossary
+        self.config = config
+
+    def execute(self, request: NodeRequest) -> NodeOutcome:
+        ci = request.ci
+        store = request.store
+        fp = naturalize_input_fingerprint(
+            "\n".join(s.source for s in store.load_chapter(ci).text_segments),
+            punctuation_normalize=self.config.punctuation_normalize,
+            model=model_profile(self.config),
+        )
+        if not self.config.pipeline.naturalize:
+            return NodeOutcome(fingerprint=fp)
+        progress = store.load_progress(ci)
+        if progress.naturalized:
+            return NodeOutcome(fingerprint=fp)  # 幂等：续跑不重复
+        chapter = store.load_chapter(ci)
+        glossary = self.glossary
+        term_snapshot = chapter_term_snapshot(glossary, chapter.text_segments, self.config)
+        locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
+        naturalize_chapter(
+            self.naturalizer,
+            chapter,
+            ci,
+            request.total_chapters,
+            locked,
+            self.config,
+            store,
+            dry_run=False,
+            remaining=None,
+            strict_screen=True,  # 筛查失败必须冒泡，不得把整章标记为已自然化
+        )
+        return NodeOutcome(fingerprint=fp)
+
+
+class ReviewNode:
+    """整章审校：同步（autofix_severe）或异步（review_pending 持久标记 + finish 排干）。"""
+
+    node_id = NODE_REVIEW
+    scope = SCOPE_CHAPTER
+
+    def __init__(
+        self,
+        *,
+        reviewer,
+        translator,
+        glossary: GlossaryStore,
+        config: Config,
+        style_brief: str,
+    ):
+        self.reviewer = reviewer
+        self.translator = translator
+        self.glossary = glossary
+        self.config = config
+        self.style_brief = style_brief
+
+    def execute(self, request: NodeRequest) -> NodeOutcome:
+        ci = request.ci
+        store = request.store
+        fp = review_input_fingerprint(
+            "\n".join(s.source for s in store.load_chapter(ci).text_segments),
+            autofix_severe=self.config.pipeline.autofix_severe,
+            review_output_retries=self.config.pipeline.review_output_retries,
+            model=fast_model_profile(self.config),
+        )
+        if not self.config.pipeline.review:
+            return NodeOutcome(fingerprint=fp)  # 不应到达（planner 已标记 skipped）
+        chapter = store.load_chapter(ci)
+        pairs = [(s.source, s.target or "") for s in chapter.text_segments]
+        glossary = self.glossary
+        term_snapshot = chapter_term_snapshot(glossary, chapter.text_segments, self.config)
+        # 同步/autofix 路径按“当前策略 + 计划失效”决定，而不是旧章完成位：
+        # autofix 从关闭切到启用时，已完成的章被重新规划 → 必须走同步严重项重译；
+        # review_pending 标记（真正在途的异步审校）保持异步续跑路径。
+        review_pending = store.load_progress(ci).review_pending
+        if self.config.pipeline.autofix_severe and not review_pending:
+            # 严重项定向重译要写回正文，必须留在关键路径上，完全同步（现状不变）。
+            new_issues = self.review_chapter(pairs, list(term_snapshot), request.review_executor)
+            store.log_event(
+                "chapter_reviewed",
+                chapter=ci,
+                issue_count=len(new_issues),
+                issues=new_issues,
+            )
+            style = self.style_brief
+            book_synopsis = (store.load_analysis() or {}).get("book_synopsis", "")
+            chapter_digest = store.load_progress(ci).source_digest
+            self._autofix_severe(
+                chapter.text_segments,
+                new_issues,
+                term_snapshot,
+                style,
+                book_synopsis,
+                chapter_digest,
+                store=store,
+                chapter_index=ci,
+            )
+            # 先落盘正文改动，再标 fixed 并保存审校项——崩溃窗口不出现“报告称已修复
+            # 但正文仍是修复前译文”的状态。
+            store.save_chapter(chapter)
+            for it in new_issues:
+                it["chapter"] = ci
+                it.setdefault("fixed", False)
+                it["stage"] = "review"
+            progress = store.load_progress(ci)
+            lint_kept = [i for i in progress.review_issue_dicts() if i.get("stage") == "lint"]
+            progress.set_review_issue_dicts(lint_kept + new_issues)
+            store.save_progress(ci, progress)
+            return NodeOutcome(findings_count=len(new_issues), fingerprint=fp)
+        # 异步：提交共享线程池，保持 review_pending 持久标记；崩溃续跑据此补跑。
+        fut = request.executor.submit(
+            self.review_chapter, pairs, list(term_snapshot), request.review_executor
+        )
+        store.set_review_pending(ci, True)
+        return NodeOutcome(async_handle=fut, fingerprint=fp)
+
+    def finish(self, request: NodeRequest, handle) -> None:
+        """异步审校排干：合并 lint 项、清 review_pending、发 chapter_reviewed。"""
+        ci = request.ci
+        store = request.store
+        new_issues = handle.result()
+        for it in new_issues:
+            it["chapter"] = ci
+            it.setdefault("fixed", False)
+            it["stage"] = "review"
+        progress = store.load_progress(ci)
+        lint_kept = [i for i in progress.review_issue_dicts() if i.get("stage") == "lint"]
+        progress.set_review_issue_dicts(lint_kept + new_issues)
+        store.save_progress(ci, progress)
+        store.set_review_pending(ci, False)
+        store.log_event(
+            "chapter_reviewed",
+            chapter=ci,
+            issue_count=len(new_issues),
+            issues=new_issues,
+        )
+
+    # ── 整章分块审校 ──────────────────────────────────────────────────────
+    def review_chapter(self, pairs: list[tuple[str, str]], terms, review_executor) -> list[dict]:
+        """整章分块审校，并在协议错误时递归拆分或重试单段。
+
+        顶层块按源文字符预算连续打包；chunk 0 先完成以预热 provider 前缀缓存，
+        其余顶层块再并发提交，并按源文顺序合并结果。
+        """
+        budget = self.config.segment.max_chars_per_batch * 3
+        chunks = self._pack_contiguous(pairs, budget)
+        warm = len(chunks) > 1
+        results: list[list[dict]] = [[] for _ in chunks]
+        if warm:
+            first = chunks[0]
+            results[0] = review_executor.submit(self._review_chunk, first, terms).result()
+        pending = chunks[1:] if warm else chunks
+        offset = 1 if warm else 0
+        futures = [review_executor.submit(self._review_chunk, chunk, terms) for chunk in pending]
+        for i, fut in enumerate(futures):
+            results[offset + i] = fut.result()
+
+        issues: list[dict] = []
+        base = 0
+        for chunk, result in zip(chunks, results, strict=False):
+            for it in result:
+                idx = it.get("index")
+                if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx < len(chunk):
+                    raise ReviewOutputError("invalid_issue_index")
+                it["index"] = base + idx
+                issues.append(it)
+            base += len(chunk)
+        return issues
+
+    def _review_chunk(self, chunk: list[tuple[str, str]], terms) -> list[dict]:
+        """审校一个顶层块；仅协议错误进入递归恢复。"""
+        try:
+            return self.reviewer.review([s for s, _ in chunk], [t for _, t in chunk], terms)
+        except ReviewOutputError as exc:
+            return self._recover_review_chunk(chunk, terms, exc)
+
+    def _recover_review_chunk(
+        self,
+        chunk: list[tuple[str, str]],
+        terms,
+        first_error: ReviewOutputError,
+    ) -> list[dict]:
+        """恢复一个已失败的块，返回相对该块起点的本地索引。"""
+        if len(chunk) > 1:
+            middle = len(chunk) // 2
+            left = self._review_chunk(chunk[:middle], terms)
+            right = self._review_chunk(chunk[middle:], terms)
+            for issue in right:
+                issue["index"] += middle
+            return left + right
+
+        last_error = first_error
+        for _ in range(self.config.pipeline.review_output_retries):
+            try:
+                return self.reviewer.review([s for s, _ in chunk], [t for _, t in chunk], terms)
+            except ReviewOutputError as exc:
+                last_error = exc
+        raise last_error
+
+    @staticmethod
+    def _pack_contiguous(pairs: list[tuple[str, str]], budget: int) -> list[list]:
+        """按源文字符预算把 (source, target) 对保序打包成若干连续块。"""
+        chunks: list[list] = []
+        cur: list = []
+        size = 0
+        for p in pairs:
+            src = p[0]
+            if cur and size + len(src) > budget:
+                chunks.append(cur)
+                cur, size = [], 0
+            cur.append(p)
+            size += len(src)
+        if cur:
+            chunks.append(cur)
+        return chunks
+
+    _SEVERE_TYPES = ("missing", "mistranslation")
+
+    def _autofix_severe(
+        self,
+        text_segs,
+        issues,
+        terms,
+        style,
+        book_synopsis: str = "",
+        chapter_digest: str = "",
+        *,
+        store=None,
+        chapter_index: int | None = None,
+    ) -> None:
+        """对审校严重项（漏译/误译）带审校意见定向重译，每段最多一次。
+
+        采纳条件 = 重译非空且过长度校验：采纳则标点规范化后更新 seg.target 并标
+        fixed=True；不采纳保持 fixed=False 留人工。
+        """
+        by_seg: dict[int, list[dict]] = {}
+        for it in issues:
+            if it.get("type") in self._SEVERE_TYPES:
+                by_seg.setdefault(it["index"], []).append(it)
+        for idx, seg_issues in sorted(by_seg.items()):
+            seg = text_segs[idx]
+            before = "\n".join(text_segs[j].target or "" for j in range(max(0, idx - 2), idx))
+            after = "\n".join(
+                text_segs[j].target or "" for j in range(idx + 1, min(len(text_segs), idx + 3))
+            )
+            feedback = "；".join(
+                f"{it.get('detail', '')}（建议：{it.get('suggestion', '')}）" for it in seg_issues
+            )
+            new_t = self.translator.retranslate_with_feedback(
+                seg.source,
+                feedback=feedback,
+                operation="translate.review_fix",
+                glossary_terms=terms,
+                style=style,
+                context_before=before,
+                context_after=after,
+                book_synopsis=book_synopsis,
+                chapter_digest=chapter_digest,
+            )
+            accepted = bool(new_t) and not checks.length_flags([seg.source], [new_t])
+            self.translator.client.usage.record_outcome(
+                "translator", "translate.review_fix", accepted=accepted
+            )
+            if accepted:
+                if self.config.punctuation_normalize:
+                    new_t = normalize_zh(new_t)
+                old_t = seg.target
+                seg.target = new_t
+                for it in seg_issues:
+                    it["fixed"] = True
+                if store is not None:
+                    store.log_event(
+                        "autofix_applied",
+                        chapter=chapter_index,
+                        index=idx,
+                        source=seg.source,
+                        before=old_t,
+                        after=new_t,
+                        issues=seg_issues,
+                    )
+            elif store is not None:
+                store.log_event(
+                    "autofix_rejected",
+                    chapter=chapter_index,
+                    index=idx,
+                    source=seg.source,
+                    before=seg.target,
+                    proposed=new_t,
+                    issues=seg_issues,
+                )
+
+
+class BacktranslateNode:
+    """回译抽检（rate=0 时仅清残留回译问题）；章链末节点，负责收尾 done。"""
+
+    node_id = NODE_BACKTRANSLATE
+    scope = SCOPE_CHAPTER
+
+    def __init__(self, *, backtrans, config: Config):
+        self.backtrans = backtrans
+        self.config = config
+
+    def execute(self, request: NodeRequest) -> NodeOutcome:
+        ci = request.ci
+        store = request.store
+        chapter = store.load_chapter(ci)
+        text_segs = chapter.text_segments
+        bt_samples: list[tuple[str, str]] = []
+        rate = self.config.pipeline.backtranslate_sample
+        if rate > 0:
+            for seg in text_segs:
+                if random.random() < rate:
+                    bt_samples.append((seg.source, seg.target or ""))
+        bt_issues: list[dict] = []
+        if bt_samples:
+            srcs = [a for a, _ in bt_samples]
+            tgts = [b for _, b in bt_samples]
+            for it in self.backtrans.check(srcs, tgts, strict=True):
+                it["chapter"] = ci
+                bt_issues.append(it)
+            store.log_event(
+                "chapter_backtranslation_checked",
+                chapter=ci,
+                sample_count=len(bt_samples),
+                issue_count=len(bt_issues),
+                issues=bt_issues,
+            )
+        progress = store.load_progress(ci)
+        progress.set_backtranslation_issue_dicts(bt_issues)
+        store.save_progress(ci, progress)
+        if request.finalize_chapter:
+            store.log_event("usage_snapshot", chapter=ci, **self.backtrans.client.usage_summary())
+        fp = backtranslate_input_fingerprint(
+            "\n".join(s.source for s in text_segs),
+            backtranslate_sample=rate,
+            model=fast_model_profile(self.config),
+        )
+        return NodeOutcome(findings_count=len(bt_issues), fingerprint=fp)
+
+
+__all__ = ["BacktranslateNode", "NaturalizeNode", "ReviewNode"]

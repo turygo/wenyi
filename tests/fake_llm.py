@@ -83,6 +83,14 @@ def routing_handler(messages, agent, operation, json_mode):
             ensure_ascii=False,
         )
 
+    if "全书一致性审查员" in system:
+        # consistency.check：必需节点 strict schema 要求显式 issues 键（空列表合法）。
+        return json.dumps({"issues": []}, ensure_ascii=False)
+
+    if "书稿的母语审读编辑" in system:
+        # naturalize.screen：必需节点 strict schema 要求显式 issues 键（空列表合法）。
+        return json.dumps({"issues": []}, ensure_ascii=False)
+
     if "回译译者" in system:
         n = _count_numbered(user)
         return json.dumps({"backtranslations": [f"逆{i}" for i in range(n)]}, ensure_ascii=False)

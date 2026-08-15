@@ -7,11 +7,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from importlib.metadata import version as package_version
 from pathlib import Path
-from typing import Optional
 
 import typer
 import yaml
@@ -26,9 +26,11 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from .config import Config
-from .ingest.segmenter import load_document
-from .pipeline.runstore import STATUS_DONE, RunStore, slugify
+from trans_novel.config import Config
+from trans_novel.ingest.segmenter import load_document
+from trans_novel.pipeline.readiness import ReadinessError
+from trans_novel.pipeline.runstore import STATUS_DONE, RunStore, slugify
+from trans_novel.pipeline.state import IdentityMismatchError
 
 
 def _configure_windows_console(
@@ -44,10 +46,8 @@ def _configure_windows_console(
     for stream in streams or (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 reconfigure(encoding="utf-8", errors="replace")
-            except (OSError, ValueError):
-                pass
 
 
 _configure_windows_console()
@@ -140,21 +140,21 @@ def _runstore_for(config: Config, input_path: str) -> RunStore:
 def _translate_impl(
     input_path: str,
     *,
-    chapter: Optional[int] = None,
+    chapter: int | None = None,
     fmt: str = "epub",
-    out: Optional[str] = None,
-    quality: Optional[str] = None,
-    source_language: Optional[str] = None,
-    back_matter: Optional[str] = None,
-    honorifics: Optional[str] = None,
-    polish: Optional[bool] = None,
-    qa: Optional[bool] = None,
-    mono: Optional[bool] = None,
-    bilingual: Optional[bool] = None,
+    out: str | None = None,
+    quality: str | None = None,
+    source_language: str | None = None,
+    back_matter: str | None = None,
+    honorifics: str | None = None,
+    polish: bool | None = None,
+    qa: bool | None = None,
+    mono: bool | None = None,
+    bilingual: bool | None = None,
     prepare: bool = False,
 ) -> None:
     """translate/resume 共享实现，避免 CLI 参数转发漂移。"""
-    from .pipeline.orchestrator import Orchestrator
+    from trans_novel.pipeline.bootstrap import Application
 
     _require_input_file(input_path)
     fmt = _validate_output_format(fmt)
@@ -184,7 +184,7 @@ def _translate_impl(
     if prepare and chapter is not None:
         console.print("[red]--prepare 不能与 --chapter 同时使用。[/]")
         raise typer.Exit(2)
-    orch = Orchestrator(config)
+    app = Application(config)
 
     with Progress(
         SpinnerColumn(),
@@ -200,13 +200,16 @@ def _translate_impl(
             prog.update(task, completed=done, total=total or None, description=label)
 
         if prepare:
-            store = orch.prepare_for_translation(input_path, progress=cb)
+            try:
+                store = app.prepare_for_translation(input_path, progress=cb)
+            except (IdentityMismatchError, ReadinessError, ValueError) as error:
+                console.print(f"[red]{error}[/]")
+                raise typer.Exit(2) from error
             manifest = store.load_manifest()
             chapters = manifest.get("chapters", [])
             analysis = store.load_analysis() or {}
             digests = sum(
-                bool(store.load_chapter(item["index"]).meta.get("source_digest"))
-                for item in chapters
+                bool(store.load_progress(item["index"]).source_digest) for item in chapters
             )
             console.print(
                 f"[bold green]准备完成[/]：解析 {len(chapters)} 章，"
@@ -220,21 +223,28 @@ def _translate_impl(
 
         if chapter is not None:
             try:
-                store = orch.run(input_path, only_chapter=chapter, progress=cb)
+                store = app.run(input_path, only_chapter=chapter, progress=cb)
             except ValueError as error:
+                console.print(f"[red]{error}[/]")
+                raise typer.Exit(2) from error
+            except (IdentityMismatchError, ReadinessError) as error:
                 console.print(f"[red]{error}[/]")
                 raise typer.Exit(2) from error
             console.print(f"[green]已翻第 {chapter} 章[/]，状态目录：{store.run_dir}")
             _print_usage({"usage": store.load_usage() or {}})
             return
 
-        result = orch.run_all(
-            input_path,
-            progress=cb,
-            out_format=fmt,
-            out_path=out,
-            do_qa=qa,
-        )
+        try:
+            result = app.run_all(
+                input_path,
+                progress=cb,
+                out_format=fmt,
+                out_path=out,
+                do_qa=qa,
+            )
+        except (IdentityMismatchError, ReadinessError, ValueError) as error:
+            console.print(f"[red]{error}[/]")
+            raise typer.Exit(2) from error
 
     s = result["report"]["summary"]
     console.print(
@@ -297,49 +307,49 @@ def _print_usage(report: dict) -> None:
 @app.command()
 def translate(
     input: str = typer.Argument(..., help="输入文件（.epub / .fb2 / .txt / .md）"),
-    chapter: Optional[int] = typer.Option(
+    chapter: int | None = typer.Option(
         None, "--chapter", min=0, help="只翻指定章（从 0 起；调试用，不做收尾）"
     ),
     fmt: str = typer.Option("epub", "--format", help="输出格式：epub | txt"),
-    out: Optional[str] = typer.Option(
+    out: str | None = typer.Option(
         None, "--out", help="输出路径（默认 <源文件名>.zh.<ext>，落在源文件目录）"
     ),
-    quality: Optional[str] = typer.Option(
+    quality: str | None = typer.Option(
         None,
         "--quality",
         help="本次运行的质量档位：economy | balanced | quality",
     ),
-    source_language: Optional[str] = typer.Option(
+    source_language: str | None = typer.Option(
         None,
         "--source-language",
         help="源语言代码；默认由模型自动识别",
     ),
-    back_matter: Optional[str] = typer.Option(
+    back_matter: str | None = typer.Option(
         None,
         "--back-matter",
         help="附属章处理：skip | light | full",
     ),
-    honorifics: Optional[str] = typer.Option(
+    honorifics: str | None = typer.Option(
         None,
         "--honorifics",
         help="日文敬称策略：keep_style | normalize | drop",
     ),
-    polish: Optional[bool] = typer.Option(
+    polish: bool | None = typer.Option(
         None,
         "--polish/--no-polish",
         help="覆盖质量档位中的润色策略",
     ),
-    qa: Optional[bool] = typer.Option(
+    qa: bool | None = typer.Option(
         None,
         "--qa/--no-qa",
         help="覆盖质量档位中的一致性 QA 策略",
     ),
-    mono: Optional[bool] = typer.Option(
+    mono: bool | None = typer.Option(
         None,
         "--mono/--no-mono",
         help="是否产出纯中文版",
     ),
-    bilingual: Optional[bool] = typer.Option(
+    bilingual: bool | None = typer.Option(
         None,
         "--bilingual/--no-bilingual",
         help="是否产出双语对照版",
@@ -381,7 +391,7 @@ def resume(
 @app.command()
 def status(input: str = typer.Argument(..., help="输入文件")):
     """查看各章进度与术语库统计。"""
-    from .glossary.store import GlossaryStore
+    from trans_novel.glossary.store import GlossaryStore
 
     config = _load_config()
     store = _runstore_for(config, input)
@@ -392,8 +402,9 @@ def status(input: str = typer.Argument(..., help="输入文件")):
     console.print(f"《{m['title']}》（{m['fmt']}）  {m['source_lang']}→{m['target_lang']}")
     table = Table("", "#", "章节", "状态")
     for c in m["chapters"]:
-        mark = "✓" if c["status"] == STATUS_DONE else "·"
-        table.add_row(mark, str(c["index"]), c["title"], c["status"])
+        status = store.chapter_status(c["index"])
+        mark = "✓" if status == STATUS_DONE else "·"
+        table.add_row(mark, str(c["index"]), c["title"], status)
     console.print(table)
     g = GlossaryStore(store.glossary_path)
     console.print("术语库：", g.stats())
@@ -404,12 +415,12 @@ def status(input: str = typer.Argument(..., help="输入文件")):
 def glossary(
     input: str = typer.Argument(..., help="输入文件"),
     action: str = typer.Argument("list", help="list | conflicts | audit | lock | resolve"),
-    arg1: Optional[str] = typer.Argument(None),
-    arg2: Optional[str] = typer.Argument(None),
+    arg1: str | None = typer.Argument(None),
+    arg2: str | None = typer.Argument(None),
 ):
     """术语库管理。audit 自动统一译法并改写正文。"""
-    from .glossary import resolver
-    from .glossary.store import GlossaryStore
+    from trans_novel.glossary import resolver
+    from trans_novel.glossary.store import GlossaryStore
 
     config = _load_config()
     store = _runstore_for(config, input)
@@ -436,10 +447,9 @@ def glossary(
                     f"提议「{c['proposed_target']}」（第{c['chapter']}章）"
                 )
         elif action == "audit":
-            from .agents.glossary_auditor import GlossaryAuditor
-            from .llm.factory import build_client
+            from trans_novel.pipeline.bootstrap import Application
 
-            applied = GlossaryAuditor(build_client(config), config).audit(store, g)
+            applied = Application(config).glossary_audit(store)
             console.print(f"已统一 {len(applied)} 组术语：")
             for u in applied:
                 console.print(
@@ -472,22 +482,21 @@ def glossary(
 @tools_app.command()
 def assemble(
     input: str = typer.Argument(..., help="输入文件"),
-    out: Optional[str] = typer.Option(None, "--out"),
+    out: str | None = typer.Option(None, "--out"),
     fmt: str = typer.Option("epub", "--format", help="epub | txt"),
-    mono: Optional[bool] = typer.Option(
+    mono: bool | None = typer.Option(
         None,
         "--mono/--no-mono",
         help="覆盖配置文件中的单语版产出开关",
     ),
-    bilingual: Optional[bool] = typer.Option(
+    bilingual: bool | None = typer.Option(
         None,
         "--bilingual/--no-bilingual",
         help="覆盖配置文件中的双语版产出开关",
     ),
 ):
     """回填生成译文文件（默认 EPUB）。"""
-    from .assemble.writer import assemble as do_assemble
-    from .assemble.writer import bilingual_out_path
+    from trans_novel.pipeline.bootstrap import Application
 
     config = _load_config()
     fmt = _validate_output_format(fmt)
@@ -495,25 +504,19 @@ def assemble(
     if not store.exists():
         console.print("[yellow]尚无进度。先运行 translate。[/]")
         raise typer.Exit(1)
-    do_mono = config.output.mono if mono is None else mono
-    do_bilingual = config.output.bilingual if bilingual is None else bilingual
-    if not do_mono and not do_bilingual:
-        do_mono = True  # 兜底：至少产一个单语产物
-    paths: list[str] = []
-    if do_mono:
-        paths.append(do_assemble(store, input, out_path=out, out_format=fmt, bilingual=False))
-    if do_bilingual:
-        bi_out = bilingual_out_path(out) if out else None
-        paths.append(
-            do_assemble(
-                store,
-                input,
-                out_path=bi_out,
-                out_format=fmt,
-                bilingual=True,
-                order=config.output.bilingual_order,
-            )
+    app = Application(config)
+    try:
+        paths = app.assemble(
+            store,
+            input,
+            out_format=fmt,
+            out_path=out,
+            mono=mono,
+            bilingual=bilingual,
         )
+    except (IdentityMismatchError, ReadinessError) as error:
+        console.print(f"[red]{error}[/]")
+        raise typer.Exit(2) from error
     for path in paths:
         console.print(f"已生成译文：[bold]{path}[/]")
 
@@ -521,18 +524,14 @@ def assemble(
 @tools_app.command()
 def qa(input: str = typer.Argument(..., help="输入文件")):
     """全书跨章一致性扫描。"""
-    from .agents.consistency import ConsistencyChecker
-    from .glossary.store import GlossaryStore
-    from .llm.factory import build_client
+    from trans_novel.pipeline.bootstrap import Application
 
     config = _load_config()
     store = _runstore_for(config, input)
     if not store.exists():
         console.print("[yellow]尚无进度。先运行 translate。[/]")
         raise typer.Exit(1)
-    g = GlossaryStore(store.glossary_path)
-    issues = ConsistencyChecker(build_client(config), config).check(store, g)
-    g.close()
+    issues = Application(config).qa(store)
     console.print(f"一致性问题 {len(issues)} 项：")
     for it in issues:
         console.print(f"  [{it.get('type')}] {it.get('detail')}  ({it.get('where', '')})")
@@ -541,18 +540,14 @@ def qa(input: str = typer.Argument(..., help="输入文件")):
 @tools_app.command()
 def report(input: str = typer.Argument(..., help="输入文件")):
     """生成 QA 报告（漏译/冲突/低置信度汇总）。"""
-    from .assemble.report import build_report
-    from .glossary.store import GlossaryStore
+    from trans_novel.pipeline.bootstrap import Application
 
     config = _load_config()
     store = _runstore_for(config, input)
     if not store.exists():
         console.print("[yellow]尚无进度。先运行 translate。[/]")
         raise typer.Exit(1)
-    g = GlossaryStore(store.glossary_path)
-    rep = build_report(store, g)
-    g.close()
-    store.save_report(rep)
+    rep = Application(config).report(store)
     s = rep["summary"]
     console.print(f"QA 报告已写入 {store.report_path}")
     console.print(
@@ -566,28 +561,26 @@ def report(input: str = typer.Argument(..., help="输入文件")):
 @tools_app.command()
 def naturalize(
     input: str = typer.Argument(..., help="输入文件"),
-    chapters: Optional[str] = typer.Option(
+    chapters: str | None = typer.Option(
         None, "--chapters", help="逗号分隔章 index，缺省=全部正文章"
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="只跑审读+改写+三道关卡，打印结果但不落盘、不写事件"
     ),
-    limit: Optional[int] = typer.Option(None, "--limit", help="最多采纳写回 N 段（缺省无限）"),
+    limit: int | None = typer.Option(None, "--limit", help="最多采纳写回 N 段（缺省无限）"),
 ):
     """去翻译腔：单语审读 → 单语改写 → 三道关卡（lint/忠实度/成对）→ 写回。
 
     主流水线已内置同名环节（pipeline.naturalize）；本命令用于对存量已译书手动补跑。
     """
-    from .agents.naturalizer import Naturalizer, run_naturalize
-    from .glossary.store import GlossaryStore
-    from .llm.factory import build_client
+    from trans_novel.pipeline.bootstrap import Application
 
     config = _load_config()
     store = _runstore_for(config, input)
     if not store.exists():
         console.print("[yellow]尚无进度。先运行 translate。[/]")
         raise typer.Exit(1)
-    chapter_indices: Optional[list[int]] = None
+    chapter_indices: list[int] | None = None
     if chapters:
         try:
             chapter_indices = [int(x) for x in chapters.split(",") if x.strip()]
@@ -595,12 +588,9 @@ def naturalize(
             raise typer.BadParameter(
                 f"--chapters 含非法片段：{chapters!r}（须为逗号分隔整数）"
             ) from e
-    g = GlossaryStore(store.glossary_path)
-    agent = Naturalizer(build_client(config), config)
-    stats = run_naturalize(
-        agent, store, g, config, chapters=chapter_indices, dry_run=dry_run, limit=limit
+    stats = Application(config).naturalize(
+        store, chapters=chapter_indices, dry_run=dry_run, limit=limit
     )
-    g.close()
     console.print(
         f"审读 {stats['screened']} 段  嫌疑 {stats['suspects']}  改写 {stats['rewritten']}  "
         f"lint拒 {stats['lint_rejected']}  忠实拒 {stats['fidelity_rejected']}  "
