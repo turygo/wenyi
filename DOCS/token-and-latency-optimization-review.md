@@ -38,7 +38,8 @@
 
 本次审查覆盖了以下主要 Module：
 
-- `trans_novel/pipeline/orchestrator.py`
+- `trans_novel/pipeline/nodes/`（由原 `pipeline/orchestrator.py` 拆分迁移）
+- `trans_novel/pipeline/bootstrap.py` / `planner.py` / `runner.py`
 - `trans_novel/pipeline/context.py`
 - `trans_novel/pipeline/runstore.py`
 - `trans_novel/llm/base.py`
@@ -96,11 +97,11 @@
 → 生成风格指南、角色信息和初始术语
 ```
 
-关键代码：
+关键代码（workflow 化后）：
 
-- `Orchestrator.prepare()`：`pipeline/orchestrator.py:193–254`
-- `_detect_language_ai()`：`pipeline/orchestrator.py:256–276`
-- `_sample_text()`：`pipeline/orchestrator.py:278–299`
+- `nodes/prepare.py`：`PrepareNode.execute`（解析/语言/身份/暂存）
+- `PrepareNode._detect_language_ai()`：语言检测
+- `nodes/common.py`：`sample_text()` 风格采样
 - `Analyzer`：`agents/analyzer.py`
 
 ### 3.2 全书理解与定名
@@ -112,11 +113,11 @@
 → 全书概览归并：fast × map-reduce 轮次
 ```
 
-关键代码：
+关键代码（workflow 化后）：
 
-- `_build_understanding()`：`pipeline/orchestrator.py:447–577`
+- `nodes/prescan.py`：`DigestNode` / `MineTermsNode` / `NameTermsNode` / `BookSynopsisNode`
 - `Synopsizer`：`agents/synopsis.py`
-- `mine_candidates()`：`glossary/miner.py:422–438`
+- `mine_candidates()`：`glossary/miner.py`
 - `CastNamer`：`agents/namer.py`
 
 注意：README 仍描述英文候选挖掘为确定性、零 Token；当前代码实际采用：
@@ -142,11 +143,11 @@
   → 下一批继续翻译
 ```
 
-关键代码：
+关键代码（workflow 化后）：
 
-- `_translate_chapter()`：`pipeline/orchestrator.py:819–1211`
-- `_process_batch()`：`pipeline/orchestrator.py:1459–1483`
-- `Translator.translate_batch()`：`assemble/translator.py:116–155`
+- `nodes/translate.py`：`TranslateNode.execute`（批翻译+lint+检查点）
+- `TranslateNode._process_batch()`：批处理
+- `Translator.translate_batch()`：`assemble/translator.py`
 - `RollingContext`：`pipeline/context.py`
 
 章内翻译不能直接并发。后一个 batch 依赖前一个 batch 的最新译文，用于：
@@ -177,12 +178,12 @@
 → 标记章节完成
 ```
 
-关键代码：
+关键代码（workflow 化后）：
 
-- `_drain_chapter_polish()`：`pipeline/orchestrator.py:1213–1302`
-- `naturalize_chapter()`：`agents/naturalizer.py:125–244`
-- `_review_chapter()`：`pipeline/orchestrator.py:1351–1372`
-- `_autofix_severe()`：`pipeline/orchestrator.py:1391–1457`
+- `nodes/translate.py`：`PolishNode._drain_chapter_polish`
+- `naturalize_chapter()`：`agents/naturalizer.py`
+- `nodes/quality.py`：`ReviewNode.review_chapter`
+- `ReviewNode._autofix_severe()`：严重项定向重译
 
 ### 3.5 收尾
 
@@ -194,11 +195,11 @@
 → 可选生成双语版
 ```
 
-关键代码：
+关键代码（workflow 化后）：
 
-- `_translate_titles()`：`pipeline/orchestrator.py:580–686`
-- `run_steps()`：`pipeline/orchestrator.py:1488–1583`
-- `run_all()`：`pipeline/orchestrator.py:1585–1600`
+- `nodes/finish.py`：`TitlesNode` / `ConsistencyQANode` / `ReportNode` / `AssembleNode`
+- `planner.py`：ExecutionGoal → 计划（替代旧 `run_steps` 隐式步骤集）
+- `bootstrap.py`：`Application.run_all()`
 
 ---
 
@@ -256,7 +257,7 @@ Translator + Polisher 合计占总 Token：
 
 ### 5.1 批级断点续跑
 
-`_translate_chapter()` 会检查整批是否已有非空 target。已完成批次：
+`TranslateNode`（nodes/translate.py）会检查整批是否已有非空 target。已完成批次：
 
 - 不重新翻译；
 - 只重建 rolling context；
@@ -343,7 +344,7 @@ for chunk in self._pack_contiguous(pairs, budget):
         ...
 ```
 
-位置：`pipeline/orchestrator.py:1351–1372`。
+位置：`nodes/quality.py`（`ReviewNode.review_chapter`）。
 
 每个 chunk：
 
@@ -392,9 +393,9 @@ return order1 == "B" and order2 == "A"
 
 ### 6.3 Digest 与 term mining 重叠执行
 
-当前 `_build_understanding()` 先等待所有 digest，再启动 term mining。但二者只依赖章节源文，不相互依赖。
+审查时 `_build_understanding()` 先等待所有 digest，再启动 term mining——但二者只依赖章节源文，不相互依赖。
 
-可改为：
+已实施（第一阶段 + workflow 化后由 planner 的并行层保持）：
 
 ```text
 chapter digest × C ─┐
@@ -567,7 +568,7 @@ llm:
 prompts.render_glossary(glossary.all_terms())
 ```
 
-位置：`pipeline/orchestrator.py:638–654`。
+位置：`nodes/finish.py`（`TitlesNode`，标题术语裁剪）。
 
 Atomic Habits 的术语库实际有 724 条：
 
@@ -816,7 +817,7 @@ pipeline:
 ### 第一阶段实施状态（2026-07-13）
 
 以下五项已在 `trans_novel/llm/base.py`、`trans_novel/agents/base.py`、全部生产 LLM callsite、
-`trans_novel/pipeline/orchestrator.py`、`trans_novel/agents/naturalizer.py` 实现并通过聚焦测试：
+`trans_novel/pipeline/nodes/`、`trans_novel/agents/naturalizer.py` 实现并通过聚焦测试：
 
 1. **operation 级 telemetry**：`UsageTracker` 新增 `by_operation`，在原有 token/cache/calls
    字段之上记录 `logical_calls`、`attempts`、`failed_attempts`、`elapsed_ms`、
@@ -827,17 +828,17 @@ pipeline:
    `language.detect`、`title.translate`、`analyzer.analyze`、`glossary.extract`、
    `glossary.audit`、`backtranslate.translate/check`、`consistency.check`）已逐一标注，
    `Agent._ask_json`/`_ask_text` 把 `operation` 设为必填参数，杜绝遗漏。
-2. **Reviewer chunk 有界并发**：`Orchestrator.run()` 新建 book-wide 专用 `review_executor`
+2. **Reviewer chunk 有界并发**：`WorkflowRunner` 新建 book-wide 专用 `review_executor`
    （4-worker，与章级 `executor` 分离避免嵌套死锁），贯穿同步（`autofix_severe=true`）与
-   异步（`review_pending`）两条路径；`_review_chapter()` 按提交顺序（非完成顺序）取
-   `fut.result()`，保证并发下合并结果仍严格保持原 chunk 顺序。
+   异步（`review_pending`）两条路径；`ReviewNode.review_chapter()` 按提交顺序（非完成顺序）
+   取 `fut.result()`，保证并发下合并结果仍严格保持原 chunk 顺序。
 3. **Naturalizer 正反 pair vote 并发**：`naturalize_chapter()` 为整章复用一个
    `ThreadPoolExecutor(max_workers=2)`，仅当 `fidelity_check(...) is True` 时才把两次
    `judge_pair` 提交进该池；fidelity 未过仍严格短路，不提前发出成对判断请求。
-4. **digest 与 term mining 重叠执行**：`_build_understanding()` 把 `mine_candidates()`
-   提交进独立后台线程池后立即返回 future，主线程随即进入 digest 的 `as_completed`
-   落盘循环，二者真正同时在跑；naming 仍等待两条分支都收尾才开始，`term_mining_done`
-   只在两者都成功时落盘，digest 异常仍整体冒泡且优先于 mining 异常。
+4. **digest 与 term mining 重叠执行**：planner 把 digest 逐章与 `mine_terms` 放进同一个
+   并行层（runner 并行阶段），二者真正同时在跑；`name_terms` 仍等待两条分支都收尾才
+   开始，`term_mining_done` 只在两者都成功时落盘，digest 异常仍整体冒泡且优先于
+   mining 异常。
 
 **审查中两轮修复**：
 
@@ -846,7 +847,7 @@ pipeline:
   入口即失败的路径不会记 `logical_calls`/`elapsed_ms`。已把 try/finally 计时范围
   扩大到整个 `complete()` 方法体，任意环节异常都先记账再原样重抛；`attempts` 仍
   只在真正调用 `create()` 时计数。
-- `Orchestrator._flush_usage()` 持久化门控缺口：原判断仅看
+- `Application.flush_usage()` 持久化门控缺口：原判断仅看
   `increment["totals"]["calls"]`，导致"整次逻辑调用失败、无成功 token 响应"的
   operation-only 增量（`attempts`/`failed_attempts`/`logical_calls` 增长但
   `by_tier`/`by_stage`/`totals.calls` 全零）不会触发 `save_usage`，续跑后这类失败
