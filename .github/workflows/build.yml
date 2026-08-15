@@ -118,27 +118,32 @@ jobs:
           ${{ matrix.binary }} --help
           ${{ matrix.binary }} --version
 
-      - name: Smoke test default config on Windows
+      - name: Smoke test config and input validation on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & ${{ matrix.binary }} --config dist/smoke-config.yaml translate dist/missing.txt
-          if ($LASTEXITCODE -eq 0) {
-            throw "Expected the missing input check to fail"
+          & ${{ matrix.binary }} --config dist/smoke-config.yaml init
+          if ($LASTEXITCODE -ne 0) {
+            throw "Executable failed to create the default config"
           }
           if (-not (Test-Path dist/smoke-config.yaml)) {
             throw "Executable did not create the default config"
           }
+          & ${{ matrix.binary }} --config dist/smoke-config.yaml translate dist/missing.txt
+          if ($LASTEXITCODE -eq 0) {
+            throw "Expected the missing input check to fail"
+          }
 
-      - name: Smoke test default config on POSIX
+      - name: Smoke test config and input validation on POSIX
         if: runner.os != 'Windows'
         shell: bash
         run: |
+          ${{ matrix.binary }} --config dist/smoke-config.yaml init
+          test -s dist/smoke-config.yaml
           if ${{ matrix.binary }} --config dist/smoke-config.yaml translate dist/missing.txt; then
             echo "Expected the missing input check to fail" >&2
             exit 1
           fi
-          test -s dist/smoke-config.yaml
 
       - name: Verify Windows executable
         if: runner.os == 'Windows'
