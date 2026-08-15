@@ -24,7 +24,7 @@ from trans_novel.pipeline.fingerprints import (
     translate_input_fingerprint,
 )
 from trans_novel.pipeline.nodes.common import chapter_term_snapshot, resume_batches
-from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING
+from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING, stable_digest
 from trans_novel.pipeline.state import (
     NODE_POLISH,
     NODE_TRANSLATE,
@@ -145,10 +145,9 @@ class TranslateNode:
                     count=len(b),
                     reason="already_translated",
                     glossary_extraction=summary,
-                    segments=[
-                        {"index": seg_base + i, "source": s.source, "target": s.target}
-                        for i, s in enumerate(b)
-                    ],
+                    target_sha256=stable_digest(
+                        [{"index": s.index, "target": s.target} for s in b]
+                    ),
                 )
                 request.shared.segments_done += len(b)
                 seg_base += len(b)
@@ -165,6 +164,7 @@ class TranslateNode:
 
             # 确定性 lint（零 LLM）：flag 段带审校意见定向重译，每段最多一轮。
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
+            lint_refixed_entries: list[dict] = []
             lint_issues = lint.lint_targets(
                 [s.source for s in b],
                 raw_targets,
@@ -172,14 +172,20 @@ class TranslateNode:
                 src_lang=self.translator.src,
             )
             if lint_issues:
+                lint_issues_payload = [
+                    {"index": seg_base + it.index, "type": it.type, "detail": it.detail}
+                    for it in lint_issues
+                ]
+                type_counts: dict[str, int] = {}
+                for it in lint_issues:
+                    type_counts[it.type] = type_counts.get(it.type, 0) + 1
                 store.log_event(
                     "batch_linted",
                     chapter=ci,
                     start_index=seg_base,
-                    issues=[
-                        {"index": seg_base + it.index, "type": it.type, "detail": it.detail}
-                        for it in lint_issues
-                    ],
+                    issue_count=len(lint_issues),
+                    by_type={t: type_counts[t] for t in sorted(type_counts)},
+                    issues_sha256=stable_digest(lint_issues_payload),
                 )
                 by_idx: dict[int, list] = {}
                 for it in lint_issues:
@@ -210,6 +216,7 @@ class TranslateNode:
                     locked: list = locked,
                     seg_base: int = seg_base,
                     raw_targets: list = raw_targets,
+                    lint_refixed_entries: list = lint_refixed_entries,
                 ) -> None:
                     seg_issues = by_idx[idx]
                     seg = b[idx]
@@ -227,13 +234,16 @@ class TranslateNode:
                         self.translator.client.usage.record_outcome(
                             "translator", "translate.lint_fix", accepted=True
                         )
-                        store.log_event(
-                            "lint_refixed",
-                            chapter=ci,
-                            index=seg_base + idx,
-                            before=raw_targets[idx],
-                            after=new_t,
-                            issues=[{"type": it.type, "detail": it.detail} for it in seg_issues],
+                        lint_refixed_entries.append(
+                            {
+                                "chapter": ci,
+                                "index": seg_base + idx,
+                                "before": raw_targets[idx],
+                                "after": new_t,
+                                "issues": [
+                                    {"type": it.type, "detail": it.detail} for it in seg_issues
+                                ],
+                            }
                         )
                         raw_targets[idx] = new_t
                         remaining = new_issues
@@ -315,18 +325,6 @@ class TranslateNode:
                 event_targets = final_targets
                 punctuation_normalized = config.punctuation_normalize
 
-            store.log_event(
-                "batch_translated",
-                chapter=ci,
-                start_index=batch_start,
-                count=len(b),
-                polished=False,
-                punctuation_normalized=punctuation_normalized,
-                segments=[
-                    {"index": batch_start + i, "source": s.source, "target": t}
-                    for i, (s, t) in enumerate(zip(b, event_targets, strict=False))
-                ],
-            )
             # 增量持久化：本批译文（+ pending_polish / review_issues 标记）立即落盘。
             # 崩溃一致性（polish_on 时）：译文在章节文件、标记在 manifest，两次独立
             # 原子写；先写检查点日志再落盘，崩溃后由锁内恢复补齐/清除标记。
@@ -336,6 +334,25 @@ class TranslateNode:
             store.save_chapter(chapter)
             store.save_progress(ci, chapter_progress)
             checkpoint.clear(store)
+
+            # 提交后再审计：本章译文、标记和检查点全部落盘后，才记录本批翻译和
+            # 已采纳的 lint 修复，避免事件先于持久化结果出现。
+            store.log_event(
+                "batch_translated",
+                chapter=ci,
+                start_index=batch_start,
+                count=len(b),
+                polished=False,
+                punctuation_normalized=punctuation_normalized,
+                target_sha256=stable_digest(
+                    [
+                        {"index": s.index, "target": t}
+                        for s, t in zip(b, event_targets, strict=False)
+                    ]
+                ),
+            )
+            for entry in lint_refixed_entries:
+                store.log_event("lint_refixed", **entry)
 
             if polish_on:
                 # 润色批间无依赖：提交共享线程池，章末由 polish 节点统一排干。
@@ -378,11 +395,12 @@ class TranslateNode:
             store.log_event("chapter_glossary_extracted", chapter=ci)
 
         # 审校项：review 开启时由 review 节点替换（只保留 lint 项）；关闭时保留历史非 lint 项。
+        # 正文已按翻译批次增量保存完整（续跑时直接复用译文的批次不会修改正文），
+        # 这里只保存进度和上下文，不再冗余写入整章。
         if config.pipeline.review:
             chapter_progress.set_review_issue_dicts(lint_review_issues)
         else:
             chapter_progress.set_review_issue_dicts(review_issues + lint_review_issues)
-        store.save_chapter(chapter)
         store.save_progress(ci, chapter_progress)
         store.save_context(context.to_dict())
         fp = self._fingerprint("\n".join(s.source for s in text_segs), store, None)
@@ -495,10 +513,9 @@ class TranslateNode:
                     punctuation_normalized=config.punctuation_normalize,
                     back_matter=True,
                     operation="translate.back_matter",
-                    segments=[
-                        {"index": seg_base + i, "source": s.source, "target": t}
-                        for i, (s, t) in enumerate(zip(b, raw, strict=False))
-                    ],
+                    target_sha256=stable_digest(
+                        [{"index": s.index, "target": t} for s, t in zip(b, raw, strict=False)]
+                    ),
                 )
                 request.shared.segments_done += len(b)
                 seg_base += len(b)
@@ -507,13 +524,13 @@ class TranslateNode:
                         request.shared.segments_done, request.shared.segments_total, label
                     )
         # 记录旁路档位 + 清陈旧润色/审校标记；旁路章由本节点收尾。
+        # skip 模式直接写入译文，light 模式逐批保存译文，这里不再做冗余的整章写盘。
         bm_progress = store.load_progress(ci)
         bm_progress.back_matter_mode = mode
         bm_progress.pending_polish = []
         bm_progress.set_review_issue_dicts([])
         bm_progress.set_backtranslation_issue_dicts([])
         store.save_progress(ci, bm_progress)
-        store.save_chapter(chapter)
         store.set_chapter_status(ci, STATUS_DONE)
         store.log_event(
             "chapter_done",
@@ -716,29 +733,46 @@ class PolishNode:
                     chapter=ci,
                     index=start + i,
                     reason=sorted(introduced),
-                    polished=rejected_text,
+                    proposal_sha256=stable_digest(rejected_text),
                 )
             for i, t in enumerate(final):
                 text_segs[start + i].target = t
             chapter_progress.pending_polish = [
                 e for e in chapter_progress.pending_polish if e.start != start
             ]
-            store.log_event(
-                "batch_polished",
-                chapter=ci,
-                start_index=start,
-                count=count,
-                segments=[
-                    {"index": start + i, "source": text_segs[start + i].source, "target": t}
-                    for i, t in enumerate(final)
-                ],
-            )
             # 崩溃一致性：润色结果在章节文件、清标记在 manifest；先写检查点日志再
             # 落盘，崩溃后由锁内恢复清除已提交标记（避免同一段被润色两次）。
             checkpoint.begin_polish(store, ci, start, count, final)
             store.save_chapter(chapter)
             store.save_progress(ci, chapter_progress)
             checkpoint.clear(store)
+
+            # 提交后再审计：仅记录相对持久化前译文（raw）发生的改动，并用稳定段号
+            # 标识改动。例行文本只记录最终 target 的摘要；raw_normalized 仅供 lint
+            # 回退使用，并非持久化前的原始值，标点规范化导致的差异也必须如实上报。
+            changes = [
+                {
+                    "index": text_segs[start + i].index,
+                    "before": raw[i],
+                    "after": final[i],
+                }
+                for i in range(count)
+                if raw[i] != final[i]
+            ]
+            store.log_event(
+                "batch_polished",
+                chapter=ci,
+                start_index=start,
+                count=count,
+                changed_count=len(changes),
+                changes=changes,
+                target_sha256=stable_digest(
+                    [
+                        {"index": text_segs[start + i].index, "target": final[i]}
+                        for i in range(count)
+                    ]
+                ),
+            )
 
 
 __all__ = ["PolishNode", "TranslateNode"]

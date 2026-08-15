@@ -880,7 +880,6 @@ class Application:
             "usage_summary",
             scope=scope,
             increment=increment,
-            cumulative=cumulative,
         )
         return cumulative
 

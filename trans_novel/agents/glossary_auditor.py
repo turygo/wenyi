@@ -189,16 +189,27 @@ class GlossaryAuditor(Agent):
     def _rewrite_targets(
         store: RunStore, glossary: GlossaryStore, replace_map: dict[str, str]
     ) -> int:
-        """把各章 target 里的变体替换为规范译法。返回改动段数。"""
+        """把各章 target 里的变体替换为规范译法。返回改动段数。
+
+        每章只加载/保存一次：章内先收集该章全部改写审计条目，落盘后统一发出。
+        事件不复述全局 replace_map，只带实际执行的“变体→规范译法”替换。
+        """
         # 长变体优先替换，避免短串先替导致嵌套问题
         variants_sorted = sorted(replace_map, key=len, reverse=True)
 
-        def _apply(text: str) -> str:
+        def _apply(text: str, executed: list[dict[str, str]]) -> str:
+            """依次执行“变体→规范译法”替换，并把真实执行到的替换按序记入 executed。
+
+            executed 由实际替换过程填充：重叠变体被先执行的长变体吞掉时不误报；
+            后执行替换引入的新变体（随后命中并执行）也会如实按序上报——事件载荷
+            只反映真实替换过程，不独立重扫原始串。
+            """
             if not text:
                 return text
             for v in variants_sorted:
                 if v in text:
                     text = text.replace(v, replace_map[v])
+                    executed.append({"variant": v, "canonical": replace_map[v]})
             return text
 
         m = store.load_manifest()
@@ -206,26 +217,30 @@ class GlossaryAuditor(Agent):
         for c in m["chapters"]:
             ch = store.load_chapter(c["index"])
             dirty = False
+            entries: list[dict[str, Any]] = []
             for idx, seg in enumerate(ch.segments):
                 if not seg.target:
                     continue
-                new = _apply(seg.target)
+                executed: list[dict[str, str]] = []
+                new = _apply(seg.target, executed)
                 if new != seg.target:
                     old = seg.target
                     seg.target = new
                     dirty = True
                     changed += 1
-                    store.log_event(
-                        "glossary_rewrite_applied",
-                        chapter=c["index"],
-                        index=idx,
-                        source=seg.source,
-                        before=old,
-                        after=new,
-                        replace_map=replace_map,
+                    entries.append(
+                        {
+                            "chapter": c["index"],
+                            "index": idx,
+                            "before": old,
+                            "after": new,
+                            "replacements": executed,
+                        }
                     )
             if dirty:
                 store.save_chapter(ch)
+                for e in entries:
+                    store.log_event("glossary_rewrite_applied", **e)
 
         # 同步改写已译的章节标题，保持目录一致；书名保持原文，清理旧译名字段。
         man_dirty = False
@@ -240,7 +255,8 @@ class GlossaryAuditor(Agent):
             )
         for c in m["chapters"]:
             old_title = c.get("title_translated")
-            ct = _apply(old_title) if isinstance(old_title, str) else old_title
+            # 标题事件沿用 replace_map 的载荷契约，不保留执行记录。
+            ct = _apply(old_title, []) if isinstance(old_title, str) else old_title
             if ct != old_title:
                 c["title_translated"] = ct
                 man_dirty = True
@@ -266,19 +282,23 @@ class GlossaryAuditor(Agent):
         c. 段内尚未出现该术语的 target 译名（"利亚(Liya)" 这类括注格式视为已译，跳过）；
         d. 防线5——命中点前后各 12 个字符内至少一侧含 CJK 才替换该次命中；两侧全是拉丁/
            标点（人名嵌在整句英文引文里，如脚注引题）则跳过这次命中，逐命中而非逐段判断。
+        以章为外层循环：每章只加载、保存一次；章内逐段处理，每段按术语表
+        原顺序依次替换。结果与以术语为外层循环时的逐项串行替换完全一致；
+        审计事件在章节落盘后统一发出。
         """
         terms = [t for t in glossary.all_terms() if t.locked and _is_latin_source(t.source)]
         if not terms:
             return []
+        compiled = [(t, re.compile(r"\b" + re.escape(t.source) + r"\b")) for t in terms]
         applied: list[dict[str, Any]] = []
+        touched_sources: set[str] = set()
         m = store.load_manifest()
-        for t in terms:
-            pattern = re.compile(r"\b" + re.escape(t.source) + r"\b")
-            touched = False
-            for c in m["chapters"]:
-                ch = store.load_chapter(c["index"])
-                dirty = False
-                for idx, seg in enumerate(ch.segments):
+        for c in m["chapters"]:
+            ch = store.load_chapter(c["index"])
+            dirty = False
+            entries: list[dict[str, Any]] = []
+            for idx, seg in enumerate(ch.segments):
+                for t, pattern in compiled:
                     text = seg.target
                     if not text or not _has_cjk(text) or t.target in text:
                         continue
@@ -305,20 +325,24 @@ class GlossaryAuditor(Agent):
                     old = text
                     seg.target = new
                     dirty = True
-                    touched = True
-                    store.log_event(
-                        "glossary_latin_residue_fixed",
-                        chapter=c["index"],
-                        index=idx,
-                        source=seg.source,
-                        before=old,
-                        after=new,
-                        term_source=t.source,
-                        term_target=t.target,
+                    touched_sources.add(t.source)
+                    entries.append(
+                        {
+                            "chapter": c["index"],
+                            "index": idx,
+                            "before": old,
+                            "after": new,
+                            "term_source": t.source,
+                            "term_target": t.target,
+                        }
                     )
-                if dirty:
-                    store.save_chapter(ch)
-            if touched:
+            if dirty:
+                store.save_chapter(ch)
+                for e in entries:
+                    store.log_event("glossary_latin_residue_fixed", **e)
+        # 返回顺序与以术语为外层循环时一致：按术语表原顺序，每个命中术语对应一条记录。
+        for t in terms:
+            if t.source in touched_sources:
                 applied.append(
                     {
                         "source": t.source,

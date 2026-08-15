@@ -26,6 +26,7 @@ from trans_novel.pipeline.fingerprints import (
     review_input_fingerprint,
 )
 from trans_novel.pipeline.nodes.common import chapter_term_snapshot
+from trans_novel.pipeline.runstore import stable_digest
 from trans_novel.pipeline.state import (
     NODE_BACKTRANSLATE,
     NODE_NATURALIZE,
@@ -121,16 +122,10 @@ class ReviewNode:
         if self.config.pipeline.autofix_severe and not review_pending:
             # 严重项定向重译要写回正文，必须留在关键路径上，完全同步（现状不变）。
             new_issues = self.review_chapter(pairs, list(term_snapshot), request.review_executor)
-            store.log_event(
-                "chapter_reviewed",
-                chapter=ci,
-                issue_count=len(new_issues),
-                issues=new_issues,
-            )
             style = self.style_brief
             book_synopsis = (store.load_analysis() or {}).get("book_synopsis", "")
             chapter_digest = store.load_progress(ci).source_digest
-            self._autofix_severe(
+            accepted = self._autofix_severe(
                 chapter.text_segments,
                 new_issues,
                 term_snapshot,
@@ -141,8 +136,10 @@ class ReviewNode:
                 chapter_index=ci,
             )
             # 先落盘正文改动，再标 fixed 并保存审校项——崩溃窗口不出现“报告称已修复
-            # 但正文仍是修复前译文”的状态。
-            store.save_chapter(chapter)
+            # 但正文仍是修复前译文”的状态。无采纳改动时，译文在翻译或润色后未再
+            # 变化，因此跳过整章写入。
+            if accepted:
+                store.save_chapter(chapter)
             for it in new_issues:
                 it["chapter"] = ci
                 it.setdefault("fixed", False)
@@ -151,6 +148,22 @@ class ReviewNode:
             lint_kept = [i for i in progress.review_issue_dicts() if i.get("stage") == "lint"]
             progress.set_review_issue_dicts(lint_kept + new_issues)
             store.save_progress(ci, progress)
+            # 采纳事件在正文与审校项都提交后才发出。
+            for entry in accepted:
+                store.log_event("autofix_applied", **entry)
+            # 审校项补齐 chapter/stage/fixed 并随进度落盘后，才发出审校事件。
+            # 摘要必须以当前持久化的最终审校项为准；ReviewIssue 模型会将
+            # fixed: 0 等原始值归一化为 False，因此应根据归一化后的持久化数据
+            # 计算事件摘要。
+            persisted_review_issues = [
+                i for i in progress.review_issue_dicts() if i.get("stage") == "review"
+            ]
+            store.log_event(
+                "chapter_reviewed",
+                chapter=ci,
+                issue_count=len(persisted_review_issues),
+                issues_sha256=stable_digest(persisted_review_issues),
+            )
             return NodeOutcome(findings_count=len(new_issues), fingerprint=fp)
         # 异步：提交共享线程池，保持 review_pending 持久标记；崩溃续跑据此补跑。
         fut = request.executor.submit(
@@ -173,11 +186,18 @@ class ReviewNode:
         progress.set_review_issue_dicts(lint_kept + new_issues)
         store.save_progress(ci, progress)
         store.set_review_pending(ci, False)
+        # 审校项补齐 chapter/stage/fixed 并随进度落盘后，才发出审校事件。
+        # 摘要必须以当前持久化的最终审校项为准；ReviewIssue 模型会将
+        # fixed: 0 等原始值归一化为 False，因此应根据归一化后的持久化数据
+        # 计算事件摘要。
+        persisted_review_issues = [
+            i for i in progress.review_issue_dicts() if i.get("stage") == "review"
+        ]
         store.log_event(
             "chapter_reviewed",
             chapter=ci,
-            issue_count=len(new_issues),
-            issues=new_issues,
+            issue_count=len(persisted_review_issues),
+            issues_sha256=stable_digest(persisted_review_issues),
         )
 
     # ── 整章分块审校 ──────────────────────────────────────────────────────
@@ -272,12 +292,17 @@ class ReviewNode:
         *,
         store=None,
         chapter_index: int | None = None,
-    ) -> None:
+    ) -> list[dict]:
         """对审校严重项（漏译/误译）带审校意见定向重译，每段最多一次。
 
         采纳条件 = 重译非空且过长度校验：采纳则标点规范化后更新 seg.target 并标
         fixed=True；不采纳保持 fixed=False 留人工。
+        返回本段被采纳的审计条目（chapter/index/before/after/issues 快照）；
+        autofix_applied 事件由调用方在正文与审校项都落盘后统一发出——保证
+        “正文已提交”先于“采纳事件”。拒绝事件仍用于记录处理过程，因此在原处发出，
+        只带摘要与提案指纹，不带 source/before/proposed 明文。
         """
+        accepted_entries: list[dict] = []
         by_seg: dict[int, list[dict]] = {}
         for it in issues:
             if it.get("type") in self._SEVERE_TYPES:
@@ -313,26 +338,25 @@ class ReviewNode:
                 seg.target = new_t
                 for it in seg_issues:
                     it["fixed"] = True
-                if store is not None:
-                    store.log_event(
-                        "autofix_applied",
-                        chapter=chapter_index,
-                        index=idx,
-                        source=seg.source,
-                        before=old_t,
-                        after=new_t,
-                        issues=seg_issues,
-                    )
+                accepted_entries.append(
+                    {
+                        "chapter": chapter_index,
+                        "index": idx,
+                        "before": old_t,
+                        "after": new_t,
+                        "issues": [dict(it) for it in seg_issues],
+                    }
+                )
             elif store is not None:
                 store.log_event(
                     "autofix_rejected",
                     chapter=chapter_index,
                     index=idx,
-                    source=seg.source,
-                    before=seg.target,
-                    proposed=new_t,
-                    issues=seg_issues,
+                    reason=sorted({str(it.get("type", "")) for it in seg_issues}),
+                    issues_sha256=stable_digest(seg_issues),
+                    proposal_sha256=stable_digest(new_t),
                 )
+        return accepted_entries
 
 
 class BacktranslateNode:
@@ -368,13 +392,11 @@ class BacktranslateNode:
                 chapter=ci,
                 sample_count=len(bt_samples),
                 issue_count=len(bt_issues),
-                issues=bt_issues,
+                issues_sha256=stable_digest(bt_issues),
             )
         progress = store.load_progress(ci)
         progress.set_backtranslation_issue_dicts(bt_issues)
         store.save_progress(ci, progress)
-        if request.finalize_chapter:
-            store.log_event("usage_snapshot", chapter=ci, **self.backtrans.client.usage_summary())
         fp = backtranslate_input_fingerprint(
             "\n".join(s.source for s in text_segs),
             backtranslate_sample=rate,

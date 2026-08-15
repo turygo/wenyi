@@ -12,8 +12,11 @@ from tests.fake_llm import fake_llm_dict, routing_handler
 from tests.sample_data import write_sample_txt
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
+from trans_novel.ingest.models import Chapter, Segment
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.bootstrap import Application
+from trans_novel.pipeline.runstore import RunStore, stable_digest
+from trans_novel.pipeline.state import ChapterIndex, ChapterProgress, RunIdentity, RunState
 from trans_novel.postprocess.punct import normalize_heading_numbering, normalize_zh
 
 
@@ -214,6 +217,164 @@ class TestGlossaryAudit(unittest.TestCase):
             # 正文里的 佳穗子 应已被改写为 佳穂子
             ch2 = store.load_chapter(0)
             self.assertEqual(ch2.segments[1].target, "佳穂子和佳穂子在一起。")
+            # glossary_rewrite_applied 不复述全局 replace_map、不带 source 明文，
+            # 只带实际命中的替换元数据与 before/after
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            rewrites = [e for e in events if e["event"] == "glossary_rewrite_applied"]
+            self.assertTrue(rewrites, "正文改写应发 glossary_rewrite_applied")
+            for e in rewrites:
+                self.assertNotIn("source", e, "事件不带 source 明文")
+                self.assertNotIn("replace_map", e, "事件不复述全局 replace_map")
+                self.assertIn("before", e)
+                self.assertIn("after", e)
+                self.assertEqual(e["replacements"], [{"variant": "佳穗子", "canonical": "佳穂子"}])
+
+    def test_rewrite_replacements_follow_actual_sequential_execution(self):
+        """glossary_rewrite_applied 的 replacements 必须来自真实替换过程：
+        重叠变体被先执行的长变体吞掉时不误报；后执行替换引入的新变体随后
+        命中并执行时如实按序上报；同一章多段改写只整章保存一次。"""
+        from trans_novel.agents.glossary_auditor import GlossaryAuditor
+
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(os.path.join(d, "state"))
+            store.save_state(
+                RunState(
+                    identity=RunIdentity(
+                        source_bytes_sha256="test-hash",
+                        run_input_schema_version=1,
+                        source_lang="en",
+                        target_lang="zh",
+                    ),
+                    title="T",
+                    fmt="text",
+                    source_path="",
+                    source_lang="en",
+                    target_lang="zh",
+                    chapters=[ChapterIndex(index=0, title="第一章", href=None)],
+                    progress={0: ChapterProgress()},
+                )
+            )
+            chapter = Chapter(
+                index=0,
+                title="第一章",
+                segments=[
+                    # 段0：BC 被先执行的长变体 ABC 整段吞掉 → 只报 ABC
+                    Segment(index=0, source="a", target="内容ABC结尾。"),
+                    # 段1：AB→CD 引入了变体 CD，随后 CD→E 真实执行 → 按序报 AB、CD
+                    Segment(index=1, source="b", target="前缀AB后缀。"),
+                    Segment(index=2, source="c", target="无变体段落。"),
+                ],
+            )
+            store.save_chapter(chapter)
+            g = GlossaryStore(store.glossary_path)
+            saves: list[int] = []
+            real_save = store.save_chapter
+
+            def counting_save(ch):
+                saves.append(ch.index)
+                return real_save(ch)
+
+            store.save_chapter = counting_save
+            changed = GlossaryAuditor._rewrite_targets(
+                store, g, {"ABC": "X", "BC": "Y", "AB": "CD", "CD": "E"}
+            )
+            g.close()
+
+            self.assertEqual(changed, 2)
+            self.assertEqual(saves, [0], "同一章的多段改写应只整章保存一次")
+            reloaded = store.load_chapter(0)
+            self.assertEqual(reloaded.segments[0].target, "内容X结尾。")
+            self.assertEqual(reloaded.segments[1].target, "前缀E后缀。")
+            self.assertEqual(reloaded.segments[2].target, "无变体段落。")
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            rewrites = {e["index"]: e for e in events if e["event"] == "glossary_rewrite_applied"}
+            self.assertEqual(
+                rewrites[0]["replacements"],
+                [{"variant": "ABC", "canonical": "X"}],
+                "被长变体吞掉的 BC 不得误报",
+            )
+            self.assertEqual(
+                rewrites[1]["replacements"],
+                [{"variant": "AB", "canonical": "CD"}, {"variant": "CD", "canonical": "E"}],
+                "替换引入的新变体随后执行时应按序上报",
+            )
+
+    def test_latin_residue_coalesces_one_save_per_chapter(self):
+        """多个锁定拉丁术语命中同一章：每章只保存一次、每个命中术语一条 applied 记录；
+        glossary_latin_residue_fixed 事件紧凑（无 source 明文）且按章落盘后发出。"""
+        from trans_novel.agents.glossary_auditor import GlossaryAuditor
+
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(os.path.join(d, "state"))
+            store.save_state(
+                RunState(
+                    identity=RunIdentity(
+                        source_bytes_sha256="test-hash",
+                        run_input_schema_version=1,
+                        source_lang="en",
+                        target_lang="zh",
+                    ),
+                    title="T",
+                    fmt="text",
+                    source_path="",
+                    source_lang="en",
+                    target_lang="zh",
+                    chapters=[ChapterIndex(index=0, title="第一章", href=None)],
+                    progress={0: ChapterProgress()},
+                )
+            )
+            chapter = Chapter(
+                index=0,
+                title="第一章",
+                segments=[
+                    Segment(index=0, source="a", target="Ayanokoji 走进了教室。"),
+                    Segment(index=1, source="b", target="Kaho 笑了笑。Ayanokoji 点头。"),
+                ],
+            )
+            store.save_chapter(chapter)
+            g = GlossaryStore(store.glossary_path)
+            g.upsert_term(
+                GlossaryTerm(source="Kaho", target="佳穂", confidence="high", locked=True)
+            )
+            g.upsert_term(
+                GlossaryTerm(source="Ayanokoji", target="綾小路", confidence="high", locked=True)
+            )
+
+            cfg = Config.from_dict({"llm": fake_llm_dict(), "quality": "economy"})
+            cfg.source_lang = "en"
+            cfg.state_dir = os.path.join(d, "state")
+            client = FakeClient(handler=lambda m, a, o, j: "{}")
+
+            saves: list[int] = []
+            real_save = store.save_chapter
+
+            def counting_save(ch):
+                saves.append(ch.index)
+                return real_save(ch)
+
+            store.save_chapter = counting_save
+            applied = GlossaryAuditor(client, cfg).audit(store, g)
+            g.close()
+
+            self.assertEqual(saves, [0], "多个术语命中同一章应只整章写一次")
+            reloaded = store.load_chapter(0)
+            self.assertEqual(reloaded.segments[0].target, "綾小路走进了教室。")
+            self.assertEqual(reloaded.segments[1].target, "佳穂笑了笑。綾小路点头。")
+            self.assertEqual(len(applied), 2, "每个命中术语一条 applied 记录")
+            self.assertEqual({a["source"] for a in applied}, {"Kaho", "Ayanokoji"})
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            fixed = [e for e in events if e["event"] == "glossary_latin_residue_fixed"]
+            self.assertEqual(len(fixed), 3)  # 段0 一处 + 段1 两处
+            for e in fixed:
+                self.assertNotIn("source", e, "事件不带 source 明文")
+                self.assertNotIn("replace_map", e)
+                self.assertIn("before", e)
+                self.assertIn("after", e)
+                self.assertIn("term_source", e)
+                self.assertIn("term_target", e)
 
 
 class TestRunAll(unittest.TestCase):
@@ -249,10 +410,32 @@ class TestRunAll(unittest.TestCase):
             self.assertIn("report_saved", event_names)
             self.assertIn("assembled", event_names)
             self.assertNotIn("glossary_audit_finished", event_names)
-            translated = next(e for e in events if e["event"] == "batch_translated")
-            self.assertTrue(translated["segments"])
-            self.assertIn("source", translated["segments"][0])
-            self.assertIn("target", translated["segments"][0])
+            # V2 事件：例行翻译不带任何明文，只带稳定摘要；所有事件行均带 schema 标记
+            self.assertTrue(all(e.get("event_schema") == 2 for e in events))
+            translated = [e for e in events if e["event"] == "batch_translated"]
+            self.assertTrue(translated)
+            for e in translated:
+                self.assertNotIn("segments", e)
+                self.assertNotIn("source", e)
+                self.assertNotIn("target", e)
+                self.assertIn("target_sha256", e)
+            # 润色批摘要必须对应当前落盘的 target（同一稳定载荷契约：稳定段号 + target）
+            polished = [e for e in events if e["event"] == "batch_polished"]
+            self.assertTrue(polished)
+            for e in polished:
+                ch = result["store"].load_chapter(e["chapter"])
+                segs = ch.text_segments[e["start_index"] : e["start_index"] + e["count"]]
+                self.assertEqual(
+                    e["target_sha256"],
+                    stable_digest([{"index": s.index, "target": s.target} for s in segs]),
+                )
+            # 一致性 QA 事件只带计数与 issue 摘要，不重复整份 issue 数组
+            qa = [e for e in events if e["event"] == "consistency_qa_finished"]
+            self.assertTrue(qa)
+            for e in qa:
+                self.assertNotIn("issues", e)
+                self.assertIn("issue_count", e)
+                self.assertIn("issues_sha256", e)
 
 
 if __name__ == "__main__":

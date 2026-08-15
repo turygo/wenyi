@@ -173,6 +173,12 @@ class TestBackMatterLight(unittest.TestCase):
             for e in bts:
                 self.assertTrue(e.get("back_matter"))
                 self.assertEqual(e.get("operation"), "translate.back_matter")
+                # V2 压缩载荷：保留事件名/档位语义，例行文本只带摘要
+                self.assertEqual(e.get("event_schema"), 2)
+                self.assertNotIn("segments", e)
+                self.assertNotIn("source", e)
+                self.assertNotIn("target", e)
+                self.assertIn("target_sha256", e)
 
             # (b) 完整流水线的重活一律不落到附属章
             for ev in (

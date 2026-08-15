@@ -9,6 +9,7 @@ RunStore 断点续跑时正确累计。
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import tempfile
 import threading
@@ -560,6 +561,16 @@ class TestUsageIncrementalPersistence(unittest.TestCase):
             self.assertEqual(cumulative["by_provider"]["fake"]["total_tokens"], 170)
             self.assertEqual(store.load_usage(), cumulative)
             self.assertTrue(os.path.isfile(store.usage_path))
+            # usage_summary 事件只带 scope + 增量，不带累计明文（累计只在 usage.json）
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            usage_events = [e for e in events if e["event"] == "usage_summary"]
+            self.assertTrue(usage_events)
+            self.assertEqual(usage_events[-1].get("event_schema"), 2)
+            self.assertEqual(usage_events[-1]["scope"], "translate")
+            self.assertIn("increment", usage_events[-1])
+            self.assertNotIn("cumulative", usage_events[-1], "累计用量不进事件，只落 usage.json")
+            self.assertFalse(any(e["event"] == "usage_snapshot" for e in events))
 
     def test_operation_only_failure_persists_and_second_flush_does_not_duplicate(self):
         """由 Agent 的 default 兜底处理的失败调用：totals/by_stage 全零（无成功响应），

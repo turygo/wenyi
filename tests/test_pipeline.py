@@ -9,6 +9,8 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
+from unittest import mock
 
 from tests.fake_llm import fake_llm_dict, routing_handler
 from tests.sample_data import (
@@ -25,7 +27,14 @@ from trans_novel.llm import FakeClient
 from trans_novel.pipeline.bootstrap import Application
 from trans_novel.pipeline.contracts import ExecutionGoal, assemble_goal
 from trans_novel.pipeline.nodes.prepare import _normalize_lang
-from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING, RunStore, slugify
+from trans_novel.pipeline.runner import RequiredNodeFailed
+from trans_novel.pipeline.runstore import (
+    STATUS_DONE,
+    STATUS_PENDING,
+    RunStore,
+    slugify,
+    stable_digest,
+)
 from trans_novel.pipeline.state import (
     NODE_ANALYZE,
     NODE_BACKTRANSLATE,
@@ -908,6 +917,73 @@ class TestReviewReporting(unittest.TestCase):
             self.assertTrue(all(i.get("stage") == "review" for i in flagged))
             self.assertTrue(all("chapter" in i for i in flagged))
             self.assertEqual(ch.text_segments[0].target, self.FIX_TEXT)
+            # chapter_reviewed 是在 chapter/stage/fixed 全部补齐且进度落盘后发出的
+            # 同步事件，其摘要必须与持久化的最终审校项一致。
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            reviewed = [e for e in events if e["event"] == "chapter_reviewed" and e["chapter"] == 0]
+            self.assertTrue(reviewed, "autofix 路径应发 chapter_reviewed 事件")
+            persisted_review = [
+                i for i in store.load_progress(0).review_issue_dicts() if i.get("stage") == "review"
+            ]
+            self.assertTrue(persisted_review)
+            for e in reviewed:
+                self.assertEqual(
+                    e["issues_sha256"],
+                    stable_digest(persisted_review),
+                    "同步 autofix 路径的 chapter_reviewed 摘要必须对应当前持久化的审校项",
+                )
+
+    def test_autofix_review_digest_matches_normalized_persisted_issues(self):
+        """载荷中的 fixed 为整数 0 时，经过 ReviewIssue 模型转换后会归一化为
+        False；chapter_reviewed 的 issue_count/issues_sha256 必须基于归一化后的
+        持久化审校项计算，而非原始模型载荷（否则无法根据落盘的审校项复现摘要）。"""
+
+        def handler(messages, agent, operation, json_mode):
+            if "译文审校" in messages[0]["content"]:
+                user = messages[-1]["content"]
+                n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
+                return json.dumps(
+                    {
+                        "issues": [
+                            {
+                                "index": 0,
+                                "type": "terminology",  # 非严重项，不触发定向重译
+                                "detail": "术语不一致",
+                                "suggestion": "改用对照表",
+                                "fixed": 0,  # 0 经 ReviewIssue 归一化为 False
+                            }
+                        ],
+                        "reviewed_segments": n,
+                        "complete": True,
+                    },
+                    ensure_ascii=False,
+                )
+            return routing_handler(messages, agent, operation, json_mode)
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.autofix_severe = True  # 同步审校路径
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt)
+
+            persisted_review = [
+                i for i in store.load_progress(0).review_issue_dicts() if i.get("stage") == "review"
+            ]
+            self.assertTrue(persisted_review, "审校项应已落盘")
+            self.assertIs(persisted_review[0]["fixed"], False, "fixed 应被归一化为布尔 False")
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            reviewed = [e for e in events if e["event"] == "chapter_reviewed" and e["chapter"] == 0]
+            self.assertTrue(reviewed, "autofix 路径应发 chapter_reviewed 事件")
+            for e in reviewed:
+                self.assertEqual(e["issue_count"], len(persisted_review))
+                self.assertEqual(
+                    e["issues_sha256"],
+                    stable_digest(persisted_review),
+                    "fixed 归一化后，同步路径摘要必须等于持久化审校项数据的摘要",
+                )
 
     def test_autofix_off_reports_only(self):
         """autofix 关：审校严重项仅上报 fixed=False，审校通道本身不动正文
@@ -938,6 +1014,52 @@ class TestReviewReporting(unittest.TestCase):
             self.assertTrue(flagged)
             self.assertTrue(all(i.get("fixed") is False for i in flagged))
             self.assertNotEqual(ch.text_segments[0].target, "短")
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            rejected = [e for e in events if e["event"] == "autofix_rejected"]
+            self.assertTrue(rejected, "过短重译应发 autofix_rejected")
+            for e in rejected:
+                self.assertNotIn("source", e, "autofix_rejected 不携带 source 明文")
+                self.assertNotIn("before", e, "autofix_rejected 不携带 before 明文")
+                self.assertNotIn("proposed", e, "autofix_rejected 不携带提案明文")
+                self.assertNotIn("issues", e, "autofix_rejected 不携带完整 issue 明文")
+                self.assertIn("chapter", e)
+                self.assertIn("index", e)
+                self.assertIn("reason", e)
+                self.assertIn("issues_sha256", e)
+                self.assertIn("proposal_sha256", e)
+
+    def test_autofix_no_accept_skips_redundant_chapter_save(self):
+        """无采纳 autofix 时 review 阶段不冗余整章写：与审校关闭基线相比，各章
+        保存次数完全一致；采纳场景则每章恰好多一次。"""
+
+        def run_once(autofix: bool, fix_text: str) -> dict[int, int]:
+            with tempfile.TemporaryDirectory() as d:
+                txt = os.path.join(d, "novel.txt")
+                write_sample_txt(txt)
+                cfg = _config(os.path.join(d, "state"))
+                cfg.pipeline.autofix_severe = autofix
+                handler = self._handler(fix_text)
+                real_save = RunStore.save_chapter
+                saves: dict[int, int] = {}
+
+                def counting_save(self, chapter):
+                    saves[chapter.index] = saves.get(chapter.index, 0) + 1
+                    return real_save(self, chapter)
+
+                with mock.patch.object(RunStore, "save_chapter", counting_save):
+                    Application(cfg, client=FakeClient(handler=handler)).run(txt)
+                return saves
+
+        baseline = run_once(autofix=False, fix_text="短")
+        rejected = run_once(autofix=True, fix_text="短")
+        self.assertEqual(rejected, baseline, "无采纳 autofix 时 review 阶段不得整章写")
+        accepted = run_once(autofix=True, fix_text=self.FIX_TEXT)
+        self.assertEqual(
+            {ci: n + 1 for ci, n in rejected.items()},
+            {ci: accepted[ci] for ci in rejected},
+            "采纳 autofix 时 review 每章恰好多一次整章写",
+        )
 
     def test_review_index_mapping(self):
         """整章多块审校时，块内 index 正确映射回章内段号。"""
@@ -1546,8 +1668,9 @@ class TestLangNormalize(unittest.TestCase):
 
 class TestPolishAsync(unittest.TestCase):
     def test_batch_translated_then_batch_polished_events(self):
-        """polish 开启：batch_translated 先发（polished=False，segments 为 raw 译文），
-        章末排干润色后再发 batch_polished（segments 为最终润色文本），pending_polish 清空。"""
+        """polish 开启：batch_translated 先发（polished=False，V2 无明文、只带 raw 译文摘要），
+        章末排干润色后再发 batch_polished（仅记录实际改动 + 最终 target 摘要），
+        pending_polish 清空。"""
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
             write_sample_txt(txt)
@@ -1568,19 +1691,110 @@ class TestPolishAsync(unittest.TestCase):
             polished = [e for e in events if e["event"] == "batch_polished" and e["chapter"] == 0]
             self.assertTrue(translated)
             self.assertTrue(polished)
-            # batch_translated 触发时尚未润色：polished=False，segments 记 raw 译文
+            # batch_translated 触发时尚未润色：polished=False，只带摘要，无任何明文载荷
             for e in translated:
                 self.assertFalse(e["polished"])
-                for seg in e["segments"]:
-                    self.assertTrue(seg["target"].startswith("译"))
-            # 章末排干后 batch_polished 携带最终润色文本
-            for e in polished:
-                for seg in e["segments"]:
-                    self.assertTrue(seg["target"].startswith("润"))
-            # run() 返回时排干已完成：正文与 meta 均为最终态，无残留 pending 标记
+                self.assertEqual(e.get("event_schema"), 2)
+                self.assertNotIn("segments", e)
+                self.assertNotIn("source", e)
+                self.assertNotIn("target", e)
+                self.assertIn("target_sha256", e)
+            # 章末排干后 batch_polished 仅记录实际改动（稳定段号），并带最终 target 摘要
             ch = store.load_chapter(0)
+            segs = ch.text_segments
+            for e in polished:
+                self.assertEqual(e.get("event_schema"), 2)
+                self.assertNotIn("segments", e)
+                self.assertEqual(e["changed_count"], len(e["changes"]))
+                batch_segs = segs[e["start_index"] : e["start_index"] + e["count"]]
+                self.assertEqual(
+                    e["target_sha256"],
+                    stable_digest([{"index": s.index, "target": s.target} for s in batch_segs]),
+                    "batch_polished 摘要必须对应当前落盘的 target",
+                )
+                for c in e["changes"]:
+                    self.assertIn("index", c)
+                    self.assertNotEqual(c["before"], c["after"])
+            # 每段都被润色改写（译→润），逐段出现在 changes 里，无遗漏
+            all_changed = {c["index"] for e in polished for c in e["changes"]}
+            self.assertEqual(all_changed, {s.index for s in segs})
+            # run() 返回时排干已完成：正文与 meta 均为最终态，无残留 pending 标记
             self.assertFalse(store.load_progress(0).pending_polish)
-            self.assertTrue(all(s.target.startswith("润") for s in ch.text_segments))
+            self.assertTrue(all(s.target.startswith("润") for s in segs))
+
+    def test_noop_polish_batch_still_emits_compact_event(self):
+        """润色不改动任何文本（no-op 批次）：仍发一条 batch_polished，changed_count=0、
+        changes=[]，并带最终 target 摘要。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            def handler(messages, agent, operation, json_mode):
+                system = messages[0]["content"]
+                user = messages[-1]["content"]
+                if "中文润色编辑" in system:
+                    # 原样返回待润色译文：润色不产生任何改动
+                    target_block = user.split("【待润色中文译文】", 1)[-1]
+                    polished = re.findall(r"^\[\d+\] (.*)$", target_block, re.M)
+                    return json.dumps({"polished": polished}, ensure_ascii=False)
+                return routing_handler(messages, agent, operation, json_mode)
+
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            polished = [e for e in events if e["event"] == "batch_polished" and e["chapter"] == 0]
+            self.assertTrue(polished, "no-op 润色批次仍应发 batch_polished")
+            ch = store.load_chapter(0)
+            segs = ch.text_segments
+            for e in polished:
+                self.assertEqual(e["changed_count"], 0)
+                self.assertEqual(e["changes"], [])
+                batch_segs = segs[e["start_index"] : e["start_index"] + e["count"]]
+                self.assertEqual(
+                    e["target_sha256"],
+                    stable_digest([{"index": s.index, "target": s.target} for s in batch_segs]),
+                )
+
+    def test_punctuation_only_change_is_audited(self):
+        """润色器输出与 raw 完全一致、仅标点规范化造成落盘差异：审计仅记录实际
+        改动，并以持久化前的 raw 作为 before 基线，规范化差异也要如实上报。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+
+            def handler(messages, agent, operation, json_mode):
+                system = messages[0]["content"]
+                user = messages[-1]["content"]
+                if "文学翻译" in system:
+                    n = len(re.findall(r"^\[\d+\]", user, re.M))
+                    return json.dumps({"translations": ["你好,世界。"] * n}, ensure_ascii=False)
+                if "中文润色编辑" in system:
+                    # 原样返回待润色译文：润色器本身不改任何字
+                    target_block = user.split("【待润色中文译文】", 1)[-1]
+                    polished = re.findall(r"^\[\d+\] (.*)$", target_block, re.M)
+                    return json.dumps({"polished": polished}, ensure_ascii=False)
+                return routing_handler(messages, agent, operation, json_mode)
+
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt, only_chapter=0)
+            ch = store.load_chapter(0)
+            self.assertTrue(all(s.target == "你好，世界。" for s in ch.text_segments))
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            polished = [e for e in events if e["event"] == "batch_polished" and e["chapter"] == 0]
+            self.assertTrue(polished, "应发 batch_polished 事件")
+            for e in polished:
+                self.assertGreater(e["changed_count"], 0, "标点规范化差异应计入 changed_count")
+                for c in e["changes"]:
+                    self.assertEqual(c["before"], "你好,世界。", "before 必须取持久化前的 raw")
+                    self.assertEqual(c["after"], "你好，世界。")
 
 
 class TestPendingPolishResume(unittest.TestCase):
@@ -1634,6 +1848,134 @@ class TestPendingPolishResume(unittest.TestCase):
                     and e["start_index"] == last_idx
                     for e in events
                 )
+            )
+
+
+class TestAcceptedEventCommitOrdering(unittest.TestCase):
+    """采纳改写事件必须在正文成功持久化后发出；正文保存失败时不得记录事件。"""
+
+    def test_batch_translated_absent_when_chapter_save_raises(self):
+        """译文保存抛出 OSError 时，节点应失败，且不得出现 batch_translated 或 lint_refixed 事件。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+            cfg.pipeline.polish = False
+
+            real_save = RunStore.save_chapter
+
+            def flaky_save(self, chapter):
+                if any((s.target or "").strip() for s in chapter.segments):
+                    raise OSError("disk full")
+                return real_save(self, chapter)
+
+            with (
+                mock.patch.object(RunStore, "save_chapter", flaky_save),
+                self.assertRaises(RequiredNodeFailed),
+            ):
+                Application(cfg, client=FakeClient(handler=routing_handler)).run(
+                    txt, only_chapter=0
+                )
+            store = RunStore(cfg.state_dir)
+            # 保存失败时不记录任何事件，因此可能不会创建 events.jsonl
+            events = []
+            if os.path.exists(store.event_log_path):
+                with open(store.event_log_path, encoding="utf-8") as f:
+                    events = [json.loads(line) for line in f if line.strip()]
+            self.assertFalse(
+                any(e["event"] == "batch_translated" for e in events),
+                "译文保存失败时不得发出 batch_translated 采纳事件",
+            )
+            self.assertFalse(
+                any(e["event"] == "lint_refixed" for e in events),
+                "译文保存失败时不得发出 lint_refixed 采纳事件",
+            )
+
+
+class TestEventLogBestEffort(unittest.TestCase):
+    """事件日志追加失败（仅 OSError）→ RuntimeWarning，流程不失败、不触发重跑。"""
+
+    def test_oserror_warns_and_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(os.path.join(d, "state"))
+            store.ensure_dirs()
+            # 用目录占位事件文件：open(..., "a") 抛 IsADirectoryError（OSError 子类）
+            os.makedirs(store.event_log_path)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                store.log_event("probe", payload="x")  # 不得抛异常
+            self.assertTrue(
+                any(issubclass(w.category, RuntimeWarning) for w in caught),
+                "事件追加失败应发 RuntimeWarning",
+            )
+            # 恢复为文件后正常追加 V2 行
+            os.rmdir(store.event_log_path)
+            store.log_event("probe", payload="x")
+            with open(store.event_log_path, encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f if line.strip()]
+            self.assertEqual(rows[-1]["event"], "probe")
+            self.assertEqual(rows[-1]["event_schema"], 2)
+
+    def test_oserror_from_dir_setup_warns_and_does_not_raise(self):
+        """目录创建抛出 OSError 时也按尽力写入策略处理：发出 RuntimeWarning，
+        不向外抛出异常。
+
+        ensure_dirs() 和文件追加必须处于同一 OSError 捕获范围内——用普通文件
+        占位 chapters_v2 目录，令 makedirs(exist_ok=True) 抛 FileExistsError。
+        """
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(os.path.join(d, "state"))
+            os.rmdir(store.chapters_v2_dir)
+            with open(store.chapters_v2_dir, "w", encoding="utf-8") as f:
+                f.write("blocker")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                store.log_event("probe", payload="x")  # 目录创建失败也不得抛异常
+            self.assertTrue(
+                any(issubclass(w.category, RuntimeWarning) for w in caught),
+                "目录创建阶段的 OSError 也应发 RuntimeWarning",
+            )
+
+    def test_non_oserror_propagates(self):
+        """序列化错误和编程错误不属于 OSError，仍应向外抛出，不能被尽力写入逻辑忽略。"""
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(os.path.join(d, "state"))
+            store.ensure_dirs()
+            with self.assertRaises(TypeError):
+                store.log_event("probe", payload=object())
+
+    def test_event_failure_does_not_rerun_committed_translation(self):
+        """事件写失败只告警：续跑会通过跳过分支复用已提交的译文，绝不重新翻译。"""
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.review = False
+            cfg.pipeline.consistency_qa = False
+            cfg.pipeline.book_understanding = False
+            cfg.pipeline.polish = False
+
+            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
+            # 把事件文件替换成目录：此后任何事件追加都抛 OSError
+            os.remove(store.event_log_path)
+            os.makedirs(store.event_log_path)
+            # 模拟崩溃窗口：章回 pending、译文保留 → 续跑走批跳过分支
+            store.set_chapter_status(0, STATUS_PENDING)
+
+            client2 = FakeClient(handler=routing_handler)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                Application(cfg, client=client2).run(txt, only_chapter=0)
+            translate_calls = [
+                c for c in client2.calls if "文学翻译" in c["messages"][0]["content"]
+            ]
+            self.assertEqual(translate_calls, [], "事件写失败不得触发已提交译文重翻")
+            self.assertTrue(
+                any(issubclass(w.category, RuntimeWarning) for w in caught),
+                "续跑的事件追加失败应发 RuntimeWarning",
             )
 
 
@@ -1696,6 +2038,71 @@ class TestReviewAsync(unittest.TestCase):
             self.assertEqual(
                 reviewed, set(range(len(m["chapters"]))), "每章都应发 chapter_reviewed 事件"
             )
+            for e in events:
+                if e["event"] != "chapter_reviewed":
+                    continue
+                self.assertEqual(e.get("event_schema"), 2)
+                self.assertNotIn("issues", e, "chapter_reviewed 不再携带完整 issue 明文")
+                self.assertIn("issue_count", e)
+                self.assertIn("issues_sha256", e)
+
+    def test_async_review_digest_matches_normalized_persisted_issues(self):
+        """异步 finish 路径与同步路径语义一致：若载荷中的 fixed 为整数 0，
+        ReviewIssue 模型会将其归一化为 False；事件摘要必须与持久化审校项数据的
+        摘要一致。"""
+
+        def handler(messages, agent, operation, json_mode):
+            if "译文审校" in messages[0]["content"]:
+                user = messages[-1]["content"]
+                n = len(re.findall(r"^\[\d+\] 原文：", user, re.M))
+                return json.dumps(
+                    {
+                        "issues": [
+                            {
+                                "index": 0,
+                                "type": "terminology",
+                                "detail": "术语不一致",
+                                "suggestion": "改用对照表",
+                                "fixed": 0,  # 0 经 ReviewIssue 归一化为 False
+                            }
+                        ],
+                        "reviewed_segments": n,
+                        "complete": True,
+                    },
+                    ensure_ascii=False,
+                )
+            return routing_handler(messages, agent, operation, json_mode)
+
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = _config(os.path.join(d, "state"))
+            cfg.pipeline.autofix_severe = False  # 异步审校路径
+
+            store = Application(cfg, client=FakeClient(handler=handler)).run(txt)
+
+            m = store.load_manifest()
+            with open(store.event_log_path, encoding="utf-8") as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            for ci in range(len(m["chapters"])):
+                persisted_review = [
+                    i
+                    for i in store.load_progress(ci).review_issue_dicts()
+                    if i.get("stage") == "review"
+                ]
+                self.assertTrue(persisted_review, f"第 {ci} 章审校项应已落盘")
+                self.assertIs(persisted_review[0]["fixed"], False, "fixed 应被归一化为布尔 False")
+                reviewed = [
+                    e for e in events if e["event"] == "chapter_reviewed" and e["chapter"] == ci
+                ]
+                self.assertTrue(reviewed, f"第 {ci} 章应发 chapter_reviewed 事件")
+                for e in reviewed:
+                    self.assertEqual(e["issue_count"], len(persisted_review))
+                    self.assertEqual(
+                        e["issues_sha256"],
+                        stable_digest(persisted_review),
+                        "fixed 归一化后，异步路径摘要必须等于持久化审校项数据的摘要",
+                    )
 
     def test_review_worker_failure_does_not_break_run(self):
         # review 未来（review_chapter）本身抛异常 → 触发 runner 异步排干的
@@ -2389,10 +2796,12 @@ class TestLintQuoteRefix(unittest.TestCase):
             linted = [e for e in events if e["event"] == "batch_linted" and e["chapter"] == 0]
             refixed = [e for e in events if e["event"] == "lint_refixed" and e["chapter"] == 0]
             self.assertTrue(linted, "丢引号首译应触发 batch_linted")
-            self.assertTrue(
-                any(i["type"] == "quote_loss" for e in linted for i in e["issues"]),
-                "batch_linted 摘要应含 quote_loss",
-            )
+            for e in linted:
+                self.assertEqual(e.get("event_schema"), 2)
+                self.assertNotIn("issues", e, "batch_linted 不再携带完整 issue 明文")
+                self.assertEqual(e["issue_count"], sum(e["by_type"].values()))
+                self.assertIn("quote_loss", e["by_type"])
+                self.assertIn("issues_sha256", e)
             self.assertTrue(refixed, "重译修复后应发 lint_refixed")
             self.assertEqual(refixed[0]["index"], 1)
             self.assertNotIn("“", refixed[0]["before"])
@@ -2452,7 +2861,12 @@ class TestPolishQuoteRejection(unittest.TestCase):
             self.assertEqual(rejected[0]["chapter"], 0)
             self.assertEqual(rejected[0]["index"], 1)
             self.assertIn("quote_loss", rejected[0]["reason"])
-            self.assertNotIn("“", rejected[0]["polished"])
+            self.assertNotIn("polished", rejected[0], "被拒润色候选不再写明文")
+            self.assertEqual(
+                rejected[0]["proposal_sha256"],
+                stable_digest("早上好他轻声说道"),
+                "被拒候选以稳定摘要形式审计",
+            )
 
 
 class TestLintTooShortReportOnly(unittest.TestCase):
@@ -2497,8 +2911,8 @@ class TestLintTooShortReportOnly(unittest.TestCase):
             self.assertFalse(any(e["event"] == "lint_refixed" for e in events))
             linted = [e for e in events if e["event"] == "batch_linted"]
             self.assertTrue(
-                any(i["type"] == "too_short" for e in linted for i in e["issues"]),
-                "过短译文应被 lint 发现并记入 batch_linted",
+                any("too_short" in e["by_type"] for e in linted),
+                "过短译文应被 lint 发现并记入 batch_linted 的类型计数",
             )
 
             recorded = [

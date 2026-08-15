@@ -145,6 +145,15 @@ class TestBackMatterFullNoExtraction(unittest.TestCase):
             # 但零抽词事件（所有抽取点被 not bm 守住）
             self.assertNotIn("batch_glossary_extracted", bm_ev, "full 档附属章不得批内抽词")
             self.assertNotIn("chapter_glossary_extracted", bm_ev, "full 档附属章不得章末兜底抽词")
+            # 回译事件只带计数 + issue 摘要，不重复完整 issue 数组
+            checked = [e for e in events if e["event"] == "chapter_backtranslation_checked"]
+            self.assertTrue(checked, "full 档附属章应发回译检查事件")
+            for e in checked:
+                self.assertEqual(e.get("event_schema"), 2)
+                self.assertIn("sample_count", e)
+                self.assertIn("issue_count", e)
+                self.assertNotIn("issues", e, "回译事件不携带完整 issue 数组")
+                self.assertIn("issues_sha256", e)
             # 正文章不受影响，仍抽词
             self.assertIn("batch_glossary_extracted", body_ev, "正文章应批内抽词")
             self.assertIn("chapter_glossary_extracted", body_ev, "正文章应章末兜底抽词")

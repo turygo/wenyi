@@ -238,9 +238,16 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
             self.assertEqual(applied[0]["index"], 5)
             self.assertEqual(applied[0]["before"], ORIG5)
             self.assertEqual(applied[0]["after"], normalize_zh(REWRITE5))
+            self.assertEqual(applied[0].get("event_schema"), 2)
+            self.assertNotIn("source", applied[0])
+            self.assertIn("quote", applied[0])
+            self.assertIn("reason", applied[0])
             self.assertEqual(len(rejected), 1)
             self.assertEqual(rejected[0]["gate"], "lint")
             self.assertEqual(rejected[0]["index"], 1)
+            self.assertNotIn("detail", rejected[0], "naturalize_rejected 不再嵌套 rewritten 明文")
+            self.assertIn("proposal_sha256", rejected[0])
+            self.assertIn("quote", rejected[0])
 
             # back matter 章节完全不参与（不贡献 screened 计数、无对该章事件）
             self.assertFalse(any(e.get("chapter") == 1 for e in events))
@@ -355,6 +362,74 @@ class TestNaturalizeChapterFlow(unittest.TestCase):
                 not in ("第一段翻译腔原文，读起来很别扭。", "第二段翻译腔原文，同样很别扭。")
             ]
             self.assertEqual(len(changed), 1)
+
+    def test_no_applied_rewrites_skip_chapter_save(self):
+        """无采纳改写时不写入章节（译文在翻译或润色后未再变化），只设置 naturalized 进度标记。"""
+        with tempfile.TemporaryDirectory() as d:
+            store, _ = self._build(d)
+            config = _config(os.path.join(d, "state"))
+
+            def handler(messages, agent, operation, json_mode):
+                system = messages[0]["content"]
+                user = messages[-1]["content"]
+                if "书稿的母语审读编辑" in system:
+                    return json.dumps(
+                        {
+                            "issues": [
+                                {"index": 0, "quote": "别扭", "reason": "翻译腔"},
+                                {"index": 1, "quote": "别扭", "reason": "翻译腔"},
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
+                if "改写编辑" in system:
+                    # 改写结果与原译完全相同 → 不算改写，不进任何关卡
+                    return json.dumps(
+                        {"rewritten": ORIG1 if ORIG1 in user else ORIG5}, ensure_ascii=False
+                    )
+                return "{}"
+
+            agent = Naturalizer(FakeClient(handler=handler), config)
+            saves: list[int] = []
+            real_save = store.save_chapter
+
+            def counting_save(ch):
+                saves.append(ch.index)
+                return real_save(ch)
+
+            store.save_chapter = counting_save
+            stats = run_naturalize(agent, store, _FakeGlossary(), config)
+
+            self.assertEqual(stats["applied"], 0)
+            self.assertEqual(saves, [], "无采纳改写时不得整章写")
+            self.assertTrue(store.load_progress(0).naturalized, "仍应置 naturalized 标记")
+            self.assertFalse(
+                any(e["event"] == "naturalize_applied" for e in _events(store)),
+                "无采纳改写时不得发 naturalize_applied",
+            )
+
+    def test_applied_event_absent_when_chapter_save_raises(self):
+        """采纳改写事件只在正文落盘后发出：save_chapter 抛错时 naturalize_applied 缺席、
+        naturalized 标记不落。"""
+        with tempfile.TemporaryDirectory() as d:
+            store, _ = self._build(d)
+            config = _config(os.path.join(d, "state"))
+            agent = Naturalizer(FakeClient(handler=_combined_handler), config)
+
+            def flaky_save(ch):
+                raise OSError("disk full")
+
+            store.save_chapter = flaky_save
+            with self.assertRaises(OSError):
+                run_naturalize(agent, store, _FakeGlossary(), config)
+            events = _events(store)
+            self.assertFalse(
+                any(e["event"] == "naturalize_applied" for e in events),
+                "正文保存失败时不得发出 naturalize_applied",
+            )
+            self.assertFalse(
+                store.load_progress(0).naturalized, "正文未提交前不得置 naturalized 标记"
+            )
 
 
 class TestFidelityGate(unittest.TestCase):

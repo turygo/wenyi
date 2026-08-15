@@ -17,9 +17,11 @@ V1 状态在首次打开（持运行锁）时一次性迁移为 V2：先写新�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -55,7 +57,21 @@ __all__ = [
     "STATUS_PENDING",
     "RunStore",
     "slugify",
+    "stable_digest",
 ]
+
+
+def stable_digest(payload) -> str:
+    """将任意可序列化为 JSON 的载荷规范化为 UTF-8 字节，并计算稳定的 SHA-256 摘要。
+
+    规范化参数固定为 ensure_ascii=False、sort_keys=True、紧凑分隔符与
+    default=str，保证同一逻辑载荷在任何进程/版本下得到相同摘要；该摘要可作为
+    例行翻译、跳过批次、issue 集和重写候选在事件日志中的紧凑指纹。
+    """
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def slugify(name: str) -> str:
@@ -597,12 +613,24 @@ class RunStore:
 
     # ── 追加式事件日志 ────────────────────────────────────────────────────
     def log_event(self, event: str, **data: Any) -> None:
-        """追加一条 JSONL 事件，用于翻译行为、改写前后和产物对账。"""
-        self.ensure_dirs()
+        """追加一条 JSONL 事件，用于翻译行为、改写前后和产物对账。
+
+        新行一律带 event_schema: 2；无该字段的历史行视为 V1，不回写。
+        事件日志采用尽力写入策略，仅用于审计，不是恢复状态的依据。若目录创建
+        或事件追加抛出 OSError，则发出 RuntimeWarning 后返回；这不会影响已
+        持久化的状态，也不会触发重跑。序列化错误和编程错误仍照常抛出。
+        """
         row = {
             "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
             "event": event,
+            "event_schema": 2,
             **data,
         }
-        with open(self.event_log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        try:
+            self.ensure_dirs()
+            with open(self.event_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError as exc:
+            warnings.warn(
+                f"event log append failed for {event!r}: {exc}", RuntimeWarning, stacklevel=2
+            )

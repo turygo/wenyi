@@ -22,7 +22,7 @@ from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
 from trans_novel.ingest.models import KIND_TEXT, Chapter, Segment
 from trans_novel.pipeline import checkpoint, lint
 from trans_novel.pipeline.backmatter import is_back_matter
-from trans_novel.pipeline.runstore import RunStore
+from trans_novel.pipeline.runstore import RunStore, stable_digest
 from trans_novel.postprocess.punct import normalize_zh
 
 _SCREEN_BATCH_SIZE = 20
@@ -181,9 +181,10 @@ def naturalize_chapter(
     strict_screen：workflow 必需节点用，筛查调用 provider 失败原样抛出（整章不落
     自然化标记）；其余环节（改写/忠实度/成对判断）保持保守回退——失败即拒收该段，
     属于窄协议恢复，不会把失败伪装成成功。
-    非 dry_run 时，无论本章是否有改写被采纳，函数末尾都会先落盘章节（改写），再
-    store.set_naturalized(ci) 置续跑幂等标记——先章后标，避免"标记已落但改写未落"
-    的崩溃窗口造成静默跳过去腔。dry_run 不置标记、不落盘。
+    非 dry_run 时：有采纳改写才落盘章节（改写），随后置 naturalized 续跑幂等标记——
+    先章后标，避免"标记已落但改写未落"的崩溃窗口造成静默跳过去腔；无采纳改写时
+    只落 naturalized 标记（译文在翻译或润色后未再变化，不做冗余整章写盘）。采纳事件在
+    正文与标记都提交后才发出。dry_run 不置标记、不落盘、不发事件。
     """
     stats = {
         "screened": 0,
@@ -239,7 +240,9 @@ def naturalize_chapter(
                             chapter=ci,
                             index=seg.index,
                             gate="lint",
-                            detail={"quote": quote, "reason": reason, "rewritten": rewritten},
+                            quote=quote,
+                            reason=reason,
+                            proposal_sha256=stable_digest(rewritten),
                         )
                     continue
 
@@ -256,7 +259,9 @@ def naturalize_chapter(
                             chapter=ci,
                             index=seg.index,
                             gate="fidelity",
-                            detail={"quote": quote, "reason": reason, "rewritten": rewritten},
+                            quote=quote,
+                            reason=reason,
+                            proposal_sha256=stable_digest(rewritten),
                         )
                     continue
 
@@ -271,7 +276,9 @@ def naturalize_chapter(
                             chapter=ci,
                             index=seg.index,
                             gate="pairwise",
-                            detail={"quote": quote, "reason": reason, "rewritten": rewritten},
+                            quote=quote,
+                            reason=reason,
+                            proposal_sha256=stable_digest(rewritten),
                         )
                     continue
 
@@ -281,31 +288,41 @@ def naturalize_chapter(
                 stats["applied"] += 1
                 agent.client.usage.record_outcome("editor", "naturalize.rewrite", accepted=True)
                 stats["applied_entries"].append(
-                    {"chapter": ci, "index": seg.index, "before": before, "after": final}
+                    {
+                        "chapter": ci,
+                        "index": seg.index,
+                        "before": before,
+                        "after": final,
+                        "quote": quote,
+                        "reason": reason,
+                    }
                 )
                 if remaining is not None:
                     remaining -= 1
                 if not dry_run:
                     seg.target = final
-                    store.log_event(
-                        "naturalize_applied",
-                        chapter=ci,
-                        index=seg.index,
-                        before=before,
-                        after=final,
-                        quote=quote,
-                        reason=reason,
-                    )
 
     if not dry_run:
         # 崩溃一致性：改写写章节文件、naturalized 标记写 manifest，两次独立原子写。
         # 先记检查点日志再落盘，崩溃后由锁内恢复补标记/回滚（不重放改写）。
+        # 无采纳改写时跳过整章写——译文在翻译或润色后未再变化，只落 naturalized 进度标记。
         applied = [(e["index"], e["after"]) for e in stats["applied_entries"]]
         if applied:
             checkpoint.begin_naturalize(store, ci, applied)
-        store.save_chapter(chapter)
+            store.save_chapter(chapter)
         store.set_naturalized(ci)
         checkpoint.clear(store)
+        # 采纳事件在本章正文与 naturalized 标记都提交后才发出。
+        for e in stats["applied_entries"]:
+            store.log_event(
+                "naturalize_applied",
+                chapter=e["chapter"],
+                index=e["index"],
+                before=e["before"],
+                after=e["after"],
+                quote=e["quote"],
+                reason=e["reason"],
+            )
     return stats
 
 

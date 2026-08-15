@@ -27,6 +27,7 @@ from trans_novel.pipeline.fingerprints import (
     titles_input_fingerprint,
 )
 from trans_novel.pipeline.nodes.common import terms_matching_text
+from trans_novel.pipeline.runstore import stable_digest
 from trans_novel.pipeline.state import (
     NODE_ASSEMBLE,
     NODE_CONSISTENCY_QA,
@@ -238,7 +239,7 @@ class ConsistencyQANode:
         store.log_event(
             "consistency_qa_finished",
             issue_count=len(issues),
-            issues=issues,
+            issues_sha256=stable_digest(issues),
         )
         # 持久化到节点 output：崩溃在 QA 之后、report 之前，或跨 tools qa → tools
         # report 调用，report 仍能取到本轮发现的问题（runner 内 artifacts 只活一轮）。
