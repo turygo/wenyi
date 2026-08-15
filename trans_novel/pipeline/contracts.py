@@ -12,7 +12,7 @@ from typing import Any, Literal, Protocol
 
 from trans_novel.agents.base import WorkflowProtocolError
 from trans_novel.agents.reviewer import ReviewOutputError
-from trans_novel.llm.errors import AllModelsFailedError
+from trans_novel.llm.errors import AllModelsFailedError, JSONParseError
 from trans_novel.llm.retrying import classify_retry
 from trans_novel.pipeline.readiness import ReadinessError
 from trans_novel.pipeline.state import IdentityMismatchError
@@ -31,14 +31,15 @@ FAILURE_PROVIDER_PERMANENT = "provider_permanent"
 def classify_failure(exc: BaseException) -> str:
     """把节点执行期间冒出的异常归类为稳定的失败 kind。
 
-    - ReviewOutputError / WorkflowProtocolError → protocol（输出协议错误，可重试）；
+    - ReviewOutputError / WorkflowProtocolError / JSONParseError → protocol
+      （输出协议错误，可重试；先判定 JSONParseError，再判定通用 ValueError）；
     - AllModelsFailedError → provider_retryable（路由器在可重试原因上耗尽内部重试，
       属于可重试的提供商耗尽，不是永久拒绝；永久原始提供商错误走非重试路径）；
     - IdentityMismatchError / ValueError / ReadinessError → business；
     - 其它 provider 可重试/可降级原因 → provider_retryable；
     - 其余 → provider_permanent。
     """
-    if isinstance(exc, ReviewOutputError | WorkflowProtocolError):
+    if isinstance(exc, ReviewOutputError | WorkflowProtocolError | JSONParseError):
         return FAILURE_PROTOCOL
     if isinstance(exc, AllModelsFailedError):
         return FAILURE_PROVIDER_RETRYABLE

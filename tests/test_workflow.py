@@ -13,16 +13,20 @@ import os
 import tempfile
 import unittest
 
+from trans_novel.agents.translator import AlignmentError
 from trans_novel.ingest.models import Chapter, Segment
-from trans_novel.llm.errors import AllModelsFailedError
+from trans_novel.llm.errors import AllModelsFailedError, JSONParseError
 from trans_novel.llm.retrying import EmptyResponseError
 from trans_novel.pipeline.bootstrap import build_workflow_definition
 from trans_novel.pipeline.contracts import (
+    FAILURE_BUSINESS,
+    FAILURE_PROTOCOL,
     GOAL_TRANSLATE,
     ExecutionGoal,
     NodeOutcome,
     NodeRequest,
     assemble_goal,
+    classify_failure,
     qa_goal,
     report_goal,
 )
@@ -743,6 +747,22 @@ def _entry(node_id: str, action: str = "run") -> PlanEntry:
     return PlanEntry(node_id=node_id, key=node_id, ci=None, scope="book", action=action)
 
 
+class TestFailureClassification(unittest.TestCase):
+    """失败分类契约：协议类错误必须归类为 protocol（可重试），而非业务拒绝。"""
+
+    def test_exhausted_alignment_error_is_protocol(self):
+        self.assertEqual(
+            classify_failure(AlignmentError("translation_count_mismatch")),
+            FAILURE_PROTOCOL,
+        )
+
+    def test_json_parse_error_is_protocol_before_generic_value_error(self):
+        # JSONParseError 是 ValueError 的子类；协议错误的判定必须先于通用 ValueError（business）。
+        self.assertTrue(issubclass(JSONParseError, ValueError))
+        self.assertEqual(classify_failure(JSONParseError("无法解析")), FAILURE_PROTOCOL)
+        self.assertEqual(classify_failure(ValueError("业务拒绝")), FAILURE_BUSINESS)
+
+
 class TestRunner(unittest.TestCase):
     def test_succeeded_state_and_findings_zero(self):
         with tempfile.TemporaryDirectory() as d:
@@ -805,6 +825,20 @@ class TestRunner(unittest.TestCase):
             node = fx.store.load_state().nodes[NODE_MINE_TERMS]
             self.assertEqual(node.status, "failed_permanent")
             self.assertEqual(node.failure.kind, "provider_permanent")
+
+    def test_best_effort_protocol_failure_retryable_status(self):
+        # 协议失败（翻译对齐重试耗尽或模型输出解析失败）→ failed_retryable + kind=protocol，
+        # 需要与 Provider 永久失败相区分；采用尽力而为语义时，不中断后续节点。
+        for exc in (AlignmentError("translation_count_mismatch"), JSONParseError("无法解析")):
+            with self.subTest(exc=type(exc).__name__), tempfile.TemporaryDirectory() as d:
+                fx = _RunnerFixture(d)
+                fx.stub(NODE_MINE_TERMS, exc=exc)
+                fx.runner().run(
+                    fx.plan(_entry(NODE_MINE_TERMS)), store=fx.store, input_path="in.txt"
+                )
+                node = fx.store.load_state().nodes[NODE_MINE_TERMS]
+                self.assertEqual(node.status, "failed_retryable")
+                self.assertEqual(node.failure.kind, "protocol")
 
     def test_business_failure_reraises_unwrapped(self):
         with tempfile.TemporaryDirectory() as d:

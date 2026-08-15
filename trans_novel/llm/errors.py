@@ -5,6 +5,10 @@ from __future__ import annotations
 from trans_novel.config import ModelRef
 
 
+class JSONParseError(ValueError):
+    """模型输出经宽松解析后仍无法得到 JSON。"""
+
+
 class UnknownAgentError(ValueError):
     """agent 缺失或不是内置生产 Agent。"""
 

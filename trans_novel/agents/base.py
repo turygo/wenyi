@@ -11,6 +11,7 @@ from typing import Any
 
 from trans_novel.config import Config
 from trans_novel.llm.base import LLMClient
+from trans_novel.llm.errors import JSONParseError
 
 _RAISE = object()  # 哨兵：未提供 default 时异常照常抛出，由调用方自理
 
@@ -19,12 +20,14 @@ class WorkflowProtocolError(RuntimeError):
     """Agent 输出的协议错误（缺失键/形状错误/数量不符等）。
 
     workflow 必需节点据此按 protocol 失败分类（可重试、失败态落盘），
-    与“provider 失败”和“业务拒绝”保持可区分。reason 是稳定标识。
+    可与“Provider 失败”和“业务拒绝”区分。reason 是稳定标识；message 可选，
+    用于提供可读说明（未指定时沿用 reason）。
     """
 
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, message: str | None = None):
         self.reason = reason
-        super().__init__(reason)
+        self.message = message
+        super().__init__(message or reason)
 
 
 class Agent:
@@ -65,13 +68,9 @@ class Agent:
             )
         except Exception as exc:
             if default is _RAISE or strict:
-                if (
-                    strict
-                    and isinstance(exc, ValueError)
-                    and not isinstance(exc, WorkflowProtocolError)
-                ):
-                    # 解析失败（parse_json_loose 抛 ValueError）归一为协议错误，
-                    # 否则会被业务分类误判为永久拒绝。
+                if strict and isinstance(exc, JSONParseError):
+                    # 解析失败（parse_json_loose 抛 JSONParseError）归一为协议错误，
+                    # 避免被通用 ValueError 分支归为业务错误；其余 ValueError 原样向上抛出。
                     raise WorkflowProtocolError("invalid_json") from exc
                 raise
             return default

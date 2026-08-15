@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from tests.fake_llm import fake_llm_dict
 from trans_novel.config import Config, LLMConfig, ModelRef, PipelineConfig
 from trans_novel.llm import AgentRouter, FakeClient, build_client, parse_json_loose
+from trans_novel.llm.errors import JSONParseError
 
 
 class TestParseJsonLoose(unittest.TestCase):
@@ -26,8 +27,10 @@ class TestParseJsonLoose(unittest.TestCase):
         self.assertEqual(parse_json_loose(text), ["译文1", "译文2"])
 
     def test_failure(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(JSONParseError) as caught:
             parse_json_loose("没有任何 JSON 内容")
+        # 保持与 ValueError 兼容：既有调用方仍可按 ValueError 捕获该异常
+        self.assertIsInstance(caught.exception, ValueError)
 
     def test_inner_ascii_quotes_repaired(self):
         raw = '{"translations":["磨到那份锱铢必较里暗含的"小气"二字无声地烫上面颊。"]}'

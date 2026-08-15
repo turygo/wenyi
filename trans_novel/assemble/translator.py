@@ -14,12 +14,13 @@ operation 只作用量/调试归因，不参与路由。
 from __future__ import annotations
 
 from trans_novel.agents import langprofile, prompts
-from trans_novel.agents.base import Agent
+from trans_novel.agents.base import Agent, WorkflowProtocolError
 from trans_novel.glossary.store import GlossaryTerm
+from trans_novel.llm.errors import JSONParseError
 
 
-class AlignmentError(Exception):
-    pass
+class AlignmentError(WorkflowProtocolError):
+    """句段对齐失败：协议错误的子类，reason 是稳定标识，message 是可读的中文说明。"""
 
 
 class Translator(Agent):
@@ -59,11 +60,14 @@ class Translator(Agent):
         # 不传 default：调用失败照常抛出，由 translate_batch 的重试/兜底逻辑处理
         items = self._ask_json(system, user, key="translations", agent=agent, operation=operation)
         if not isinstance(items, list):
-            raise AlignmentError("模型未返回译文数组")
+            raise AlignmentError("translation_collection_invalid", "模型未返回译文数组")
         if len(items) != n:
-            raise AlignmentError(f"译文数量不匹配：期望 {n} 段，实际 {len(items)} 段")
+            raise AlignmentError(
+                "translation_count_mismatch",
+                f"译文数量不匹配：期望 {n} 段，实际 {len(items)} 段",
+            )
         if any(not isinstance(item, str) or not item.strip() for item in items):
-            raise AlignmentError("模型返回了空译文或非字符串译文")
+            raise AlignmentError("translation_item_invalid", "模型返回了空译文或非字符串译文")
         return items
 
     def _translate_one(
@@ -225,7 +229,8 @@ class Translator(Agent):
                     agent=agent,
                     operation=operation,
                 )
-            except Exception:
+            except (AlignmentError, JSONParseError):
+                # 仅重试模型输出协议错误；Provider 异常和业务异常均原样向上抛出。
                 pass
 
         # 兜底：逐段翻译。任一段仍失败时显式中断，保留已落盘
@@ -245,6 +250,9 @@ class Translator(Agent):
                         operation=operation,
                     )
                 )
-            except Exception as error:
-                raise AlignmentError(f"索引为 {index} 的段落在兜底翻译时失败") from error
+            except (AlignmentError, JSONParseError) as error:
+                raise AlignmentError(
+                    "translation_segment_fallback_failed",
+                    f"索引为 {index} 的段落在兜底翻译时失败",
+                ) from error
         return targets

@@ -9,9 +9,10 @@ from typing import ClassVar
 
 from tests.fake_llm import fake_llm_dict
 from trans_novel.agents import prompts
-from trans_novel.agents.translator import Translator
-from trans_novel.config import Config
+from trans_novel.agents.translator import AlignmentError, Translator
+from trans_novel.config import Config, ModelRef
 from trans_novel.llm import FakeClient
+from trans_novel.llm.errors import AllModelsFailedError
 from trans_novel.pipeline.checks import count_aligned, length_flags
 
 
@@ -125,6 +126,104 @@ class TestTranslatorAlignment(unittest.TestCase):
             operation="translate.review_fix",
         )
         self.assertEqual(out, [])
+
+    def test_malformed_json_recovers_via_per_segment_fallback(self):
+        """整批翻译返回无法解析的内容 → JSONParseError 触发整批重试，再由逐段兜底恢复一一对应。"""
+
+        def handler(messages, agent, operation, json_mode):
+            n = _count_segments(messages[-1]["content"])
+            if n > 1:
+                return "模型输出了不可解析的内容"
+            return json.dumps({"translations": [f"译{i}" for i in range(n)]}, ensure_ascii=False)
+
+        client = FakeClient(handler=handler)
+        translator = Translator(client, self._config())
+        out = translator.translate_batch(["あ", "い"], agent="translator")
+        self.assertEqual(out, ["译0", "译0"])
+        # align_retry_limit=1 → 2 次整批 + 逐段 2 次，全部计入逻辑调用
+        self.assertEqual(len(client.calls), 4)
+
+    def test_malformed_json_in_fallback_raises_alignment_with_stable_reason(self):
+        """逐段兜底时仍返回无法解析的内容 → 包装为 AlignmentError，提供稳定 reason 并保留中文消息。"""
+        client = FakeClient(handler=lambda messages, agent, operation, json_mode: "不可解析")
+        translator = Translator(client, self._config())
+        with self.assertRaises(AlignmentError) as caught:
+            translator.translate_batch(["あ"], agent="translator")
+        self.assertEqual(caught.exception.reason, "translation_segment_fallback_failed")
+        self.assertRegex(str(caught.exception), "索引为 0 的段落")
+        self.assertEqual(len(client.calls), 3)  # 2 次整批 + 1 次单段兜底
+
+    def test_provider_permanent_error_bubbles_immediately(self):
+        provider_error = RuntimeError("provider permanent")
+
+        def handler(messages, agent, operation, json_mode):
+            raise provider_error
+
+        client = FakeClient(handler=handler)
+        translator = Translator(client, self._config())
+        with self.assertRaises(RuntimeError) as caught:
+            translator.translate_batch(["あ", "い"], agent="translator")
+        self.assertIs(caught.exception, provider_error, "必须原样向上抛出异常对象")
+        self.assertEqual(len(client.calls), 1, "Provider 异常不得触发整批重试")
+
+    def test_provider_retryable_error_bubbles_immediately(self):
+        provider_error = TimeoutError("provider timeout")
+
+        def handler(messages, agent, operation, json_mode):
+            raise provider_error
+
+        client = FakeClient(handler=handler)
+        translator = Translator(client, self._config())
+        with self.assertRaises(TimeoutError) as caught:
+            translator.translate_batch(["あ", "い"], agent="translator")
+        self.assertIs(caught.exception, provider_error, "必须原样向上抛出异常对象")
+        self.assertEqual(len(client.calls), 1)
+
+    def test_retry_exhaustion_bubbles_immediately(self):
+        provider_error = AllModelsFailedError(((ModelRef("provider", "model"), "server_error"),))
+
+        def handler(messages, agent, operation, json_mode):
+            raise provider_error
+
+        client = FakeClient(handler=handler)
+        translator = Translator(client, self._config())
+        with self.assertRaises(AllModelsFailedError) as caught:
+            translator.translate_batch(["あ", "い"], agent="translator")
+        self.assertIs(caught.exception, provider_error, "必须原样向上抛出异常对象")
+        self.assertEqual(len(client.calls), 1)
+
+    def test_ordinary_value_error_bubbles_immediately(self):
+        business_error = ValueError("业务拒绝")
+
+        def handler(messages, agent, operation, json_mode):
+            raise business_error
+
+        client = FakeClient(handler=handler)
+        translator = Translator(client, self._config())
+        with self.assertRaises(ValueError) as caught:
+            translator.translate_batch(["あ", "い"], agent="translator")
+        self.assertIs(caught.exception, business_error, "业务错误不得被吞掉，也不得触发重试")
+        self.assertEqual(len(client.calls), 1)
+
+    def test_provider_failure_during_fallback_bubbles_immediately(self):
+        provider_error = AllModelsFailedError(((ModelRef("provider", "model"), "server_error"),))
+
+        def handler(messages, agent, operation, json_mode):
+            n = _count_segments(messages[-1]["content"])
+            if n > 1:
+                # 整批翻译故意少返回一段译文 → AlignmentError 触发整批重试和逐段兜底
+                return json.dumps(
+                    {"translations": [f"译{i}" for i in range(n - 1)]}, ensure_ascii=False
+                )
+            raise provider_error  # 第一个单段兜底调用：Provider 失败
+
+        client = FakeClient(handler=handler)
+        translator = Translator(client, self._config())
+        with self.assertRaises(AllModelsFailedError) as caught:
+            translator.translate_batch(["あ", "い", "う"], agent="translator")
+        self.assertIs(caught.exception, provider_error, "兜底阶段的 Provider 异常必须原样向上抛出")
+        # 2 次整批（少一段）+ 第 1 个单段调用即失败，不再继续兜底
+        self.assertEqual(len(client.calls), 3)
 
 
 class TestTranslatorPromptOrder(unittest.TestCase):

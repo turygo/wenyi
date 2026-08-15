@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any
 
+from trans_novel.llm.errors import JSONParseError
+
 
 def _repair_unescaped_quotes(text: str) -> str:
     """转义 JSON 字符串值内部未转义的 ASCII 双引号。"""
@@ -87,4 +89,4 @@ def parse_json_loose(text: str) -> Any:
             return json.loads(_repair_unescaped_quotes(candidate))
         except Exception:
             continue
-    raise ValueError(f"无法解析为 JSON：{text[:200]!r}")
+    raise JSONParseError(f"无法解析为 JSON：{text[:200]!r}")
