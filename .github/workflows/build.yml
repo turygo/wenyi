@@ -133,6 +133,7 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             throw "Expected the missing input check to fail"
           }
+          exit 0
 
       - name: Smoke test config and input validation on POSIX
         if: runner.os != 'Windows'
