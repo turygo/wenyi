@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from typing import ClassVar
 
 from pydantic import ValidationError
 
@@ -253,7 +254,7 @@ class TestFakeClient(unittest.TestCase):
 
 
 class TestProviderRequestCapabilities(unittest.TestCase):
-    messages = [{"role": "user", "content": "translate"}]
+    messages: ClassVar[list[dict[str, str]]] = [{"role": "user", "content": "translate"}]
 
     @staticmethod
     def _model(*, enabled: bool = True, effort: str = "high") -> ModelRef:

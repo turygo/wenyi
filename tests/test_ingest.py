@@ -615,9 +615,8 @@ class TestEpubIngest(unittest.TestCase):
                     "META-INF/container.xml",
                     "<container><rootfiles><rootfile/></rootfiles></container>",
                 )
-            with zipfile.ZipFile(path) as zf:
-                with self.assertRaisesRegex(ValueError, "full-path"):
-                    _find_opf_path(zf)
+            with zipfile.ZipFile(path) as zf, self.assertRaisesRegex(ValueError, "full-path"):
+                _find_opf_path(zf)
 
             opf_path = os.path.join(d, "opf.epub")
             with zipfile.ZipFile(opf_path, "w") as zf:

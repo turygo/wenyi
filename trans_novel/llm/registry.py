@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Optional
+from typing import Any
 
-from ..config import LLMConfig
-from .providers.fake import FakeProviderTransport
-from .providers.transport import OpenAICompatibleTransport, ProviderTransport
-from .usage import UsageTracker
+from trans_novel.config import LLMConfig
+from trans_novel.llm.providers.fake import FakeProviderTransport
+from trans_novel.llm.providers.transport import OpenAICompatibleTransport, ProviderTransport
+from trans_novel.llm.usage import UsageTracker
 
 _PROVIDER_SPECS: dict[str, dict[str, Any]] = {
     "deepseek": {
@@ -70,7 +70,7 @@ class ProviderRegistry:
         cfg: LLMConfig,
         usage: UsageTracker,
         *,
-        transports: Optional[dict[str, ProviderTransport]] = None,
+        transports: dict[str, ProviderTransport] | None = None,
     ) -> None:
         self.cfg = cfg
         self.usage = usage

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Optional
+from typing import Any
 
-from ..config import PRODUCTION_AGENT_IDS, Config, ModelRef
-from ..model_profiles import parse_model_selection
-from .base import LLMClient, Messages
-from .errors import AllModelsFailedError, UnknownAgentError
-from .json_parser import parse_json_loose
-from .registry import ProviderRegistry
-from .retrying import classify_retry
+from trans_novel.config import PRODUCTION_AGENT_IDS, Config, ModelRef
+from trans_novel.llm.base import LLMClient, Messages
+from trans_novel.llm.errors import AllModelsFailedError, UnknownAgentError
+from trans_novel.llm.json_parser import parse_json_loose
+from trans_novel.llm.registry import ProviderRegistry
+from trans_novel.llm.retrying import classify_retry
+from trans_novel.model_profiles import parse_model_selection
 
 _PRIMARY_AGENTS = frozenset({"translator", "editor", "analyst"})
 _FAST_AGENTS = frozenset({"reviewer", "preparer", "light-translator"})
@@ -22,8 +22,8 @@ class AgentRouter(LLMClient):
         self,
         config: Config,
         *,
-        registry: Optional[ProviderRegistry] = None,
-        transports: Optional[dict] = None,
+        registry: ProviderRegistry | None = None,
+        transports: dict | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -35,7 +35,7 @@ class AgentRouter(LLMClient):
         else:
             self._registry = ProviderRegistry(config.llm, self.usage, transports=transports)
 
-    def _model(self, agent: Optional[str]) -> ModelRef:
+    def _model(self, agent: str | None) -> ModelRef:
         if not agent or agent not in PRODUCTION_AGENT_IDS:
             raise UnknownAgentError(
                 f"未知或缺失 Agent：{agent!r}（生产 LLM 调用必须提供内置 Agent 标识）"
@@ -66,8 +66,8 @@ class AgentRouter(LLMClient):
         messages: Messages,
         *,
         json_mode: bool = False,
-        max_tokens: Optional[int] = None,
-        stage: Optional[str] = None,
+        max_tokens: int | None = None,
+        stage: str | None = None,
         agent: str,
         operation: str,
     ) -> str:
@@ -96,8 +96,8 @@ class AgentRouter(LLMClient):
         self,
         messages: Messages,
         *,
-        max_tokens: Optional[int] = None,
-        stage: Optional[str] = None,
+        max_tokens: int | None = None,
+        stage: str | None = None,
         agent: str,
         operation: str,
     ) -> Any:

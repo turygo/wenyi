@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import ClassVar
 
 from trans_novel.glossary.miner import Candidate, mine_candidates, mine_candidates_en
 
@@ -227,8 +228,12 @@ class TestMineCandidatesLlmConcurrency(unittest.TestCase):
                 raise val
             return list(val)
 
-    _CHAPTERS = [(1, "一章目。"), (2, "二章目。"), (3, "三章目。")]
-    _PER = {1: ["堀北", "綾小路"], 2: ["堀北"], 3: ["綾小路", "堀北"]}
+    _CHAPTERS: ClassVar[list[tuple[int, str]]] = [(1, "一章目。"), (2, "二章目。"), (3, "三章目。")]
+    _PER: ClassVar[dict[int, list[str]]] = {
+        1: ["堀北", "綾小路"],
+        2: ["堀北"],
+        3: ["綾小路", "堀北"],
+    }
 
     def _mine(self, concurrency: int, on_progress=None):
         from trans_novel.glossary.miner import mine_candidates_llm

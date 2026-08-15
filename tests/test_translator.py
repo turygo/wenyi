@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
+from typing import ClassVar
 
 from tests.fake_llm import fake_llm_dict
 from trans_novel.agents import prompts
@@ -141,7 +142,7 @@ class TestPromptBlockOrder(unittest.TestCase):
     provider 侧前缀缓存命中（恒定前缀必须逐字节一致且位于开头）。"""
 
     # 按契约顺序排列的块标题（前缀匹配：fix 模板的前文块标题无「（最近）」后缀）
-    BLOCKS = [
+    BLOCKS: ClassVar[list[str]] = [
         "【角色信息 / 风格指南】",
         "【全书概览】",
         "【本章梗概】",
@@ -152,7 +153,7 @@ class TestPromptBlockOrder(unittest.TestCase):
     def _assert_block_order(self, rendered: str):
         for b in self.BLOCKS:
             self.assertIn(b, rendered, f"缺少块标题：{b}")
-        for a, b in zip(self.BLOCKS, self.BLOCKS[1:]):
+        for a, b in zip(self.BLOCKS, self.BLOCKS[1:], strict=False):
             self.assertLess(
                 rendered.index(a), rendered.index(b), f"块序逆转：{a} 必须出现在 {b} 之前"
             )
@@ -198,13 +199,13 @@ class TestPromptBlockOrder(unittest.TestCase):
         # （风格→全书概览→本章梗概）必须逐字节一致且位于最开头——这才是
         # provider 前缀缓存命中的前提。相对块序正确并不保证前缀逐字节稳定：
         # 若把任一易变块挪到恒定块之前，两次渲染的前缀就会因易变输入不同而不等。
-        common = dict(
-            src="ja",
-            tgt="zh",
-            style="克制冷峻",
-            book_synopsis="主线与人物关系。",
-            chapter_digest="人物登场，情节推进。",
-        )
+        common = {
+            "src": "ja",
+            "tgt": "zh",
+            "style": "克制冷峻",
+            "book_synopsis": "主线与人物关系。",
+            "chapter_digest": "人物登场，情节推进。",
+        }
         a = prompts.render(
             "translator_user",
             **common,
@@ -241,13 +242,13 @@ class TestPromptBlockOrder(unittest.TestCase):
     def test_translator_fix_user_constant_prefix_byte_identical(self):
         # fix 模板同理：恒定块（风格/概览/梗概）在前，易变块（术语表/前后文/
         # 审校意见/待重译段）在后；仅易变输入变化时恒定前缀必须逐字节一致。
-        common = dict(
-            src="ja",
-            tgt="zh",
-            style="克制冷峻",
-            book_synopsis="主线与人物关系。",
-            chapter_digest="人物登场，情节推进。",
-        )
+        common = {
+            "src": "ja",
+            "tgt": "zh",
+            "style": "克制冷峻",
+            "book_synopsis": "主线与人物关系。",
+            "chapter_digest": "人物登场，情节推进。",
+        }
         a = prompts.render(
             "translator_fix_user",
             **common,

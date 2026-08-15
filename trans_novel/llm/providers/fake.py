@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
-from ...config import LLMConfig, ModelRef
-from ..base import LLMClient, Messages
-from ..usage import UsageTracker
+from trans_novel.config import LLMConfig, ModelRef
+from trans_novel.llm.base import LLMClient, Messages
+from trans_novel.llm.usage import UsageTracker
 
 Handler = Callable[[Messages, str, str, bool], str]
 
@@ -24,7 +25,7 @@ Handler = Callable[[Messages, str, str, bool], str]
 class FakeClient(LLMClient):
     """可编程的离线 client。"""
 
-    def __init__(self, handler: Optional[Handler] = None) -> None:
+    def __init__(self, handler: Handler | None = None) -> None:
         super().__init__()
         self.handler = handler
         self.calls: list[dict[str, Any]] = []
@@ -35,8 +36,8 @@ class FakeClient(LLMClient):
         messages: Messages,
         *,
         json_mode: bool = False,
-        max_tokens: Optional[int] = None,
-        stage: Optional[str] = None,
+        max_tokens: int | None = None,
+        stage: str | None = None,
         agent: str,
         operation: str,
     ) -> str:
@@ -81,8 +82,8 @@ class FakeProviderTransport:
         model_ref: ModelRef,
         *,
         json_mode: bool = False,
-        max_tokens: Optional[int] = None,
-        stage: Optional[str] = None,
+        max_tokens: int | None = None,
+        stage: str | None = None,
         agent: str,
         operation: str,
     ) -> str:

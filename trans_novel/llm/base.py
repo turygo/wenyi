@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
-from .json_parser import parse_json_loose
-from .usage import UsageTracker
+from trans_novel.llm.json_parser import parse_json_loose
+from trans_novel.llm.usage import UsageTracker
 
 Messages = list[dict[str, str]]
 
@@ -27,8 +27,8 @@ class LLMClient(ABC):
         messages: Messages,
         *,
         json_mode: bool = False,
-        max_tokens: Optional[int] = None,
-        stage: Optional[str] = None,
+        max_tokens: int | None = None,
+        stage: str | None = None,
         agent: str,
         operation: str,
     ) -> str:
@@ -44,8 +44,8 @@ class LLMClient(ABC):
         self,
         messages: Messages,
         *,
-        max_tokens: Optional[int] = None,
-        stage: Optional[str] = None,
+        max_tokens: int | None = None,
+        stage: str | None = None,
         agent: str,
         operation: str,
     ) -> Any:

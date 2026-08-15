@@ -30,7 +30,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
-from .models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
+from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
 
 
 def _local(el: ET.Element) -> str:

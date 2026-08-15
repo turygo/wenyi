@@ -28,7 +28,7 @@ class StubTransport:
         self.calls: list[dict] = []
         self.results: list[object] = []
 
-    def plan(self, *results: object) -> "StubTransport":
+    def plan(self, *results: object) -> StubTransport:
         self.results.extend(results)
         return self
 

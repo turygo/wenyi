@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from .store import GlossaryStore, GlossaryTerm
+from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
 
 
 def resolve(store: GlossaryStore, source: str, target: str) -> None:

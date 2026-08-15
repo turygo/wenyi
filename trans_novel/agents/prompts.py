@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from string import Template
 
-from ..glossary.store import GlossaryTerm
-from . import langprofile
+from trans_novel.agents import langprofile
+from trans_novel.glossary.store import GlossaryTerm
 
 # 译文标点统一规范（简体中文大陆通用），翻译/润色提示词共用。
 PUNCT_RULE = (
@@ -512,7 +512,7 @@ def numbered(texts: list[str]) -> str:
 
 def numbered_pairs(sources: list[str], targets: list[str]) -> str:
     out = []
-    for i, (s, t) in enumerate(zip(sources, targets)):
+    for i, (s, t) in enumerate(zip(sources, targets, strict=False)):
         out.append(f"[{i}] 原文：{s}\n    译文：{t}")
     return "\n".join(out)
 

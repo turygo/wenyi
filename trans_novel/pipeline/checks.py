@@ -33,7 +33,7 @@ def length_flags(
     阈值偏宽松，只抓明显异常，避免误报。
     """
     flags: list[LengthFlag] = []
-    for i, (s, t) in enumerate(zip(sources, targets)):
+    for i, (s, t) in enumerate(zip(sources, targets, strict=False)):
         s_len = len(s.strip())
         t_len = len((t or "").strip())
         if s_len == 0:

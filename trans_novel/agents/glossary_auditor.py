@@ -13,10 +13,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
-from ..pipeline.runstore import RunStore
-from . import prompts
-from .base import Agent
+from trans_novel.agents import prompts
+from trans_novel.agents.base import Agent
+from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
+from trans_novel.pipeline.runstore import RunStore
 
 
 def _is_cjk(s: str) -> bool:
@@ -52,7 +52,7 @@ def _hamming1_variants(target: str, corpus: str) -> set[str]:
         seen.add(w)
         if not _is_cjk(w):
             continue
-        if sum(1 for a, b in zip(w, target) if a != b) == 1:
+        if sum(1 for a, b in zip(w, target, strict=False) if a != b) == 1:
             found.add(w)
     return found
 

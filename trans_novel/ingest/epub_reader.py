@@ -25,14 +25,14 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
 
-from .epub_toc import (
+from trans_novel.ingest.epub_toc import (
     nav_root_list,
     nav_toc_scopes,
     parse_toc_entries,
     resolve_epub_href,
     select_boundaries,
 )
-from .models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
+from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
 
 _CONTAINER = "META-INF/container.xml"
 _BLOCK_TAGS = {
@@ -290,7 +290,7 @@ def _split_direct_break_lines(element: Tag, soup: BeautifulSoup) -> list[Tag]:
     for child in children:
         if isinstance(child, Tag) and child.name == "br":
             runs.append([])
-        elif isinstance(child, (Tag, NavigableString)):
+        elif isinstance(child, Tag | NavigableString):
             runs[-1].append(child)
 
     targets: list[Tag] = []

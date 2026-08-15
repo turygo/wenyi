@@ -37,7 +37,7 @@ class RollingContext:
         d: dict,
         *,
         min_recent_keep: int = 0,
-    ) -> "RollingContext":
+    ) -> RollingContext:
         persisted = d.get("max_recent_keep", 40)
         max_recent_keep = persisted if isinstance(persisted, int) else 40
         max_recent_keep = max(max_recent_keep, min_recent_keep)

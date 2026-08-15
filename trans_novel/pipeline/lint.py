@@ -1,5 +1,5 @@
 """确定性译文 lint：机器可判定的硬伤（引号丢失/数字失配/锁定专名漂移/未译残留/
-长度异常），零 LLM、零 IO，纯函数。配合 orchestrator 的定向重译闭环使用。
+长度异常），零 LLM、零 IO，纯函数。配合 workflow 翻译节点的定向重译闭环使用。
 
 原则：宁漏勿误报——每个校验器都保守，只抓确凿证据；不确定的一律放过，交给
 审校 agent（LLM）去"猜"语义类问题。阈值/规则均以两本已交付书的真实数据回测校准过。
@@ -10,8 +10,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ..glossary.store import GlossaryTerm
-from . import checks
+from trans_novel.glossary.store import GlossaryTerm
+from trans_novel.pipeline import checks
 
 # ── LintIssue ────────────────────────────────────────────────────────────
 ISSUE_QUOTE_LOSS = "quote_loss"
@@ -23,7 +23,7 @@ ISSUE_TOO_SHORT = "too_short"
 ISSUE_TOO_LONG = "too_long"
 
 # 定向重译闭环只对这些类型动手；too_short/too_long 波动太大（尤其 en→zh 合法压缩比
-# 实测跨度极大），只记录不重译，留给人工/审校 agent 判断（orchestrator 消费本常量）。
+# 实测跨度极大），只记录不重译，留给人工/审校 agent 判断（workflow 翻译节点消费本常量）。
 ACTIONABLE_TYPES = frozenset(
     {
         ISSUE_QUOTE_LOSS,
@@ -136,9 +136,7 @@ def _is_glued_identifier(text: str, start: int, end: int) -> bool:
     before = text[max(0, start - 1) : start]
     if before.isalpha():
         return True
-    if before == "-" and start >= 2 and text[start - 2].isalpha():
-        return True
-    return False
+    return bool(before == "-" and start >= 2 and text[start - 2].isalpha())
 
 
 def _extract_arabic_with_multiplier(text: str) -> set[float]:
@@ -445,10 +443,7 @@ def _is_untranslated(source: str, target: str) -> bool:
     ns, nt = _norm_for_compare(source), _norm_for_compare(target)
     if ns and ns == nt:
         return True
-    for m in _LATIN_RUN_RE.finditer(target or ""):
-        if m.group(0) in source:
-            return True
-    return False
+    return any(m.group(0) in source for m in _LATIN_RUN_RE.finditer(target or ""))
 
 
 # ── 入口 ─────────────────────────────────────────────────────────────────
@@ -467,14 +462,14 @@ def lint_targets(
     sources: list[str],
     targets: list[str],
     *,
-    locked_terms: "list[GlossaryTerm] | tuple[GlossaryTerm, ...]" = (),
+    locked_terms: list[GlossaryTerm] | tuple[GlossaryTerm, ...] = (),
     src_lang: str = "en",
 ) -> list[LintIssue]:
     """对一批 (source, target) 跑全部确定性校验，返回按段落顺序的 issue 列表。
 
     全部保守：宁漏勿误报。locked_terms 传入 locked=1 的 GlossaryTerm（人物术语）；
     src_lang 用于决定是否启用英文数词/未译判定（"zh" 源不启用未译判定）。
-    too_short/too_long 类型不在 ACTIONABLE_TYPES 内，orchestrator 只记录不重译。
+    too_short/too_long 类型不在 ACTIONABLE_TYPES 内，翻译节点只记录不重译。
     """
     issues: list[LintIssue] = []
     for lf in checks.length_flags(sources, targets):
@@ -484,7 +479,7 @@ def lint_targets(
                 continue
         issues.append(LintIssue(lf.index, lf.reason, _LENGTH_DETAIL[lf.reason]))
 
-    for i, (s, t) in enumerate(zip(sources, targets)):
+    for i, (s, t) in enumerate(zip(sources, targets, strict=False)):
         t = t or ""
         if _has_quote_loss(s, t):
             issues.append(

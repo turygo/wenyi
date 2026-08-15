@@ -2,7 +2,7 @@
 
 现架构在翻译后从 (源文,译文) 对里抽术语回灌术语库，把首译直译固化成全书铁律，
 还会把普通名词/一次性修辞误判为术语。改为：先在源文侧挖出候选表面形式（不给
-译名），交给 agents/namer.CastNamer 一次性定名，翻译期术语表只读（见 orchestrator
+译名），交给 agents/namer.CastNamer 一次性定名，翻译期术语表只读（见 pipeline/nodes/prescan.py
 ._build_understanding）。
 
 英文源双通道：确定性大写正则统计（mine_candidates_en，零成本、可复现，只抓大写词/
@@ -16,9 +16,10 @@ LLM 调用，与逐章梗概同量级，成本可接受。其它语言没有可�
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 # 大写词序列中允许夹在中间的小写连接词（如 "University of Tokyo"）。
 _CONNECTORS = {
@@ -336,10 +337,7 @@ def mine_candidates_en(chapters: list[tuple[int, str]]) -> list[Candidate]:
                     j = i + 1
                     while j < n:
                         nxt = toks[j]
-                        if _is_titlecase(nxt):
-                            run.append(nxt)
-                            j += 1
-                        elif (
+                        if _is_titlecase(nxt) or (
                             nxt.lower() in _CONNECTORS and j + 1 < n and _is_titlecase(toks[j + 1])
                         ):
                             run.append(nxt)
@@ -383,7 +381,7 @@ def mine_candidates_llm(
     且按输入章序合并，输出与串行完全一致）。on_progress(done, total) 按完成数回调
     （主线程触发，供进度条使用）。
     """
-    from ..agents import prompts
+    from trans_novel.agents import prompts
 
     todo = [(ci, text) for ci, text in chapters if text.strip()]
 
@@ -393,7 +391,7 @@ def mine_candidates_llm(
             "term_miner_user", src=agent.src, tgt=agent.tgt, chapter=ci, source=text[:8000]
         )
         # 不设 default：某章挖掘失败若被兜成空列表，会让 term_mining_done 静默永久
-        # 落盘——异常整体冒泡，交由调用方（orchestrator）捕获并放弃本次落标记、下次续跑重试。
+        # 落盘——异常整体冒泡，交由调用方（workflow 预扫节点）捕获并放弃本次落标记、下次续跑重试。
         raw = agent._ask_json(
             system, user, key="candidates", agent="preparer", operation="prescan.term_mine"
         )

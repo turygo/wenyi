@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import re
 
-from .models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
+from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
 
 # Markdown 标题
 _MD_HEADING = re.compile(r"^(#{1,3})\s+(.*\S)\s*$")
@@ -44,7 +44,7 @@ def _split_paragraphs(block: str) -> list[str]:
 
 
 def read_text(path: str, source_lang: str, target_lang: str) -> Document:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         content = f.read()
 
     lines = content.splitlines()

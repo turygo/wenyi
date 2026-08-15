@@ -13,9 +13,9 @@ operation 只作用量/调试归因，不参与路由。
 
 from __future__ import annotations
 
-from ..agents import langprofile, prompts
-from ..agents.base import Agent
-from ..glossary.store import GlossaryTerm
+from trans_novel.agents import langprofile, prompts
+from trans_novel.agents.base import Agent
+from trans_novel.glossary.store import GlossaryTerm
 
 
 class AlignmentError(Exception):

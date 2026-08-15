@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from ..config import Config
-from .base import LLMClient
-from .router import AgentRouter
+from trans_novel.config import Config
+from trans_novel.llm.base import LLMClient
+from trans_novel.llm.router import AgentRouter
 
 
 def build_client(config: Config) -> LLMClient:

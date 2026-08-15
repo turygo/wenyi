@@ -40,7 +40,11 @@ target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
-# E/W pycodestyle, F pyflakes, I import 排序
-select = ["E", "W", "F", "I"]
-# 超长行主要是中文 prompt 字面量，formatter 不会拆字符串，交给 format 兜底
-ignore = ["E501"]
+# E/W pycodestyle, F Pyflakes, I import 排序；其余为 Ruff 推荐的常用质量规则
+select = ["E", "W", "F", "I", "B", "C4", "PIE", "RUF", "SIM", "TID", "UP"]
+# 超长行主要是中文 prompt 字面量；中文标点不是歧义字符
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# 包内也必须使用绝对导入；相对 import 一律按错误处理
+ban-relative-imports = "all"

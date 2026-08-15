@@ -8,24 +8,22 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from ...config import LLMConfig, ModelRef
-from ...model_profiles import (
+from trans_novel.config import LLMConfig, ModelRef
+from trans_novel.llm.base import Messages
+from trans_novel.llm.retrying import EmptyResponseError, classify_retry
+from trans_novel.llm.usage import UsageTracker
+from trans_novel.model_profiles import (
     DIALECT_BAILIAN,
     DIALECT_DEEPSEEK,
     DIALECT_OPENAI,
     DIALECT_OPENROUTER,
     ModelCapabilities,
 )
-from ...model_profiles import (
-    capabilities_for as _capabilities_for,
-)
-from ..base import Messages
-from ..retrying import EmptyResponseError, classify_retry
-from ..usage import UsageTracker
+from trans_novel.model_profiles import capabilities_for as _capabilities_for
 
 _REASONING_FLOOR_TOKENS = 4096
 _REQUEST_TIMEOUT_SECONDS = 600
@@ -43,8 +41,8 @@ class ProviderTransport(Protocol):
         model_ref: ModelRef,
         *,
         json_mode: bool = False,
-        max_tokens: Optional[int] = None,
-        stage: Optional[str] = None,
+        max_tokens: int | None = None,
+        stage: str | None = None,
         agent: str,
         operation: str,
     ) -> str: ...
@@ -56,7 +54,7 @@ def build_request_kwargs(
     messages: Messages,
     *,
     json_mode: bool = False,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """按逐模型能力构造请求；路由意图只在模型明确支持时下发。"""
     kwargs: dict[str, Any] = {
@@ -105,8 +103,8 @@ class OpenAICompatibleTransport:
         usage: UsageTracker,
         *,
         provider_name: str,
-        default_base_url: Optional[str],
-        default_api_key_env: Optional[str],
+        default_base_url: str | None,
+        default_api_key_env: str | None,
         requires_api_key: bool,
     ) -> None:
         self.provider = cfg.provider
@@ -149,8 +147,8 @@ class OpenAICompatibleTransport:
         model_ref: ModelRef,
         *,
         json_mode: bool = False,
-        max_tokens: Optional[int] = None,
-        stage: Optional[str] = None,
+        max_tokens: int | None = None,
+        stage: str | None = None,
         agent: str,
         operation: str,
     ) -> str:

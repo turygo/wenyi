@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 # 归一化降级原因（AllModelsFailedError 只暴露这些固定类别）。
 EMPTY_RESPONSE = "empty_response"
@@ -65,7 +65,7 @@ _TIMEOUT_NAMES_LC = frozenset(name.lower() for name in _TIMEOUT_NAMES)
 _CONNECTION_NAMES_LC = frozenset(name.lower() for name in _CONNECTION_NAMES)
 
 
-def _as_status(value: Any) -> Optional[int]:
+def _as_status(value: Any) -> int | None:
     """从整数或十进制字符串解析状态码；布尔/其它类型忽略。"""
     if isinstance(value, bool):
         return None
@@ -78,7 +78,7 @@ def _as_status(value: Any) -> Optional[int]:
     return None
 
 
-def _status_code(error: BaseException) -> Optional[int]:
+def _status_code(error: BaseException) -> int | None:
     """依次从异常 status_code、code、response.status_code 读取状态码。"""
     for attr in ("status_code", "code"):
         status = _as_status(getattr(error, attr, None))
@@ -92,7 +92,7 @@ def _status_code(error: BaseException) -> Optional[int]:
     return None
 
 
-def _find_header(headers: Any, name: str) -> Optional[bool]:
+def _find_header(headers: Any, name: str) -> bool | None:
     """大小写不敏感地在 headers 容器里找布尔值；未识别值视为无该头部。"""
     try:
         items = headers.items()
@@ -113,7 +113,7 @@ def _find_header(headers: Any, name: str) -> Optional[bool]:
     return None
 
 
-def _explicit_retry_header(error: BaseException) -> Optional[bool]:
+def _explicit_retry_header(error: BaseException) -> bool | None:
     """先 error.response.headers，再 error.headers。"""
     response = getattr(error, "response", None)
     if response is not None:
@@ -156,7 +156,7 @@ def _is_connection(error: BaseException) -> bool:
     return _family_match(error, _CONNECTION_NAMES_LC)
 
 
-def classify_retry(error: BaseException) -> Optional[str]:
+def classify_retry(error: BaseException) -> str | None:
     """集中分类：返回可重试/可降级的固定 reason，或 None（永久失败）。
 
     优先级：显式 x-should-retry false > EmptyResponseError > 数字状态码

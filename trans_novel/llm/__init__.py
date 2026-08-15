@@ -1,12 +1,12 @@
 """LLM 调用层的稳定公共接口。"""
 
-from ..config import ModelRef
-from .base import LLMClient, Messages
-from .errors import AllModelsFailedError, UnknownAgentError
-from .factory import build_client
-from .json_parser import parse_json_loose
-from .providers.fake import FakeClient
-from .router import AgentRouter
+from trans_novel.config import ModelRef
+from trans_novel.llm.base import LLMClient, Messages
+from trans_novel.llm.errors import AllModelsFailedError, UnknownAgentError
+from trans_novel.llm.factory import build_client
+from trans_novel.llm.json_parser import parse_json_loose
+from trans_novel.llm.providers.fake import FakeClient
+from trans_novel.llm.router import AgentRouter
 
 __all__ = [
     "AgentRouter",

@@ -295,9 +295,9 @@ def _dedupe_boundaries_by_position(
             continue
         previous_is_anchored = bool(previous.get("segment_anchor"))
         current_is_anchored = bool(entry.get("segment_anchor"))
-        if current_is_anchored and not previous_is_anchored:
-            by_position[position] = entry
-        elif not current_is_anchored and not previous_is_anchored:
+        if (current_is_anchored and not previous_is_anchored) or (
+            not current_is_anchored and not previous_is_anchored
+        ):
             by_position[position] = entry
     return list(by_position.values())
 
@@ -332,7 +332,7 @@ def _slice_median_chars(positions: list[int], segment_lengths: list[int]) -> flo
         prefix[index + 1] = prefix[index] + length
     chars = [
         prefix[end] - prefix[start]
-        for start, end in zip(bounds, [*bounds[1:], total])
+        for start, end in zip(bounds, [*bounds[1:], total], strict=False)
         if end > start
     ]
     return statistics.median(chars) if chars else 0.0

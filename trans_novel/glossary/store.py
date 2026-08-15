@@ -13,7 +13,7 @@ import sqlite3
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 # 术语类型
 TYPE_PERSON = "人物"
@@ -40,14 +40,14 @@ class GlossaryTerm:
     type: str = TYPE_TERM
     gender: str = ""
     aliases: list[str] = field(default_factory=list)
-    first_chapter: Optional[int] = None
+    first_chapter: int | None = None
     note: str = ""
     confidence: str = "medium"
     locked: bool = False
     status: str = "ok"
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "GlossaryTerm":
+    def from_row(cls, row: sqlite3.Row) -> GlossaryTerm:
         return cls(
             source=row["source"],
             target=row["target"],
@@ -153,11 +153,11 @@ class GlossaryStore:
         self.conn.close()
 
     # ── 术语 ──────────────────────────────────────────────────────────────
-    def get_term(self, source: str) -> Optional[GlossaryTerm]:
+    def get_term(self, source: str) -> GlossaryTerm | None:
         row = self.conn.execute("SELECT * FROM glossary WHERE source = ?", (source,)).fetchone()
         return GlossaryTerm.from_row(row) if row else None
 
-    def upsert_term(self, term: GlossaryTerm, chapter: Optional[int] = None) -> str:
+    def upsert_term(self, term: GlossaryTerm, chapter: int | None = None) -> str:
         """插入或更新术语，返回 'inserted'|'updated'|'unchanged'|'conflict'。
 
         冲突规则：同 source 已存在且 target 不同时——
@@ -247,7 +247,7 @@ class GlossaryStore:
         self.conn.commit()
         return cur.rowcount > 0
 
-    def lock_term(self, source: str, target: Optional[str] = None) -> None:
+    def lock_term(self, source: str, target: str | None = None) -> None:
         if target is not None:
             self.conn.execute(
                 "UPDATE glossary SET target=?, locked=1, confidence='high', status='ok' WHERE source=?",
@@ -296,7 +296,7 @@ class GlossaryStore:
             # 称谓/口癖/固定表达是带语气或场景的派生写法，不能因为 alias
             # 命中裸名就把派生译法注入到普通称呼处。
             keys = (
-                [term.source] if term.type in _SOURCE_ONLY_TYPES else [term.source] + term.aliases
+                [term.source] if term.type in _SOURCE_ONLY_TYPES else [term.source, *term.aliases]
             )
             if any(k and _matches_source(normalized_text, k) for k in keys):
                 out.append(term)

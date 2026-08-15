@@ -19,9 +19,9 @@ by_model / by_stage。merge_usage_summaries 只接受同 schema v2 的累计与�
 from __future__ import annotations
 
 import threading
-from typing import Any, Optional
+from typing import Any
 
-from ..config import ModelRef
+from trans_novel.config import ModelRef
 
 SCHEMA_VERSION = 2
 
@@ -44,7 +44,7 @@ _AGENT_EXTRA_FIELDS = (
     "fallbacks",
 )
 _AGENT_FIELDS = _USAGE_FIELDS + _AGENT_EXTRA_FIELDS
-_PHYSICAL_FIELDS = _USAGE_FIELDS + ("attempts", "failed_attempts")
+_PHYSICAL_FIELDS = (*_USAGE_FIELDS, "attempts", "failed_attempts")
 _PROVIDER_FIELDS = _PHYSICAL_FIELDS
 _MODEL_FIELDS = _PHYSICAL_FIELDS
 
@@ -187,7 +187,7 @@ def usage_delta(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, 
 
 
 def _merge_slots(
-    target: dict[str, dict[str, int]], source: Optional[dict], fields: tuple[str, ...]
+    target: dict[str, dict[str, int]], source: dict | None, fields: tuple[str, ...]
 ) -> None:
     for key, values in (source or {}).items():
         slot = target.setdefault(key, dict.fromkeys(fields, 0))
@@ -274,8 +274,8 @@ class UsageTracker:
         *,
         agent: str,
         operation: str,
-        provider: Optional[str] = None,
-        model_ref: Optional[ModelRef] = None,
+        provider: str | None = None,
+        model_ref: ModelRef | None = None,
     ) -> None:
         """物理请求开始时调用：attempts 计入 by_agent/by_operation/by_provider/by_model。"""
         with self._lock:
@@ -293,8 +293,8 @@ class UsageTracker:
         *,
         agent: str,
         operation: str,
-        provider: Optional[str] = None,
-        model_ref: Optional[ModelRef] = None,
+        provider: str | None = None,
+        model_ref: ModelRef | None = None,
     ) -> None:
         """请求异常或空响应时调用（每个物理尝试至多一次）：failed_attempts 同时计入
         by_agent、by_operation、by_provider 和 by_model。"""
@@ -316,10 +316,10 @@ class UsageTracker:
         *,
         agent: str,
         operation: str,
-        provider: Optional[str] = None,
-        model_ref: Optional[ModelRef] = None,
+        provider: str | None = None,
+        model_ref: ModelRef | None = None,
         usage: Any = None,
-        stage: Optional[str] = None,
+        stage: str | None = None,
     ) -> None:
         """累加一次带 usage 的响应：token 同时计入 totals 与各归因维度，且每处只计一次。"""
         if usage is None:
@@ -372,10 +372,10 @@ class UsageTracker:
         with self._lock:
             slot = self._by_agent.setdefault(agent, _slot(_AGENT_FIELDS))
             slot["logical_calls"] += 1
-            slot["elapsed_ms"] += int(round(elapsed_ms))
+            slot["elapsed_ms"] += round(elapsed_ms)
             slot = self._by_operation.setdefault(operation, _slot(_AGENT_FIELDS))
             slot["logical_calls"] += 1
-            slot["elapsed_ms"] += int(round(elapsed_ms))
+            slot["elapsed_ms"] += round(elapsed_ms)
 
     def record_outcome(self, agent: str, operation: str, *, accepted: bool) -> None:
         with self._lock:

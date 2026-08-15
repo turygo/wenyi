@@ -14,7 +14,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .model_profiles import ReasoningEffort, validate_model_selection
+from trans_novel.model_profiles import ReasoningEffort, validate_model_selection
 
 PRODUCTION_AGENT_IDS: tuple[str, ...] = (
     "translator",
@@ -88,7 +88,7 @@ class LLMConfig(BaseModel):
     api_key_env: str | None = None
 
     @model_validator(mode="after")
-    def _validate_llm(self) -> "LLMConfig":
+    def _validate_llm(self) -> LLMConfig:
         if self.provider == "openai-compatible":
             if not (self.base_url or "").strip():
                 raise ValueError("llm.base_url：openai-compatible 必须配置服务地址")
@@ -141,7 +141,7 @@ class PipelineConfig(BaseModel):
     inflight_glossary: bool = False
 
     @classmethod
-    def for_quality(cls, quality: QualityPreset) -> "PipelineConfig":
+    def for_quality(cls, quality: QualityPreset) -> PipelineConfig:
         common = {
             "align_retry_limit": 2,
             "review_output_retries": 2,
@@ -207,7 +207,7 @@ class Config:
     state_dir: str = "state"
 
     @classmethod
-    def defaults(cls) -> "Config":
+    def defaults(cls) -> Config:
         return cls()
 
     def apply_quality(self, quality: str) -> None:
@@ -239,7 +239,7 @@ class Config:
         return True
 
     @classmethod
-    def load(cls, path: str = "config.yaml") -> "Config":
+    def load(cls, path: str = "config.yaml") -> Config:
         target = Path(path).expanduser()
         if not target.is_file():
             return cls.defaults()
@@ -248,7 +248,7 @@ class Config:
         return cls.from_dict(raw)
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "Config":
+    def from_dict(cls, raw: dict[str, Any]) -> Config:
         if not isinstance(raw, dict):
             raise ValueError("配置文件顶层必须是 YAML 映射")
         deprecated = sorted(_DEPRECATED_ROOT_KEYS.intersection(raw))

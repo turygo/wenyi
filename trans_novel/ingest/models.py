@@ -10,7 +10,7 @@ Segment 是最小可对齐 / 可回填的翻译单元（通常一个段落或一
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -25,9 +25,9 @@ class Segment(BaseModel):
     index: int  # 章内序号（从 0 起）
     source: str  # 原文
     kind: str = KIND_TEXT  # text | heading
-    target: Optional[str] = None  # 译文（翻译/润色后填入）
-    anchor: Optional[str] = None  # 回填定位标记（EPUB 用占位符 id）
-    resource_href: Optional[str] = None  # EPUB：Segment 所属的物理 XHTML 路径
+    target: str | None = None  # 译文（翻译/润色后填入）
+    anchor: str | None = None  # 回填定位标记（EPUB 用占位符 id）
+    resource_href: str | None = None  # EPUB：Segment 所属的物理 XHTML 路径
     cont: bool = False  # 超长段被拆分后的续段：回填时并回上一段，不另起段落
     meta: dict[str, Any] = Field(default_factory=dict)
 
@@ -35,7 +35,7 @@ class Segment(BaseModel):
         return self.model_dump()
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Segment":
+    def from_dict(cls, d: dict[str, Any]) -> Segment:
         return cls.model_validate(d)
 
 
@@ -45,8 +45,8 @@ class Chapter(BaseModel):
     index: int  # 全书章序号（从 0 起）
     title: str = ""
     segments: list[Segment] = Field(default_factory=list)
-    href: Optional[str] = None  # EPUB spine item 内部路径
-    template: Optional[str] = None  # EPUB: 带占位符的 HTML，用于回填
+    href: str | None = None  # EPUB spine item 内部路径
+    template: str | None = None  # EPUB: 带占位符的 HTML，用于回填
     meta: dict[str, Any] = Field(default_factory=dict)
 
     @property
@@ -58,7 +58,7 @@ class Chapter(BaseModel):
         return self.model_dump()
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Chapter":
+    def from_dict(cls, d: dict[str, Any]) -> Chapter:
         return cls.model_validate(d)
 
 
@@ -77,5 +77,5 @@ class Document(BaseModel):
         return self.model_dump()
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Document":
+    def from_dict(cls, d: dict[str, Any]) -> Document:
         return cls.model_validate(d)

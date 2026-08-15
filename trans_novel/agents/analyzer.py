@@ -8,16 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
-from . import prompts
-from .base import Agent
+from trans_novel.agents import prompts
+from trans_novel.agents.base import Agent
+from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
 
 
 def _text(value: Any, default: str = "") -> str:
     """把模型字段规整为文本；嵌套对象等非标量值直接回退。"""
     if isinstance(value, str):
         return value.strip()
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, int | float) and not isinstance(value, bool):
         return str(value)
     return default
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..config import ModelRef
+from trans_novel.config import ModelRef
 
 
 class UnknownAgentError(ValueError):

@@ -81,7 +81,4 @@ def is_back_matter(title: str, *, index: int | None = None, total: int | None = 
     # 短语：about the author / about the authors
     if re.search(r"\babout the authors?\b", title, re.I):
         return True
-    for kw in _ZH_KEYWORDS:
-        if kw in title:
-            return True
-    return False
+    return any(kw in title for kw in _ZH_KEYWORDS)
