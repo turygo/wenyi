@@ -89,18 +89,21 @@ llm:
   provider: opencode-go
   models:
     primary: deepseek-v4-flash:high
+    # editor 省略时继承 primary；显式配置可使用不同模型
+    editor: deepseek-v4-flash:high
     fast: deepseek-v4-flash:off
 
 quality: balanced
 ```
 
-- `primary`：正文翻译、润色、全局分析和定名；默认 thinking 级别为 `high`。
+- `primary`：正文翻译、全局分析和定名；默认 thinking 级别为 `high`。
+- `editor`：润色和自然化改写；省略时继承 `primary`，默认 thinking 级别为 `high`。
 - `fast`：审校、预扫、梗概、术语抽取、回译和附属章粗翻；默认 thinking 级别为 `off`。
 - `quality`：`economy`、`balanced` 或 `quality`。
 
 模型规格可在模型 ID 最右侧追加 `:off`、`:low`、`:medium`、`:high` 或 `:max`。
 程序启动时会根据 Provider/模型能力校验；不支持的级别直接报错并列出可选值，不会静默
-升级或降级。没有级别后缀时，`primary` 默认 `high`，`fast` 默认 `off`。
+升级或降级。没有级别后缀时，`primary` 和 `editor` 默认 `high`，`fast` 默认 `off`。
 
 Agent 路由、重试、超时、切分、上下文窗口和并发数都是内部策略，不接受 YAML 覆盖。
 Provider 使用固定的官方地址和密钥环境变量：
@@ -117,12 +120,12 @@ Provider 使用固定的官方地址和密钥环境变量：
 
 百炼使用华北 2（北京）的共享 OpenAI 兼容端点。正文模型保留 DeepSeek V4 Flash、
 快任务改用更便宜的千问 3.7 Flash 时，可写：
-
 ```yaml
 llm:
   provider: bailian
   models:
     primary: deepseek-v4-flash:high
+    editor: deepseek-v4-flash:high
     fast: qwen3.7-flash:off
 
 quality: balanced
@@ -137,6 +140,7 @@ llm:
   api_key_env: DASHSCOPE_API_KEY
   models:
     primary: qwen-max
+    editor: qwen-max
     fast: qwen-turbo
 
 quality: balanced
@@ -196,9 +200,10 @@ trans-novel tools assemble book.epub
 OpenRouter 时走各自官方地址；Ollama 与 vLLM 使用本地默认地址；
 `openai-compatible` 必须设置 `llm.base_url`。
 
-内部 Agent 固定映射到两个用户模型角色：
+内部 Agent 固定映射到三个用户模型角色：
 
-- `primary`：正文翻译、定向重译、标题翻译、润色、全局分析、定名和术语审计。
+- `primary`：正文翻译、定向重译、标题翻译、全局分析、定名和术语审计。
+- `editor`：润色和自然化改写；省略时继承 `primary`。
 - `fast`：章末审校、一致性检查、语言识别、预扫、梗概、术语抽取、回译和附属章粗翻。
 
 thinking 级别由模型规格最右侧的后缀决定。请求字段由内置的逐 Provider/模型能力表
@@ -232,7 +237,101 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest discover -s tests
 ```bash
 uv run python -m unittest discover -s tests
 ```
+## 本地基准语料库
 
+基准语料库工具完全离线运行，不调用模型或网络。`BOOK_SPEC.yaml` 中的源书籍路径按文件
+所在目录解析；请仅使用你有权处理的书籍，并注意扫描目录会包含原文片段。
+
+```bash
+trans-novel tools benchmark corpus scan BOOK_SPEC.yaml --out benchmark_data/inventory
+trans-novel tools benchmark corpus build BOOK_SPEC.yaml SELECTION.yaml --out benchmark_runs/corpus
+trans-novel tools benchmark corpus validate benchmark_runs/corpus
+```
+
+输出目录必须不存在，工具不会覆盖或删除已有目录。`challenge_keys.jsonl` 含有人审答案和理由，
+仅供评估器使用，不得作为运行器的输入。`benchmark_data/` 和 `benchmark_runs/` 已被 Git
+忽略；不要提交受版权保护的书籍、扫描结果或冻结语料。
+
+Layer one consumes a frozen `PREPARATION.json` and strict `CANDIDATES.yaml`; it performs
+only translation and optional production-gated polish. The same primary translation
+artifact is shared by all editor branches and unpolished controls. Context passages
+produce C0/C1/C2 diagnostics; screen and other non-context passages use C2 preparation
+context. Resume is allowed only with matching immutable hashes:
+
+Phase six freezes real production preparation once, then reuses it for the full quality
+DAG on formal continuous passages. Preparation is an internal source protocol, not a
+provider or model transport; controls are skipped by the full layer. Raw translation
+stores are closed before cloning editor/fast branches, and branch telemetry must contain
+no new translation calls:
+
+```bash
+trans-novel tools benchmark prepare freeze CORPUS_DIR BOOK_SPEC.yaml PREPARATION_SPEC.yaml --out benchmark_runs/preparation
+trans-novel tools benchmark prepare validate benchmark_runs/preparation
+trans-novel tools benchmark run full CORPUS_DIR CANDIDATES.yaml benchmark_runs/preparation --out benchmark_runs/full
+```
+
+All preparation and full-run directories are create-or-resume only with exact immutable hashes. They contain local artifacts and source identities only; never commit source books, prompts, provider credentials, or generated translations.
+
+## 离线人工评估包
+
+Phase seven generates deterministic, model-blind packs from a validated corpus and
+completed attribution/full run. The evaluator receives only the local files under
+`raters/<opaque-id>/`; the secret mapping stays at the pack root with restrictive
+permissions and is never copied into a rater directory.
+
+```bash
+trans-novel tools benchmark evaluate pack CORPUS_DIR RUN_DIR EVALUATION_SPEC.yaml --out PACK_DIR
+trans-novel tools benchmark evaluate validate PACK_DIR
+trans-novel tools benchmark evaluate import PACK_DIR RESPONSES_DIR --out EVALUATION_DIR
+```
+
+Pack generation, validation, and import are offline and create-only. The static UI
+loads no external resource and stores autosaves in local storage scoped by pack and
+rater. It displays eligibility, consent, compensation, and retention notices and
+requires explicit consent before work; no name, email, IP, or device identifier is
+collected. Imports are strict and incremental: each rater file is hash-bound,
+revalidated, and atomically incorporated into canonical JSONL outputs. A completion
+manifest is emitted only after every expected rater has been accepted.
+Rater assignment/response envelopes bind to `pack_semantic_sha256`, which covers the
+specification, source/run hashes, task counts, and secret assignment semantics.
+`pack_sha256` is a separate final manifest hash covering the immutable manifest,
+secret mapping hash, and every rater asset byte hash; it is never embedded in the
+assets, avoiding a self-referential hash cycle.
+
+
+## Phase 8 报告与发布门
+
+报告完全离线读取冻结后的语料库、运行结果、准备数据、评估包、评估导入结果和人民币价格快照，不调用模型或网络。输出目录只能新建；完整哈希相同时，重复调用不会重新构建。
+
+```bash
+trans-novel tools benchmark report build CORPUS_DIR RUN_DIR PREP_DIR PACK_DIR EVALUATION_DIR PRICE.yaml REPORT_SPEC.yaml --out REPORT_DIR
+trans-novel tools benchmark report build CORPUS_DIR RUN_DIR PREP_DIR PACK_DIR EVALUATION_DIR PRICE.yaml REPORT_SPEC.yaml --out REPORT_DIR --integration INTEGRATION.json
+trans-novel tools benchmark report reprice REPORT_DIR NEW_PRICE.yaml --out NEW_REPORT_DIR
+trans-novel tools benchmark report validate REPORT_DIR
+```
+
+`INTEGRATION.json` 必须与同目录的 `integration_complete.json` 配对；报告会校验候选
+结果文件路径和原始字节哈希，并只把 Phase 9 选中的非对照候选纳入最终门禁。
+`candidates.csv` 的 `effective_cost_rate_*` 列根据 `REPORT_SPEC` 中每名编辑人员的时薪确定性生成。
+
+缺少集成完成文件时，报告保持 `provisional` 状态，只发布质量表和诊断性 `Pareto` 前沿，不选出获胜者。所有待裁决项和校准 `alpha` 指标未达标的情况，都会明确列入 `gates` 和 `withheld_reasons`。提供有效的终态集成结果后，报告才可能进入 `final` 状态；每个候选仍须通过人工、系统、统计和逐书门禁。计费用量未知不会降低质量分数，但相关候选会被排除在成本/有效成本 `Pareto` 前沿及推荐结果之外，避免把成本下界误当作实际成本。`reprice` 只读取报告中冻结的人工评估数据、系统评估数据和规范化定价数据，因此即使删除原始源文件、运行目录和准备目录仍可执行；质量相关 `CSV` 的字节保持不变。`report.html` 自包含、无外链且不嵌入原文段落。
+
+## Phase 9 隐藏 EPUB 中断续跑集成
+
+Phase 9 只处理一本已获许可且 `split=hidden` 的 EPUB，并在所有校验完成后才访问模型。每个候选的状态、输出、遥测和金丝雀测试数据相互独立，不共享翻译或准备状态，也不设后备路径。只允许在正文翻译批次完整持久化后中断；请勿强制终止进程，也不要在写入过程中制造崩溃。
+
+```bash
+trans-novel tools benchmark integration run CORPUS_DIR BOOK_SPEC.yaml CANDIDATES.yaml \
+  INTEGRATION_SPEC.yaml --out benchmark_runs/integration
+```
+
+命令采用 `create/resume` 语义：输入与已完成记录完全一致时，命令会先校验哈希，随后不再执行其他操作；任务尚未完成时，工具会新建 `Application`，复用 `RunStore` 状态并只翻译剩余批次。如果请求与状态不一致、数据损坏或隐藏源文件哈希不匹配，命令会拒绝继续。实际运行会消耗 `Provider` 配额。
+
+每个候选都必须通过基于合成输入的三角色金丝雀测试、生产质量流水线的就绪门禁，以及源 `EPUB`、单语 `EPUB` 和双语 `EPUB` 的结构校验。
+输出包括 `integration_request.json`、
+`integration_state.json`、`candidates/<id>/result.json`、`integration.json` 和
+`integration_complete.json`；最终清单只在所有候选进入终态后写入，并记录单语与双语
+输出路径及其原始字节哈希。
 ## 提交与发版
 
 启用提交钩子：
