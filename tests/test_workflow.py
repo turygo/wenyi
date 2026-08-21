@@ -13,11 +13,14 @@ import os
 import tempfile
 import unittest
 
+from tests.fake_llm import fake_llm_dict
 from trans_novel.agents.translator import AlignmentError
+from trans_novel.config import Config
 from trans_novel.ingest.models import Chapter, Segment
+from trans_novel.llm import FakeClient
 from trans_novel.llm.errors import AllModelsFailedError, JSONParseError
 from trans_novel.llm.retrying import EmptyResponseError
-from trans_novel.pipeline.bootstrap import build_workflow_definition
+from trans_novel.pipeline.bootstrap import Application, build_workflow_definition
 from trans_novel.pipeline.contracts import (
     FAILURE_BUSINESS,
     FAILURE_PROTOCOL,
@@ -31,6 +34,7 @@ from trans_novel.pipeline.contracts import (
     report_goal,
 )
 from trans_novel.pipeline.definition import NodeSpec, WorkflowDefinition, WorkflowDefinitionError
+from trans_novel.pipeline.nodes import RunShared
 from trans_novel.pipeline.planner import (
     PlanEntry,
     PlannedStage,
@@ -220,6 +224,29 @@ class TestPlanner(unittest.TestCase):
             self.assertFalse(plan.stages[4].entries[3].finalize_chapter)
             self.assertEqual(node_layers[5], [NODE_TITLES])
             self.assertEqual(plan.targets, [0, 1])
+
+    def test_computed_fingerprints_cover_prepared_body_quality_chain(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = _store(d)
+            config = Config.from_dict({"llm": fake_llm_dict()})
+            app = Application(config, client=FakeClient())
+            shared = RunShared(
+                store=store,
+                config=config,
+                doc=None,
+                agent_builder=app._build_agents,
+            )
+            try:
+                policy = _policy()
+                prescan = app._prescan_inputs(store, policy, shared, GOAL_TRANSLATE)
+                computed = app.planner._computed_fingerprints(store, policy, prescan)
+            finally:
+                shared.close()
+
+            for node_id in (NODE_POLISH, NODE_NATURALIZE, NODE_REVIEW):
+                key = chapter_node_key(node_id, 0)
+                self.assertIn(key, computed)
+                self.assertTrue(computed[key])
 
     def test_quality_disabled_persists_skipped_entries(self):
         with tempfile.TemporaryDirectory() as d:

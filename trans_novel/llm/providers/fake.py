@@ -10,14 +10,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
+import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from trans_novel.config import LLMConfig, ModelRef
 from trans_novel.llm.base import LLMClient, Messages
+from trans_novel.llm.generation import GenerationOptions
+from trans_novel.llm.providers.transport import _warn_telemetry_failure, validate_generation_options
+from trans_novel.llm.telemetry import CallAttemptTelemetry, CallTelemetrySink
 from trans_novel.llm.usage import UsageTracker
+from trans_novel.model_profiles import capabilities_for
 
 Handler = Callable[[Messages, str, str, bool], str]
 
@@ -71,10 +79,19 @@ class FakeProviderTransport:
     显式测试例外：成功返回，不记 failed_attempts，不产生 token usage。
     """
 
-    def __init__(self, cfg: LLMConfig, usage: UsageTracker) -> None:
+    def __init__(
+        self,
+        cfg: LLMConfig,
+        usage: UsageTracker,
+        *,
+        generation_options: GenerationOptions | None = None,
+        telemetry_sink: CallTelemetrySink | None = None,
+    ) -> None:
         self.provider = cfg.provider
         self.cfg = cfg
         self.usage = usage
+        self.generation_options = generation_options
+        self.telemetry_sink = telemetry_sink
 
     def complete(
         self,
@@ -87,7 +104,69 @@ class FakeProviderTransport:
         agent: str,
         operation: str,
     ) -> str:
+        started_at = (
+            datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        )
+        started = time.monotonic()
+        validate_generation_options(
+            capabilities_for(self.provider, model_ref.model),
+            model_ref,
+            self.generation_options,
+        )
         self.usage.record_attempt(
             agent=agent, operation=operation, provider=self.provider, model_ref=model_ref
         )
-        return "[]" if json_mode else ""
+        content = "[]" if json_mode else ""
+        if self.telemetry_sink is not None:
+            try:
+                request = {"model": model_ref.model, "messages": messages, "stream": False}
+                request_hash = hashlib.sha256(
+                    json.dumps(
+                        request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest()
+                self.telemetry_sink.record(
+                    CallAttemptTelemetry(
+                        schema_version=1,
+                        logical_call_id=uuid.uuid4().hex,
+                        attempt_index=1,
+                        started_at=started_at,
+                        elapsed_ms=round((time.monotonic() - started) * 1000),
+                        stage=stage,
+                        agent=agent,
+                        operation=operation,
+                        provider=self.provider,
+                        requested_model=model_ref.model,
+                        resolved_model=None,
+                        reasoning_enabled=model_ref.reasoning_enabled,
+                        reasoning_effort=model_ref.reasoning_effort,
+                        temperature=(
+                            float(self.generation_options.temperature)
+                            if self.generation_options is not None
+                            and self.generation_options.temperature is not None
+                            else None
+                        ),
+                        seed=self.generation_options.seed
+                        if self.generation_options is not None
+                        else None,
+                        json_mode=json_mode,
+                        max_tokens=max_tokens,
+                        status="success",
+                        retry_class=None,
+                        http_status=None,
+                        finish_reason=None,
+                        response_id=None,
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        total_tokens=0,
+                        cache_hit_tokens=0,
+                        cache_miss_tokens=0,
+                        reasoning_tokens=0,
+                        billed_usage_unknown=True,
+                        request_sha256=request_hash,
+                        response_sha256=hashlib.sha256(content.encode()).hexdigest(),
+                    )
+                )
+            except Exception:
+                _warn_telemetry_failure()
+        return content

@@ -27,10 +27,14 @@ class ModelSelection:
 
 @dataclass(frozen=True)
 class ModelCapabilities:
-    """某个模型的请求方言与可下发推理强度。未知能力一律不发送。"""
+    """某个模型的请求方言与已验证能力；未知能力一律不发送。"""
 
     request_dialect: RequestDialect = DIALECT_GENERIC
     reasoning_efforts: frozenset[ReasoningEffort] = frozenset()
+    catalogued: bool = False
+    supports_thinking_disabled: bool = False
+    supports_temperature: bool = False
+    supports_seed: bool = False
 
 
 _GENERIC_CAPABILITIES = ModelCapabilities()
@@ -64,17 +68,71 @@ _MODEL_CAPABILITIES: dict[tuple[str, str], ModelCapabilities] = {
     ("bailian", "deepseek-v4-flash"): ModelCapabilities(
         request_dialect=DIALECT_BAILIAN,
         reasoning_efforts=frozenset({"low", "medium", "high", "max"}),
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
     ),
     ("bailian", "deepseek-v4-flash-0731"): ModelCapabilities(
         request_dialect=DIALECT_BAILIAN,
         reasoning_efforts=frozenset({"low", "medium", "high", "max"}),
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
+    ("bailian", "deepseek-v4-pro"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
+    ("bailian", "deepseek-v4-pro-us"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
+    ("bailian", "deepseek-v4-pro-0813"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
     ),
     # 千问 3.7 Flash 支持开关思考，但不接受本项目的 reasoning_effort 档位。
     ("bailian", "qwen3.7-flash"): ModelCapabilities(
         request_dialect=DIALECT_BAILIAN,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
     ),
     ("bailian", "qwen3.7-flash-2026-07-15"): ModelCapabilities(
         request_dialect=DIALECT_BAILIAN,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
+    ("bailian", "qwen3.7-plus"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
+    ("bailian", "qwen3.7-plus-us"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
+    ("bailian", "qwen3.7-plus-2026-05-26"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
+    ("bailian", "qwen3.8-max"): ModelCapabilities(
+        request_dialect=DIALECT_BAILIAN,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
     ),
 }
 

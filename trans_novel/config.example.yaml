@@ -3,6 +3,8 @@ llm:
   provider: opencode-go
   models:
     primary: deepseek-v4-flash:high
+    # editor 省略时继承 primary；显式配置可使用不同模型
+    editor: deepseek-v4-flash:high
     fast: deepseek-v4-flash:off
 
 # economy（省钱）| balanced（均衡）| quality（最高质量）

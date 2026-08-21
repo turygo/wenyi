@@ -57,35 +57,79 @@ _TOKEN_DELTAS = (
 )
 
 
+def _usage_value(usage: Any, name: str) -> tuple[bool, object]:
+    """Read an optional usage field without allowing descriptor failures out."""
+    if usage is None:
+        return False, None
+    try:
+        if isinstance(usage, dict):
+            if name not in usage:
+                return False, None
+            return True, usage[name]
+        return True, getattr(usage, name)
+    except Exception:
+        return False, None
+
+
 def _has_field(usage: Any, name: str) -> bool:
-    if isinstance(usage, dict):
-        return name in usage
-    return hasattr(usage, name)
+    return _usage_value(usage, name)[0]
 
 
 def _usage_int(usage: Any, name: str) -> int:
-    """从响应 usage 对象或字典读取整数字段，缺失或非数返回 0。"""
-    value = getattr(usage, name, None)
-    if value is None and isinstance(usage, dict):
-        value = usage.get(name)
-    try:
-        return int(value) if value is not None else 0
-    except (TypeError, ValueError):
+    """Read a nonnegative token count; bool, invalid, and missing values are zero."""
+    present, value = _usage_value(usage, name)
+    if not present:
         return 0
+    if isinstance(value, bool):
+        return 0
+    try:
+        result = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(result, 0)
 
 
 def _reasoning_tokens(usage: Any) -> int:
-    """读取推理 token；不叠加进 total_tokens。"""
-    if usage is None:
-        return 0
+    """Read direct reasoning tokens, then the provider completion details."""
     if _has_field(usage, "reasoning_tokens"):
         return _usage_int(usage, "reasoning_tokens")
-    details = (
-        usage.get("completion_tokens_details")
-        if isinstance(usage, dict)
-        else getattr(usage, "completion_tokens_details", None)
+    _, details = _usage_value(usage, "completion_tokens_details")
+    return _usage_int(details, "reasoning_tokens")
+
+
+def has_response_usage(usage: object) -> bool:
+    """Whether a response exposes at least one recognized primary usage field."""
+    return usage is not None and any(
+        _has_field(usage, field) for field in ("prompt_tokens", "completion_tokens", "total_tokens")
     )
-    return _usage_int(details, "reasoning_tokens") if details is not None else 0
+
+
+def normalize_response_usage(usage: object) -> dict[str, int]:
+    """Normalize provider usage into the six persisted/telemetry token fields."""
+    prompt = _usage_int(usage, "prompt_tokens")
+    completion = _usage_int(usage, "completion_tokens")
+    total = (
+        _usage_int(usage, "total_tokens")
+        if _has_field(usage, "total_tokens")
+        else prompt + completion
+    )
+    if _has_field(usage, "prompt_cache_hit_tokens"):
+        hit = _usage_int(usage, "prompt_cache_hit_tokens")
+    else:
+        _, details = _usage_value(usage, "prompt_tokens_details")
+        hit = _usage_int(details, "cached_tokens")
+    if _has_field(usage, "prompt_cache_miss_tokens"):
+        miss = _usage_int(usage, "prompt_cache_miss_tokens")
+    else:
+        miss = max(prompt - hit, 0)
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "cache_hit_tokens": hit,
+        "cache_miss_tokens": miss,
+        "reasoning_tokens": _reasoning_tokens(usage),
+    }
 
 
 def _hit_rate(hit: int, miss: int) -> float:
@@ -324,19 +368,15 @@ class UsageTracker:
         """累加一次带 usage 的响应：token 同时计入 totals 与各归因维度，且每处只计一次。"""
         if usage is None:
             return
-        prompt_tokens = _usage_int(usage, "prompt_tokens")
-        completion_tokens = _usage_int(usage, "completion_tokens")
-        total_tokens = _usage_int(usage, "total_tokens") or (prompt_tokens + completion_tokens)
-        cache_hit_tokens = _usage_int(usage, "prompt_cache_hit_tokens")
-        cache_miss_tokens = _usage_int(usage, "prompt_cache_miss_tokens")
-        reasoning_tokens = _reasoning_tokens(usage)
+        normalized = normalize_response_usage(usage)
         token_values = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-            "cache_hit_tokens": cache_hit_tokens,
-            "cache_miss_tokens": cache_miss_tokens,
+            "prompt_tokens": normalized["prompt_tokens"],
+            "completion_tokens": normalized["completion_tokens"],
+            "total_tokens": normalized["total_tokens"],
+            "cache_hit_tokens": normalized["cache_hit_tokens"],
+            "cache_miss_tokens": normalized["cache_miss_tokens"],
         }
+        reasoning_tokens = normalized["reasoning_tokens"]
         with self._lock:
             self._totals["calls"] += 1
             for field in _TOKEN_DELTAS:

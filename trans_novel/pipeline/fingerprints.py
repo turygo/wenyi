@@ -6,7 +6,7 @@
   backtranslate_sample/max_chars_per_batch 不得清空已确认译文，见
   ``translate_input_fingerprint`` 的输入集合）。
 
-LLM 消费型节点一律纳入 ``model_profile``（provider + primary/fast 模型选择）：
+LLM 节点的模型指纹按其实际使用的角色组合计算（`provider` + `primary`/`editor`/`fast`）：
 换模型续跑必须失效对应节点及其后代，不能复用旧模型产物。翻译 target 是权威
 续跑标记：translate 指纹包含 source/语言/全书概览/风格/标点/敬称/术语作用域/
 模型配置，但不含批次预算与质量档位；附属章旁路不消费概览/风格，指纹相应收缩
@@ -18,19 +18,36 @@ from __future__ import annotations
 from trans_novel.pipeline.state import input_fingerprint, normalize_lang_code
 
 
-def model_profile(config) -> str:
-    """已解析的模型路由（provider + primary/fast 双角色），用于混合角色节点。"""
-    return f"{_provider(config)}|{_role(config, 'primary')}|{_role(config, 'fast')}"
-
-
 def primary_model_profile(config) -> str:
-    """provider + primary 模型（translator/editor/analyst 等主模型节点）。"""
-    return f"{_provider(config)}|{_role(config, 'primary')}"
+    """provider + primary 模型（正文翻译、分析、定名等节点）。"""
+    return _role_profile(config, "primary")
+
+
+def editor_model_profile(config) -> str:
+    """provider + editor 模型（润色节点）。"""
+    return _role_profile(config, "editor")
 
 
 def fast_model_profile(config) -> str:
-    """provider + fast 模型（reviewer/preparer/light-translator 等快模型节点）。"""
-    return f"{_provider(config)}|{_role(config, 'fast')}"
+    """provider + fast 模型（审校、预扫、回译等节点）。"""
+    return _role_profile(config, "fast")
+
+
+def editor_fast_model_profile(config) -> str:
+    """provider + editor + fast 模型（自然化节点）。"""
+    return _role_profile(config, "editor", "fast")
+
+
+def primary_fast_model_profile(config) -> str:
+    """provider + primary + fast 模型（审校及自动修复节点）。"""
+    return _role_profile(config, "primary", "fast")
+
+
+def _role_profile(config, *roles: str) -> str:
+    selected = set(roles)
+    values = [_provider(config)]
+    values.extend(_role(config, role) for role in ("primary", "editor", "fast") if role in selected)
+    return "|".join(values)
 
 
 def _provider(config) -> str:
@@ -71,6 +88,27 @@ def glossary_semantic_fingerprint_part(terms) -> str:
             )
         )
     return "\n".join(sorted(parts))
+
+
+def frozen_input_fingerprint(
+    preparation_sha256: str,
+    node_id: str,
+    source_mapping=None,
+    content=None,
+) -> str:
+    """Fingerprint a node against immutable frozen preparation semantics.
+
+    Candidate model roles are deliberately absent: a candidate may change
+    without regenerating preparation, while a changed bundle invalidates all
+    frozen consumers.
+    """
+    return input_fingerprint(
+        "frozen-preparation-v1",
+        preparation_sha256,
+        node_id,
+        source_mapping,
+        content,
+    )
 
 
 def prepare_input_fingerprint(source_sha: str, src_lang: str, tgt_lang: str) -> str:

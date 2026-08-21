@@ -101,6 +101,42 @@ def _transport(tracker: UsageTracker):
 
 
 class TestUsageDimensions(unittest.TestCase):
+    def test_no_sink_calls_provider_without_telemetry_setup(self):
+        tracker = UsageTracker()
+        transport = _transport(tracker)
+        client = _ClientStub([_make_response("ok", None)])
+        transport._client = client
+
+        with (
+            patch(
+                "trans_novel.llm.providers.transport.uuid.uuid4",
+                side_effect=AssertionError("no-sink calls must not create telemetry ids"),
+            ),
+            patch(
+                "trans_novel.llm.providers.transport._request_hash",
+                side_effect=AssertionError("no-sink calls must not hash requests"),
+            ),
+        ):
+            result = transport.complete(
+                [{"role": "user", "content": "x"}],
+                ModelRef("deepseek", "m1"),
+                agent="translator",
+                operation="translate.batch",
+            )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(
+            client.chat.completions.calls,
+            [
+                {
+                    "model": "m1",
+                    "messages": [{"role": "user", "content": "x"}],
+                    "stream": False,
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                }
+            ],
+        )
+
     def test_records_tokens_once_into_totals_and_parallel_views(self):
         tracker = UsageTracker()
         t = _transport(tracker)

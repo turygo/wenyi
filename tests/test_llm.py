@@ -11,7 +11,13 @@ from pydantic import ValidationError
 
 from tests.fake_llm import fake_llm_dict
 from trans_novel.config import Config, LLMConfig, ModelRef, PipelineConfig
-from trans_novel.llm import AgentRouter, FakeClient, build_client, parse_json_loose
+from trans_novel.llm import (
+    AgentRouter,
+    FakeClient,
+    GenerationOptions,
+    build_client,
+    parse_json_loose,
+)
 from trans_novel.llm.errors import JSONParseError
 
 
@@ -51,8 +57,39 @@ class TestConfigValidation(unittest.TestCase):
         cfg = Config.from_dict({})
         self.assertEqual(cfg.llm.provider, "opencode-go")
         self.assertEqual(cfg.llm.models.primary, "deepseek-v4-flash:high")
+        self.assertEqual(cfg.llm.models.editor, "deepseek-v4-flash:high")
         self.assertEqual(cfg.llm.models.fast, "deepseek-v4-flash:off")
         self.assertEqual(cfg.quality, "balanced")
+
+    def test_omitted_editor_inherits_selected_primary(self):
+        cfg = Config.from_dict(
+            {
+                "llm": {
+                    "provider": "fake",
+                    "models": {"primary": "custom-primary", "fast": "custom-fast"},
+                }
+            }
+        )
+        self.assertEqual(cfg.llm.models.editor, "custom-primary")
+
+    def test_explicit_editor_null_or_empty_is_rejected(self):
+        for editor in (None, ""):
+            with (
+                self.subTest(editor=editor),
+                self.assertRaisesRegex(ValidationError, r"llm\.models\.editor"),
+            ):
+                Config.from_dict(
+                    {
+                        "llm": {
+                            "provider": "fake",
+                            "models": {
+                                "primary": "custom-primary",
+                                "editor": editor,
+                                "fast": "custom-fast",
+                            },
+                        }
+                    }
+                )
 
     def test_missing_file_uses_defaults_without_creating_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -139,6 +176,21 @@ class TestConfigValidation(unittest.TestCase):
                 }
             )
 
+    def test_editor_model_selection_validation_is_field_specific(self):
+        with self.assertRaisesRegex(ValidationError, r"llm\.models\.editor"):
+            Config.from_dict(
+                {
+                    "llm": {
+                        "provider": "opencode-go",
+                        "models": {
+                            "primary": "deepseek-v4-flash:high",
+                            "editor": "deepseek-v4-flash:low",
+                            "fast": "deepseek-v4-flash:off",
+                        },
+                    }
+                }
+            )
+
     def test_known_model_rejects_unknown_thinking_suffix(self):
         with self.assertRaisesRegex(ValidationError, "未知 thinking 级别 'turbo'"):
             Config.from_dict(
@@ -219,6 +271,80 @@ class TestConfigValidation(unittest.TestCase):
             ),
             "",
         )
+
+    def test_fake_model_tuple_roles(self):
+        self.assertEqual(
+            fake_llm_dict(models=("same",))["models"],
+            {"primary": "same", "editor": "same", "fast": "same"},
+        )
+        self.assertEqual(
+            fake_llm_dict(models=("primary", "fast"))["models"],
+            {"primary": "primary", "editor": "primary", "fast": "fast"},
+        )
+        self.assertEqual(
+            fake_llm_dict(models=("primary", "editor", "fast"))["models"],
+            {"primary": "primary", "editor": "editor", "fast": "fast"},
+        )
+        with self.assertRaises(ValueError):
+            fake_llm_dict(models=("one", "two", "three", "four"))
+
+
+class TestRoleProfiles(unittest.TestCase):
+    def test_profiles_invalidate_only_consuming_roles(self):
+        from trans_novel.pipeline.fingerprints import (
+            editor_fast_model_profile,
+            editor_model_profile,
+            fast_model_profile,
+            primary_fast_model_profile,
+            primary_model_profile,
+        )
+
+        primary = Config.from_dict(
+            {
+                "llm": {
+                    "provider": "fake",
+                    "models": {"primary": "p", "editor": "e", "fast": "f"},
+                }
+            }
+        )
+        editor_changed = Config.from_dict(
+            {
+                "llm": {
+                    "provider": "fake",
+                    "models": {"primary": "p", "editor": "e2", "fast": "f"},
+                }
+            }
+        )
+        primary_changed = Config.from_dict(
+            {
+                "llm": {
+                    "provider": "fake",
+                    "models": {"primary": "p2", "editor": "e", "fast": "f"},
+                }
+            }
+        )
+        self.assertEqual(primary_model_profile(primary), primary_model_profile(editor_changed))
+        self.assertNotEqual(editor_model_profile(primary), editor_model_profile(editor_changed))
+        self.assertNotEqual(
+            editor_fast_model_profile(primary), editor_fast_model_profile(editor_changed)
+        )
+        self.assertEqual(
+            primary_fast_model_profile(primary), primary_fast_model_profile(editor_changed)
+        )
+        self.assertNotEqual(primary_model_profile(primary), primary_model_profile(primary_changed))
+        self.assertEqual(editor_model_profile(primary), editor_model_profile(primary_changed))
+        self.assertEqual(
+            editor_fast_model_profile(primary), editor_fast_model_profile(primary_changed)
+        )
+        self.assertEqual(primary_model_profile(primary), "fake|p")
+        self.assertEqual(editor_model_profile(primary), "fake|e")
+        self.assertEqual(fast_model_profile(primary), "fake|f")
+        self.assertEqual(editor_fast_model_profile(primary), "fake|e|f")
+        self.assertEqual(primary_fast_model_profile(primary), "fake|p|f")
+        self.assertNotEqual(
+            primary_fast_model_profile(primary), primary_fast_model_profile(primary_changed)
+        )
+        self.assertEqual(fast_model_profile(primary), fast_model_profile(editor_changed))
 
 
 class TestFakeClient(unittest.TestCase):
@@ -368,6 +494,147 @@ class TestProviderRequestCapabilities(unittest.TestCase):
         )
         self.assertEqual(kwargs["extra_body"], {"thinking": {"type": "disabled"}})
         self.assertNotIn("reasoning_effort", kwargs)
+
+
+class TestGenerationOptions(unittest.TestCase):
+    def test_validation_boundaries_and_types(self):
+        for temperature in (0.0, 2.0, 1, 0):
+            GenerationOptions(temperature=temperature)
+        for temperature in (float("nan"), float("inf"), -0.1, 2.1, True, "0.1"):
+            with self.subTest(temperature=temperature), self.assertRaises((TypeError, ValueError)):
+                GenerationOptions(temperature=temperature)
+        GenerationOptions(seed=-(2**100))
+        for seed in (True, 1.0, "1"):
+            with self.subTest(seed=seed), self.assertRaises((TypeError, ValueError)):
+                GenerationOptions(seed=seed)
+        for field in ("require_catalogued_model", "require_thinking_disabled"):
+            with self.subTest(field=field), self.assertRaises((TypeError, ValueError)):
+                GenerationOptions(**{field: 1})
+
+    def test_is_immutable(self):
+        options = GenerationOptions(temperature=0.1)
+        with self.assertRaises((AttributeError, TypeError)):
+            options.temperature = 0.2
+
+
+class TestBailianGenerationCapabilities(unittest.TestCase):
+    messages: ClassVar[list[dict[str, str]]] = [{"role": "user", "content": "translate"}]
+    model_ids: ClassVar[tuple[str, ...]] = (
+        "qwen3.7-flash",
+        "qwen3.7-flash-2026-07-15",
+        "qwen3.7-plus",
+        "qwen3.7-plus-us",
+        "qwen3.7-plus-2026-05-26",
+        "qwen3.8-max",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro-us",
+        "deepseek-v4-pro-0813",
+    )
+
+    def test_every_official_id_accepts_controlled_disabled_generation(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import capabilities_for
+
+        options = GenerationOptions(
+            temperature=0.1,
+            require_catalogued_model=True,
+            require_thinking_disabled=True,
+        )
+        for model in self.model_ids:
+            with self.subTest(model=model):
+                model_ref = ModelRef("bailian", model, reasoning_enabled=False)
+                kwargs = build_request_kwargs(
+                    capabilities_for("bailian", model),
+                    model_ref,
+                    self.messages,
+                    generation_options=options,
+                )
+                self.assertEqual(kwargs["temperature"], 0.1)
+                self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
+
+    def test_unknown_and_unsupported_seed_fail_closed(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import capabilities_for
+
+        unknown = ModelRef("bailian", "not-catalogued", reasoning_enabled=False)
+        with self.assertRaises(ValueError):
+            build_request_kwargs(
+                capabilities_for("bailian", unknown.model),
+                unknown,
+                self.messages,
+                generation_options=GenerationOptions(
+                    temperature=0.1, require_catalogued_model=True
+                ),
+            )
+        candidate = ModelRef("bailian", "qwen3.8-max", reasoning_enabled=False)
+        with self.assertRaises(ValueError):
+            build_request_kwargs(
+                capabilities_for("bailian", candidate.model),
+                candidate,
+                self.messages,
+                generation_options=GenerationOptions(seed=1),
+            )
+
+    def test_disabled_requirement_rejects_enabled_ref(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import capabilities_for
+
+        model_ref = ModelRef("bailian", "qwen3.8-max", reasoning_enabled=True)
+        with self.assertRaises(ValueError):
+            build_request_kwargs(
+                capabilities_for("bailian", model_ref.model),
+                model_ref,
+                self.messages,
+                generation_options=GenerationOptions(require_thinking_disabled=True),
+            )
+
+    def test_absent_options_preserve_request_kwargs(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import capabilities_for
+
+        model_ref = ModelRef("bailian", "qwen3.8-max", reasoning_enabled=False)
+        capabilities = capabilities_for("bailian", model_ref.model)
+        self.assertEqual(
+            build_request_kwargs(capabilities, model_ref, self.messages),
+            build_request_kwargs(
+                capabilities,
+                model_ref,
+                self.messages,
+                generation_options=None,
+            ),
+        )
+
+    def test_qwen_enabled_thinking_omits_unverified_effort(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import capabilities_for
+
+        for model in ("qwen3.7-plus", "qwen3.8-max"):
+            with self.subTest(model=model):
+                model_ref = ModelRef("bailian", model, reasoning_enabled=True)
+                kwargs = build_request_kwargs(
+                    capabilities_for("bailian", model_ref.model),
+                    model_ref,
+                    self.messages,
+                )
+                self.assertEqual(kwargs["extra_body"], {"enable_thinking": True})
+                self.assertNotIn("reasoning_effort", kwargs)
+
+    def test_qwen_explicit_off_disables_thinking(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import capabilities_for
+
+        for model in ("qwen3.7-plus", "qwen3.8-max"):
+            with self.subTest(model=model):
+                model_ref = ModelRef("bailian", model, reasoning_enabled=False)
+                kwargs = build_request_kwargs(
+                    capabilities_for("bailian", model_ref.model),
+                    model_ref,
+                    self.messages,
+                )
+                self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
+                self.assertNotIn("reasoning_effort", kwargs)
 
 
 if __name__ == "__main__":

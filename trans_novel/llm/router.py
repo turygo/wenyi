@@ -1,4 +1,4 @@
-"""将内部 Agent 映射到 primary / fast 两个用户模型角色。"""
+"""将内部 Agent 映射到 primary / editor / fast 三个用户模型角色。"""
 
 from __future__ import annotations
 
@@ -8,12 +8,16 @@ from typing import Any
 from trans_novel.config import PRODUCTION_AGENT_IDS, Config, ModelRef
 from trans_novel.llm.base import LLMClient, Messages
 from trans_novel.llm.errors import AllModelsFailedError, UnknownAgentError
+from trans_novel.llm.generation import GenerationOptions
 from trans_novel.llm.json_parser import parse_json_loose
+from trans_novel.llm.providers.transport import validate_generation_options
 from trans_novel.llm.registry import ProviderRegistry
 from trans_novel.llm.retrying import classify_retry
+from trans_novel.llm.telemetry import CallTelemetrySink
 from trans_novel.model_profiles import parse_model_selection
 
-_PRIMARY_AGENTS = frozenset({"translator", "editor", "analyst"})
+_PRIMARY_AGENTS = frozenset({"translator", "analyst"})
+_EDITOR_AGENTS = frozenset({"editor"})
 _FAST_AGENTS = frozenset({"reviewer", "preparer", "light-translator"})
 
 
@@ -24,16 +28,31 @@ class AgentRouter(LLMClient):
         *,
         registry: ProviderRegistry | None = None,
         transports: dict | None = None,
+        generation_options: GenerationOptions | None = None,
+        telemetry_sink: CallTelemetrySink | None = None,
     ) -> None:
         super().__init__()
         self.config = config
         self._primary_selection = parse_model_selection(config.llm.models.primary)
+        self._editor_selection = parse_model_selection(config.llm.models.editor)
         self._fast_selection = parse_model_selection(config.llm.models.fast)
         if registry is not None:
             self._registry = registry
+            if generation_options is not None:
+                registry.set_generation_options(generation_options)
+            if telemetry_sink is not None:
+                registry.set_telemetry_sink(telemetry_sink)
+            self.generation_options = registry.generation_options
             self.usage = registry.usage
         else:
-            self._registry = ProviderRegistry(config.llm, self.usage, transports=transports)
+            self.generation_options = generation_options
+            self._registry = ProviderRegistry(
+                config.llm,
+                self.usage,
+                transports=transports,
+                generation_options=generation_options,
+                telemetry_sink=telemetry_sink,
+            )
 
     def _model(self, agent: str | None) -> ModelRef:
         if not agent or agent not in PRODUCTION_AGENT_IDS:
@@ -42,6 +61,9 @@ class AgentRouter(LLMClient):
             )
         if agent in _PRIMARY_AGENTS:
             selection = self._primary_selection
+            thinking = selection.thinking or "high"
+        elif agent in _EDITOR_AGENTS:
+            selection = self._editor_selection
             thinking = selection.thinking or "high"
         elif agent in _FAST_AGENTS:
             selection = self._fast_selection
@@ -72,6 +94,11 @@ class AgentRouter(LLMClient):
         operation: str,
     ) -> str:
         model_ref = self._model(agent)
+        validate_generation_options(
+            self._registry.capabilities_for(model_ref.model),
+            model_ref,
+            self.generation_options,
+        )
         start = time.monotonic()
         try:
             try:

@@ -6,16 +6,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
+import time
+import uuid
+import warnings
+from contextlib import suppress
+from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from trans_novel.config import LLMConfig, ModelRef
 from trans_novel.llm.base import Messages
-from trans_novel.llm.retrying import EmptyResponseError, classify_retry
-from trans_novel.llm.usage import UsageTracker
+from trans_novel.llm.generation import GenerationOptions
+from trans_novel.llm.retrying import EmptyResponseError, _status_code, classify_retry
+from trans_novel.llm.telemetry import CallAttemptTelemetry, CallTelemetrySink
+from trans_novel.llm.usage import UsageTracker, has_response_usage, normalize_response_usage
 from trans_novel.model_profiles import (
     DIALECT_BAILIAN,
     DIALECT_DEEPSEEK,
@@ -28,6 +37,34 @@ from trans_novel.model_profiles import capabilities_for as _capabilities_for
 _REASONING_FLOOR_TOKENS = 4096
 _REQUEST_TIMEOUT_SECONDS = 600
 _MAX_RETRIES = 4
+
+
+def validate_generation_options(
+    capabilities: ModelCapabilities,
+    model_ref: ModelRef,
+    options: GenerationOptions | None,
+) -> None:
+    """Reject controlled requests that the selected model cannot satisfy."""
+    if options is None:
+        return
+    if options.require_catalogued_model and not capabilities.catalogued:
+        raise ValueError(f"model is not catalogued: {model_ref.provider}:{model_ref.model}")
+    if options.require_thinking_disabled:
+        if model_ref.reasoning_enabled:
+            raise ValueError("generation requires thinking to be disabled")
+        if not capabilities.supports_thinking_disabled:
+            raise ValueError(
+                f"model does not support verified thinking disable: "
+                f"{model_ref.provider}:{model_ref.model}"
+            )
+    if options.temperature is not None and not capabilities.supports_temperature:
+        raise ValueError(
+            f"model does not support verified temperature: {model_ref.provider}:{model_ref.model}"
+        )
+    if options.seed is not None and not capabilities.supports_seed:
+        raise ValueError(
+            f"model does not support verified seed: {model_ref.provider}:{model_ref.model}"
+        )
 
 
 @runtime_checkable
@@ -55,8 +92,10 @@ def build_request_kwargs(
     *,
     json_mode: bool = False,
     max_tokens: int | None = None,
+    generation_options: GenerationOptions | None = None,
 ) -> dict[str, Any]:
     """按逐模型能力构造请求；路由意图只在模型明确支持时下发。"""
+    validate_generation_options(capabilities, model_ref, generation_options)
     kwargs: dict[str, Any] = {
         "model": model_ref.model,
         "messages": messages,
@@ -75,8 +114,11 @@ def build_request_kwargs(
         else:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     elif dialect == DIALECT_BAILIAN:
-        kwargs["extra_body"] = {"enable_thinking": reasoning_enabled}
-        if reasoning_enabled:
+        kwargs["extra_body"] = {"enable_thinking": model_ref.reasoning_enabled}
+        if (
+            model_ref.reasoning_enabled
+            and model_ref.reasoning_effort in capabilities.reasoning_efforts
+        ):
             kwargs["reasoning_effort"] = model_ref.reasoning_effort
     elif dialect == DIALECT_OPENAI:
         if reasoning_enabled:
@@ -91,7 +133,49 @@ def build_request_kwargs(
         kwargs["max_tokens"] = (
             max(max_tokens, _REASONING_FLOOR_TOKENS) if reasoning_enabled else max_tokens
         )
+    if generation_options is not None:
+        if generation_options.temperature is not None:
+            kwargs["temperature"] = generation_options.temperature
+        if generation_options.seed is not None:
+            kwargs["seed"] = generation_options.seed
     return kwargs
+
+
+def _safe_attr(obj: Any, name: str) -> object:
+    try:
+        return getattr(obj, name, None)
+    except Exception:
+        return None
+
+
+def _safe_text(value: object) -> str | None:
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _warn_telemetry_failure() -> None:
+    with suppress(Exception):
+        warnings.warn("LLM telemetry write failed", RuntimeWarning, stacklevel=2)
+
+
+def _started_at() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _request_hash(kwargs: dict[str, Any]) -> str:
+    payload = json.dumps(kwargs, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _response_meta(response: Any) -> tuple[str | None, str | None, str | None]:
+    resolved_model = _safe_text(_safe_attr(response, "model"))
+    response_id = _safe_text(_safe_attr(response, "id"))
+    try:
+        choice = response.choices[0]
+    except Exception:
+        return resolved_model, None, response_id
+    return resolved_model, _safe_text(_safe_attr(choice, "finish_reason")), response_id
 
 
 class OpenAICompatibleTransport:
@@ -106,6 +190,8 @@ class OpenAICompatibleTransport:
         default_base_url: str | None,
         default_api_key_env: str | None,
         requires_api_key: bool,
+        generation_options: GenerationOptions | None = None,
+        telemetry_sink: CallTelemetrySink | None = None,
     ) -> None:
         self.provider = cfg.provider
         self.cfg = cfg
@@ -117,6 +203,8 @@ class OpenAICompatibleTransport:
         if not self.base_url:
             raise ValueError(f"llm.base_url：{provider_name} provider 必须配置服务地址")
         self._client: Any = None
+        self.generation_options = generation_options
+        self.telemetry_sink = telemetry_sink
         self._client_lock = threading.Lock()
 
     def capabilities_for(self, model: str) -> ModelCapabilities:
@@ -158,8 +246,83 @@ class OpenAICompatibleTransport:
             messages,
             json_mode=json_mode,
             max_tokens=max_tokens,
+            generation_options=self.generation_options,
         )
         client = self._ensure_client()
+
+        telemetry_enabled = self.telemetry_sink is not None
+        logical_call_id = uuid.uuid4().hex if telemetry_enabled else None
+        if telemetry_enabled:
+            try:
+                request_digest = _request_hash(kwargs)
+            except Exception:
+                request_digest = None
+        else:
+            request_digest = None
+        attempt_index = 0
+
+        def emit(
+            *,
+            started_at: str,
+            elapsed_ms: int,
+            status: str,
+            retry_class: str | None,
+            response: Any = None,
+            content: str | None = None,
+            usage: Any = None,
+            http_status: int | None = None,
+        ) -> None:
+            if self.telemetry_sink is None or request_digest is None:
+                return
+            try:
+                resolved_model = finish_reason = response_id = None
+                if response is not None:
+                    resolved_model, finish_reason, response_id = _response_meta(response)
+                normalized = normalize_response_usage(usage)
+                response_digest = (
+                    hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    if isinstance(content, str)
+                    else None
+                )
+                self.telemetry_sink.record(
+                    CallAttemptTelemetry(
+                        schema_version=1,
+                        logical_call_id=logical_call_id,
+                        attempt_index=attempt_index,
+                        started_at=started_at,
+                        elapsed_ms=elapsed_ms,
+                        stage=stage,
+                        agent=agent,
+                        operation=operation,
+                        provider=self.provider,
+                        requested_model=model_ref.model,
+                        resolved_model=resolved_model,
+                        reasoning_enabled=model_ref.reasoning_enabled,
+                        reasoning_effort=model_ref.reasoning_effort,
+                        temperature=(
+                            float(self.generation_options.temperature)
+                            if self.generation_options is not None
+                            and self.generation_options.temperature is not None
+                            else None
+                        ),
+                        seed=self.generation_options.seed
+                        if self.generation_options is not None
+                        else None,
+                        json_mode=json_mode,
+                        max_tokens=max_tokens,
+                        status=status,
+                        retry_class=retry_class,
+                        http_status=http_status,
+                        finish_reason=finish_reason,
+                        response_id=response_id,
+                        **normalized,
+                        billed_usage_unknown=not has_response_usage(usage),
+                        request_sha256=request_digest,
+                        response_sha256=response_digest,
+                    )
+                )
+            except Exception:
+                _warn_telemetry_failure()
 
         @retry(
             stop=stop_after_attempt(_MAX_RETRIES + 1),
@@ -168,6 +331,10 @@ class OpenAICompatibleTransport:
             reraise=True,
         )
         def call() -> str:
+            nonlocal attempt_index
+            attempt_index += 1
+            started_at = _started_at()
+            started = time.monotonic()
             self.usage.record_attempt(
                 agent=agent,
                 operation=operation,
@@ -176,12 +343,30 @@ class OpenAICompatibleTransport:
             )
             try:
                 response = client.chat.completions.create(**kwargs)
-            except Exception:
+            except Exception as error:
                 self.usage.record_attempt_failed(
                     agent=agent,
                     operation=operation,
                     provider=self.provider,
                     model_ref=model_ref,
+                )
+                emit(
+                    started_at=started_at,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    status="error",
+                    retry_class=classify_retry(error),
+                    http_status=_status_code(error),
+                )
+                raise
+            try:
+                usage = getattr(response, "usage", None)
+            except Exception:
+                emit(
+                    started_at=started_at,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    status="error",
+                    retry_class=None,
+                    response=response,
                 )
                 raise
             self.usage.record(
@@ -189,10 +374,21 @@ class OpenAICompatibleTransport:
                 operation=operation,
                 provider=self.provider,
                 model_ref=model_ref,
-                usage=getattr(response, "usage", None),
+                usage=usage,
                 stage=stage,
             )
-            content = getattr(response.choices[0].message, "content", None)
+            try:
+                content = getattr(response.choices[0].message, "content", None)
+            except Exception:
+                emit(
+                    started_at=started_at,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    status="error",
+                    retry_class=None,
+                    response=response,
+                    usage=usage,
+                )
+                raise
             if not isinstance(content, str) or not content.strip():
                 self.usage.record_attempt_failed(
                     agent=agent,
@@ -200,7 +396,25 @@ class OpenAICompatibleTransport:
                     provider=self.provider,
                     model_ref=model_ref,
                 )
+                emit(
+                    started_at=started_at,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    status="empty_response",
+                    retry_class="empty_response",
+                    response=response,
+                    content=content,
+                    usage=usage,
+                )
                 raise EmptyResponseError("provider returned empty response content")
+            emit(
+                started_at=started_at,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                status="success",
+                retry_class=None,
+                response=response,
+                content=content,
+                usage=usage,
+            )
             return content
 
         return call()

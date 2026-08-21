@@ -61,14 +61,22 @@ class ModelRef:
 
 
 class ModelRoles(BaseModel):
-    """用户可选的两个模型角色。"""
+    """用户可选的 primary、editor、fast 三个模型角色。"""
 
     model_config = ConfigDict(extra="forbid")
 
     primary: str = _DEFAULT_PRIMARY_MODEL
+    editor: str
     fast: str = _DEFAULT_FAST_MODEL
 
-    @field_validator("primary", "fast")
+    @model_validator(mode="before")
+    @classmethod
+    def _inherit_editor(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "editor" not in value:
+            return {**value, "editor": value.get("primary", _DEFAULT_PRIMARY_MODEL)}
+        return value
+
+    @field_validator("primary", "editor", "fast")
     @classmethod
     def _model_id_non_empty(cls, value: str) -> str:
         value = value.strip()
@@ -78,7 +86,7 @@ class ModelRoles(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """单 Provider、双模型角色的公开 LLM 配置。"""
+    """单 Provider、三模型角色的公开 LLM 配置。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -97,7 +105,7 @@ class LLMConfig(BaseModel):
                 "llm.base_url / llm.api_key_env 只用于 openai-compatible；"
                 "标准 Provider 使用内置地址和密钥环境变量"
             )
-        for role in ("primary", "fast"):
+        for role in ("primary", "editor", "fast"):
             value = getattr(self.models, role)
             try:
                 validate_model_selection(self.provider, value)

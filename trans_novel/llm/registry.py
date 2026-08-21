@@ -6,9 +6,12 @@ import threading
 from typing import Any
 
 from trans_novel.config import LLMConfig
+from trans_novel.llm.generation import GenerationOptions
 from trans_novel.llm.providers.fake import FakeProviderTransport
 from trans_novel.llm.providers.transport import OpenAICompatibleTransport, ProviderTransport
+from trans_novel.llm.telemetry import CallTelemetrySink
 from trans_novel.llm.usage import UsageTracker
+from trans_novel.model_profiles import ModelCapabilities, capabilities_for
 
 _PROVIDER_SPECS: dict[str, dict[str, Any]] = {
     "deepseek": {
@@ -71,14 +74,31 @@ class ProviderRegistry:
         usage: UsageTracker,
         *,
         transports: dict[str, ProviderTransport] | None = None,
+        generation_options: GenerationOptions | None = None,
+        telemetry_sink: CallTelemetrySink | None = None,
     ) -> None:
         self.cfg = cfg
         self.usage = usage
+        self._generation_options = generation_options
+        self._telemetry_sink = telemetry_sink
         self._injected = dict(transports or {})
         for transport in self._injected.values():
             transport.usage = usage
         self._built: ProviderTransport | None = None
         self._lock = threading.Lock()
+
+    @property
+    def generation_options(self) -> GenerationOptions | None:
+        return self._generation_options
+
+    def set_generation_options(self, options: GenerationOptions | None) -> None:
+        """Set request controls before materialization, or reject divergence."""
+        with self._lock:
+            if options == self._generation_options:
+                return
+            if self._built is not None:
+                raise ValueError("cannot change generation options after transport materialization")
+            self._generation_options = options
 
     def transport(self) -> ProviderTransport:
         with self._lock:
@@ -89,9 +109,34 @@ class ProviderRegistry:
                 self._built = self._build()
             return self._built
 
+    @property
+    def telemetry_sink(self) -> CallTelemetrySink | None:
+        return self._telemetry_sink
+
+    def set_telemetry_sink(self, sink: CallTelemetrySink | None) -> None:
+        with self._lock:
+            if sink is self._telemetry_sink:
+                return
+            if self._built is not None:
+                raise ValueError("cannot change telemetry sink after transport materialization")
+            self._telemetry_sink = sink
+
+    def capabilities_for(self, model: str) -> ModelCapabilities:
+        transport = self._injected.get(self.cfg.provider)
+        if transport is not None:
+            capabilities_method = getattr(transport, "capabilities_for", None)
+            if callable(capabilities_method):
+                return capabilities_method(model)
+        return capabilities_for(self.cfg.provider, model)
+
     def _build(self) -> ProviderTransport:
         if self.cfg.provider == "fake":
-            return FakeProviderTransport(self.cfg, self.usage)
+            return FakeProviderTransport(
+                self.cfg,
+                self.usage,
+                generation_options=self.generation_options,
+                telemetry_sink=self._telemetry_sink,
+            )
         spec = _PROVIDER_SPECS[self.cfg.provider]
         return OpenAICompatibleTransport(
             self.cfg,
@@ -100,4 +145,6 @@ class ProviderRegistry:
             default_base_url=spec["default_base_url"],
             default_api_key_env=spec["default_api_key_env"],
             requires_api_key=spec["requires_api_key"],
+            generation_options=self.generation_options,
+            telemetry_sink=self._telemetry_sink,
         )

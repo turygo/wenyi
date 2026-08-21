@@ -7,14 +7,21 @@ import re
 
 
 def fake_llm_dict(*, models=("p",), extra_agents=None) -> dict:
-    """构造离线 fake provider 的精简配置。"""
+    """构造离线 fake provider 的三角色精简配置。
+
+    传入一个模型时，所有角色共用该模型；传入两个模型时，`primary` 和 `editor` 共用第一个，
+    `fast` 使用第二个；传入三个模型时，依次对应 `primary`、`editor`、`fast`。
+    """
     if extra_agents is not None:
         raise ValueError("新配置不支持 Agent 路由覆盖")
+    if not models or len(models) > 3:
+        raise ValueError("fake 模型配置必须包含 1 至 3 个模型")
     primary = models[0]
-    fast = models[1] if len(models) > 1 else primary
+    editor = models[0] if len(models) < 3 else models[1]
+    fast = primary if len(models) == 1 else models[-1]
     return {
         "provider": "fake",
-        "models": {"primary": primary, "fast": fast},
+        "models": {"primary": primary, "editor": editor, "fast": fast},
     }
 
 
