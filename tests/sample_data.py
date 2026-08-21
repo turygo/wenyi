@@ -386,3 +386,82 @@ def write_part_chapter_epub(path: str, *, chapter_body_chars: int) -> None:
         zf.writestr("OEBPS/toc.ncx", ncx)
         for href, content in resources.items():
             zf.writestr(f"OEBPS/{href}", content)
+
+
+_PHASE9_OPF = """<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Phase Nine Fixture</dc:title><dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="style" href="style.css" media-type="text/css"/>
+    <item id="image" href="images/figure.png" media-type="image/png"/>
+    <item id="ch1" href="text/chapter-1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch2" href="text/chapter-2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx"><itemref idref="ch1"/><itemref idref="ch2"/></spine>
+</package>
+"""
+
+_PHASE9_NAV = """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head>
+<body><nav epub:type="toc"><h1>Contents</h1><ol>
+<li><a href="text/chapter-1.xhtml#chapter-one">Chapter One</a></li>
+<li><a href="text/chapter-2.xhtml#chapter-two">Chapter Two</a></li>
+</ol></nav></body></html>
+"""
+
+_PHASE9_NCX = """<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><head/>
+<docTitle><text>Phase Nine Fixture</text></docTitle><navMap>
+<navPoint id="one"><navLabel><text>Chapter One</text></navLabel>
+<content src="text/chapter-1.xhtml#chapter-one"/></navPoint>
+<navPoint id="two"><navLabel><text>Chapter Two</text></navLabel>
+<content src="text/chapter-2.xhtml#chapter-two"/></navPoint>
+</navMap></ncx>
+"""
+
+
+_PHASE9_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000d49444154789c6360f8cf00000002010001e221bc330000000049454e44ae426082"
+)
+
+
+def write_phase9_epub(path: str, *, long_chapter_chars: int = 7200) -> None:
+    """Write a valid two-spine EPUB exercising links, assets, and block markup."""
+    unit = "A long translated paragraph for committed batch testing. "
+    filler = (unit * (max(long_chapter_chars, 1) // len(unit) + 1))[: max(long_chapter_chars, 1)]
+    chapter_one = f"""<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Chapter One</title>
+<link rel="stylesheet" type="text/css" href="../style.css"/></head><body>
+<h1 id="chapter-one">Chapter One</h1>
+<p id="intro">This is the first paragraph with a <a href="chapter-2.xhtml#chapter-two">cross link</a>
+and a <a id="ref-1" epub:type="noteref" href="chapter-2.xhtml#footnote-1">note</a>.</p>
+<ul><li>First item</li><li>Second item</li></ul>
+<blockquote><p>A quoted paragraph.</p></blockquote>
+<table><caption>Data</caption><thead><tr><th>Key</th><th>Value</th></tr></thead>
+<tbody><tr><td>A</td><td>One</td></tr></tbody></table>
+<p><img src="../images/figure.png" alt="Figure"/>Inline image.</p>
+<p>{filler}</p>
+</body></html>"""
+    chapter_two = """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Chapter Two</title>
+<link rel="stylesheet" type="text/css" href="../style.css"/></head><body>
+<h1 id="chapter-two">Chapter Two</h1><p id="body-two">Second chapter.</p>
+<aside id="footnote-1" epub:type="footnote"><p>Footnote text.
+<a href="chapter-1.xhtml#ref-1">back</a></p></aside>
+</body></html>"""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", "application/epub+zip", zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", _CONTAINER)
+        zf.writestr("OEBPS/content.opf", _PHASE9_OPF)
+        zf.writestr("OEBPS/nav.xhtml", _PHASE9_NAV)
+        zf.writestr("OEBPS/toc.ncx", _PHASE9_NCX)
+        zf.writestr("OEBPS/style.css", "body { font-family: serif; }\n")
+        zf.writestr("OEBPS/images/figure.png", _PHASE9_PNG)
+        zf.writestr("OEBPS/text/chapter-1.xhtml", chapter_one)
+        zf.writestr("OEBPS/text/chapter-2.xhtml", chapter_two)

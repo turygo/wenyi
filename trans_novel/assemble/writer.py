@@ -14,7 +14,7 @@ import os
 import re
 import zipfile
 
-from bs4 import BeautifulSoup, Comment, Tag, UnicodeDammit
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
 
 from trans_novel.ingest.epub_toc import nav_root_list, nav_toc_scopes
 from trans_novel.ingest.fb2_reader import read_fb2_binaries
@@ -31,6 +31,21 @@ _VERTICAL_MARKERS = (
 )
 _HORIZONTAL_OVERRIDE_ID = "trans-novel-horizontal-override"
 _BILINGUAL_STYLE_ID = "tn-bilingual-style"
+_HORIZONTAL_OVERRIDE_CSS = (
+    "html, body { "
+    "writing-mode: horizontal-tb !important; "
+    "-epub-writing-mode: horizontal-tb !important; "
+    "-webkit-writing-mode: horizontal-tb !important; "
+    "direction: ltr !important; "
+    "text-orientation: mixed !important; "
+    "} "
+    '.vrtl, .vertical, [class*="vrtl"] { '
+    "writing-mode: horizontal-tb !important; "
+    "-epub-writing-mode: horizontal-tb !important; "
+    "-webkit-writing-mode: horizontal-tb !important; "
+    "direction: ltr !important; "
+    "}"
+)
 _IMAGE_EXTENSION_BY_TYPE = {
     "image/gif": ".gif",
     "image/jpeg": ".jpg",
@@ -250,6 +265,46 @@ def _replace_block_content(
     source_length = inline.get("source_length")
     if not isinstance(source_length, int) or source_length < 0:
         source_length = 0
+    source_text = re.sub(r"\s+", " ", el.get_text("", strip=False))
+    if source_length <= 0:
+        source_length = len(source_text)
+    captured_links: list[tuple[int, Tag]] = []
+    link_search_start = 0
+    for link in list(el.find_all("a", href=True)):
+        inline_parent = link.find_parent(attrs={_INLINE_ID_ATTR: True})
+        if link.has_attr(_INLINE_ID_ATTR) or (
+            inline_parent is not None and inline_parent is not el
+        ):
+            continue
+        link_text = re.sub(r"\s+", " ", link.get_text("", strip=False))
+        offset = source_text.find(link_text, link_search_start) if link_text else 0
+        if offset < 0:
+            offset = 0
+        else:
+            link_search_start = offset + len(link_text)
+        clone_soup = BeautifulSoup(str(link), "html.parser")
+        clone = clone_soup.find("a")
+        if not isinstance(clone, Tag):
+            continue
+        adjacent_identity: Tag | None = None
+        for sibling in list(link.previous_siblings) + list(link.next_siblings):
+            if isinstance(sibling, NavigableString) and not str(sibling).strip():
+                continue
+            if (
+                isinstance(sibling, Tag)
+                and sibling.name == "a"
+                and not sibling.get_text(strip=True)
+                and any(sibling.get(key) for key in ("id", "name"))
+            ):
+                adjacent_identity = sibling
+            break
+        if adjacent_identity is not None:
+            for key in ("id", "name"):
+                value = adjacent_identity.get(key)
+                if isinstance(value, str) and value:
+                    clone[key] = value
+            adjacent_identity.extract()
+        captured_links.append((offset, clone))
 
     restored: list[tuple[int, int, Tag]] = []
     for order, record in enumerate(nodes):
@@ -271,6 +326,15 @@ def _replace_block_content(
         else:
             target_offset = round(offset * len(text) / source_length)
         restored.append((target_offset, order, node))
+    for source_offset, node in captured_links:
+        target_offset = (
+            0
+            if source_offset <= 0
+            else len(text)
+            if source_offset >= source_length
+            else round(source_offset * len(text) / source_length)
+        )
+        restored.append((target_offset, len(restored), node))
 
     el.clear()
     cursor = 0
@@ -332,10 +396,11 @@ def _render_segments_html(
         del el["data-tn-id"]
         if not src:
             continue
-        # p 的原文可作为相邻段落插入；li/blockquote 则必须留在原容器内，
-        # 避免生成 <ul><li>...</li><p>...</p></ul> 之类的非法列表结构，
-        # 同时保留引用块的语义和样式。
-        nested_source = el.name in {"li", "blockquote"}
+        # p 的原文可作为相邻段落插入；li/blockquote/td/th 则必须留在原容器内，
+        # 避免生成 <ul><li>...</li><p>...</p></ul> 或
+        # <table><tr>...</tr><p>...</p></table> 之类的非法结构，
+        # 同时保留列表、引用块和表格单元格的语义和样式。
+        nested_source = el.name in {"li", "blockquote", "td", "th"}
         src_el = soup.new_tag("span" if line_wrapper else "div" if nested_source else "p")
         src_el["class"] = ["tn-source", "ibooks-dark-theme-use-custom-text-color"]
         _append_source(src_el, src, source_markup)
@@ -473,28 +538,13 @@ def _rewrite_html_document(
         classes = html.get("class")
         if isinstance(classes, list) and "vrtl" in classes:
             html["class"] = [c for c in classes if c != "vrtl"]
-
         if force_horizontal and soup.find(id=_HORIZONTAL_OVERRIDE_ID) is None:
             head = soup.find("head")
             if head is None:
                 head = soup.new_tag("head")
                 html.insert(0, head)
             style = soup.new_tag("style", id=_HORIZONTAL_OVERRIDE_ID)
-            style.string = (
-                "html, body { "
-                "writing-mode: horizontal-tb !important; "
-                "-epub-writing-mode: horizontal-tb !important; "
-                "-webkit-writing-mode: horizontal-tb !important; "
-                "direction: ltr !important; "
-                "text-orientation: mixed !important; "
-                "} "
-                '.vrtl, .vertical, [class*="vrtl"] { '
-                "writing-mode: horizontal-tb !important; "
-                "-epub-writing-mode: horizontal-tb !important; "
-                "-webkit-writing-mode: horizontal-tb !important; "
-                "direction: ltr !important; "
-                "}"
-            )
+            style.string = _HORIZONTAL_OVERRIDE_CSS
             head.append(style)
 
         if bilingual and soup.find(id=_BILINGUAL_STYLE_ID) is None:

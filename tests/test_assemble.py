@@ -17,6 +17,7 @@ from tests.sample_data import (
     write_epub_type_less_nav_epub,
     write_inline_sample_epub,
     write_nested_toc_epub,
+    write_phase9_epub,
     write_sample_epub,
     write_sample_txt,
 )
@@ -24,9 +25,11 @@ from trans_novel.assemble.report import build_report
 from trans_novel.assemble.writer import (
     _inject_bilingual_style,
     _render_chapter_html,
+    _render_segments_html,
     _rewrite_html_document,
     assemble,
 )
+from trans_novel.benchmark.epub_check import validate_epub_triplet
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.epub_reader import annotate_epub_resource
@@ -495,6 +498,188 @@ Isaac Asimov<br/><br/>Tales of the Black Widowers<br/>
             self.assertIn("writing-mode: horizontal-tb", html)
             self.assertIn('lang="zh-Hans"', html)
             self.assertNotIn('class="vrtl"', html)
+
+    def test_phase9_table_bilingual_round_trip_validates_both_orders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "source.epub")
+            mono_path = os.path.join(directory, "mono.epub")
+            bilingual_path = os.path.join(directory, "bilingual.epub")
+            source_first_path = os.path.join(directory, "bilingual-source-first.epub")
+            write_phase9_epub(source)
+
+            store, _ = _run(source, os.path.join(directory, "state"))
+            manifest = store.load_manifest()
+            chapters = [store.load_chapter(entry["index"]) for entry in manifest["chapters"]]
+            chapter_one_segments = [
+                segment
+                for chapter in chapters
+                for segment in chapter.segments
+                if segment.resource_href == "OEBPS/text/chapter-1.xhtml"
+            ]
+            template = store.load_resource_templates()["OEBPS/text/chapter-1.xhtml"]
+            rendered_resource = _render_segments_html(template, chapter_one_segments)
+            for href in (
+                "chapter-2.xhtml#chapter-two",
+                "chapter-2.xhtml#footnote-1",
+            ):
+                self.assertIn(f'href="{href}"', rendered_resource)
+            rendered_resource_soup = BeautifulSoup(rendered_resource, "html.parser")
+            noteref = rendered_resource_soup.find("a", attrs={"epub:type": "noteref"})
+            self.assertIsNotNone(noteref)
+            assert isinstance(noteref, Tag)
+            self.assertEqual(noteref.get("id"), "ref-1")
+            self.assertEqual(len(rendered_resource_soup.find_all("a", id="ref-1")), 1)
+            chapter_two_segments = [
+                segment
+                for chapter in chapters
+                for segment in chapter.segments
+                if segment.resource_href == "OEBPS/text/chapter-2.xhtml"
+            ]
+            rendered_chapter_two = _render_segments_html(
+                store.load_resource_templates()["OEBPS/text/chapter-2.xhtml"],
+                chapter_two_segments,
+            )
+            self.assertIn('href="chapter-1.xhtml#ref-1"', rendered_chapter_two)
+            mono = assemble(store, source, mono_path, out_format="epub")
+            bilingual = assemble(
+                store,
+                source,
+                bilingual_path,
+                out_format="epub",
+                bilingual=True,
+                order="target_first",
+            )
+            source_first = assemble(
+                store,
+                source,
+                source_first_path,
+                out_format="epub",
+                bilingual=True,
+                order="source_first",
+            )
+
+            result = validate_epub_triplet(source, mono, bilingual)
+            source_first_result = validate_epub_triplet(source, mono, source_first)
+            self.assertTrue(result["structural_pass"], result)
+            self.assertTrue(result["mono"]["structural_pass"], result)
+            self.assertTrue(result["bilingual"]["structural_pass"], result)
+            self.assertTrue(source_first_result["structural_pass"], source_first_result)
+            self.assertTrue(source_first_result["mono"]["structural_pass"], source_first_result)
+            self.assertTrue(
+                source_first_result["bilingual"]["structural_pass"],
+                source_first_result,
+            )
+
+            def read_chapter(path: str) -> BeautifulSoup:
+                with zipfile.ZipFile(path) as archive:
+                    return BeautifulSoup(
+                        archive.read("OEBPS/text/chapter-1.xhtml"),
+                        "html.parser",
+                    )
+
+            def read_links(path: str, member: str) -> list[str]:
+                with zipfile.ZipFile(path) as archive:
+                    soup = BeautifulSoup(archive.read(member), "html.parser")
+                return sorted(str(anchor["href"]) for anchor in soup.find_all("a", href=True))
+
+            expected_chapter_one_links = [
+                "chapter-2.xhtml#chapter-two",
+                "chapter-2.xhtml#footnote-1",
+            ]
+            expected_chapter_two_links = ["chapter-1.xhtml#ref-1"]
+            for output in (mono, bilingual, source_first):
+                self.assertEqual(
+                    read_links(output, "OEBPS/text/chapter-1.xhtml"),
+                    expected_chapter_one_links,
+                )
+                self.assertEqual(
+                    read_links(output, "OEBPS/text/chapter-2.xhtml"),
+                    expected_chapter_two_links,
+                )
+
+            target_soup = read_chapter(bilingual)
+            source_first_soup = read_chapter(source_first)
+            for soup, source_before_target in (
+                (target_soup, False),
+                (source_first_soup, True),
+            ):
+                table = soup.find("table")
+                self.assertIsNotNone(table)
+                assert isinstance(table, Tag)
+                for cell in table.find_all(["th", "td"]):
+                    source_node = cell.find(class_="tn-source", recursive=False)
+                    self.assertIsNotNone(source_node)
+                    assert isinstance(source_node, Tag)
+                    source_index = cell.contents.index(source_node)
+                    target_index = next(
+                        index
+                        for index, child in enumerate(cell.contents)
+                        if not isinstance(child, Tag) and str(child).strip()
+                    )
+                    if source_before_target:
+                        self.assertLess(source_index, target_index)
+                    else:
+                        self.assertGreater(source_index, target_index)
+
+                list_items = soup.select("ul > li")
+                self.assertTrue(list_items)
+                self.assertTrue(
+                    all(item.find(class_="tn-source", recursive=False) for item in list_items)
+                )
+                blockquote = soup.find("blockquote")
+                self.assertIsNotNone(blockquote)
+                assert isinstance(blockquote, Tag)
+                self.assertIsNotNone(blockquote.find(class_="tn-source", recursive=False))
+
+    def test_phase9_direct_br_round_trip_validates_both_orders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = os.path.join(directory, "original.epub")
+            source = os.path.join(directory, "direct-br.epub")
+            write_phase9_epub(original)
+            with (
+                zipfile.ZipFile(original) as source_zip,
+                zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as output_zip,
+            ):
+                for info in source_zip.infolist():
+                    data = source_zip.read(info.filename)
+                    if info.filename == "OEBPS/text/chapter-2.xhtml":
+                        data = data.replace(
+                            b'<p id="body-two">Second chapter.</p>',
+                            b'<p id="body-two">Line one<br/>Line two</p>',
+                        )
+                    compression = (
+                        zipfile.ZIP_STORED if info.filename == "mimetype" else zipfile.ZIP_DEFLATED
+                    )
+                    output_zip.writestr(info.filename, data, compression)
+
+            store, _ = _run(source, os.path.join(directory, "state"))
+            mono = assemble(
+                store,
+                source,
+                os.path.join(directory, "mono.epub"),
+                out_format="epub",
+            )
+            target_first = assemble(
+                store,
+                source,
+                os.path.join(directory, "bilingual-target-first.epub"),
+                out_format="epub",
+                bilingual=True,
+                order="target_first",
+            )
+            source_first = assemble(
+                store,
+                source,
+                os.path.join(directory, "bilingual-source-first.epub"),
+                out_format="epub",
+                bilingual=True,
+                order="source_first",
+            )
+            for bilingual in (target_first, source_first):
+                result = validate_epub_triplet(source, mono, bilingual)
+                self.assertTrue(result["structural_pass"], result)
+                self.assertTrue(result["mono"]["structural_pass"], result)
+                self.assertTrue(result["bilingual"]["structural_pass"], result)
 
 
 class TestTitleTranslation(unittest.TestCase):
