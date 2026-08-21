@@ -239,8 +239,8 @@ uv run python -m unittest discover -s tests
 ```
 ## 本地基准语料库
 
-基准语料库工具完全离线运行，不调用模型或网络。`BOOK_SPEC.yaml` 中的源书籍路径按文件
-所在目录解析；请仅使用你有权处理的书籍，并注意扫描目录会包含原文片段。
+基准语料库工具完全离线运行，既不调用模型，也不访问网络。`BOOK_SPEC.yaml` 中的源书籍路径按文件
+所在目录解析；请仅处理已获授权的书籍，并注意扫描目录会包含原文片段。
 
 ```bash
 trans-novel tools benchmark corpus scan BOOK_SPEC.yaml --out benchmark_data/inventory
@@ -248,7 +248,7 @@ trans-novel tools benchmark corpus build BOOK_SPEC.yaml SELECTION.yaml --out ben
 trans-novel tools benchmark corpus validate benchmark_runs/corpus
 ```
 
-输出目录必须不存在，工具不会覆盖或删除已有目录。`challenge_keys.jsonl` 含有人审答案和理由，
+指定的输出目录必须尚未创建，工具不会覆盖或删除已有目录。`challenge_keys.jsonl` 含有人审答案和理由，
 仅供评估器使用，不得作为运行器的输入。`benchmark_data/` 和 `benchmark_runs/` 已被 Git
 忽略；不要提交受版权保护的书籍、扫描结果或冻结语料。
 
@@ -299,9 +299,9 @@ secret mapping hash, and every rater asset byte hash; it is never embedded in th
 assets, avoiding a self-referential hash cycle.
 
 
-## Phase 8 报告与发布门
+## Phase 8 报告与发布门禁
 
-报告完全离线读取冻结后的语料库、运行结果、准备数据、评估包、评估导入结果和人民币价格快照，不调用模型或网络。输出目录只能新建；完整哈希相同时，重复调用不会重新构建。
+报告构建过程完全离线，只读取冻结后的语料库、运行结果、准备数据、评估包、评估导入结果和人民币价格快照，既不调用模型，也不访问网络。工具不会覆盖不匹配的已有输出目录；已有结果的完整哈希一致时，重复调用不会重新构建。
 
 ```bash
 trans-novel tools benchmark report build CORPUS_DIR RUN_DIR PREP_DIR PACK_DIR EVALUATION_DIR PRICE.yaml REPORT_SPEC.yaml --out REPORT_DIR
@@ -312,13 +312,13 @@ trans-novel tools benchmark report validate REPORT_DIR
 
 `INTEGRATION.json` 必须与同目录的 `integration_complete.json` 配对；报告会校验候选
 结果文件路径和原始字节哈希，并只把 Phase 9 选中的非对照候选纳入最终门禁。
-`candidates.csv` 的 `effective_cost_rate_*` 列根据 `REPORT_SPEC` 中每名编辑人员的时薪确定性生成。
+`candidates.csv` 的 `effective_cost_rate_*` 列根据 `REPORT_SPEC` 中设定的每位编辑的时薪生成，结果确定且可复现。
 
-缺少集成完成文件时，报告保持 `provisional` 状态，只发布质量表和诊断性 `Pareto` 前沿，不选出获胜者。所有待裁决项和校准 `alpha` 指标未达标的情况，都会明确列入 `gates` 和 `withheld_reasons`。提供有效的终态集成结果后，报告才可能进入 `final` 状态；每个候选仍须通过人工、系统、统计和逐书门禁。计费用量未知不会降低质量分数，但相关候选会被排除在成本/有效成本 `Pareto` 前沿及推荐结果之外，避免把成本下界误当作实际成本。`reprice` 只读取报告中冻结的人工评估数据、系统评估数据和规范化定价数据，因此即使删除原始源文件、运行目录和准备目录仍可执行；质量相关 `CSV` 的字节保持不变。`report.html` 自包含、无外链且不嵌入原文段落。
+缺少集成完成文件时，报告保持 `provisional` 状态，只发布质量表和诊断性 `Pareto` 前沿，不选出获胜者。所有待裁决项和未达标的校准 `alpha` 指标，都会明确列入 `gates` 和 `withheld_reasons`。提供有效的终态集成结果后，报告才可能进入 `final` 状态；每个候选仍须通过人工、系统、统计和逐书门禁。计费用量未知不会降低质量分数，但相关候选会被排除在成本/有效成本 `Pareto` 前沿及推荐结果之外，避免把成本下界误当作实际成本。`reprice` 只读取报告中冻结的人工评估数据、系统评估数据和规范化定价数据，因此即使删除原始源文件、运行目录和准备目录仍可执行；质量相关 `CSV` 的字节保持不变。`report.html` 自包含、无外链且不嵌入原文段落。
 
 ## Phase 9 隐藏 EPUB 中断续跑集成
 
-Phase 9 只处理一本已获许可且 `split=hidden` 的 EPUB，并在所有校验完成后才访问模型。每个候选的状态、输出、遥测和金丝雀测试数据相互独立，不共享翻译或准备状态，也不设后备路径。只允许在正文翻译批次完整持久化后中断；请勿强制终止进程，也不要在写入过程中制造崩溃。
+Phase 9 只处理一本已获许可且 `split=hidden` 的 EPUB，并在通过全部校验后才调用模型。每个候选的状态、输出、遥测和金丝雀测试数据相互独立，不共享翻译或准备状态，也不设后备路径。只允许在正文翻译批次完整持久化后中断；请勿强制终止进程，也不要在写入过程中人为触发崩溃。
 
 ```bash
 trans-novel tools benchmark integration run CORPUS_DIR BOOK_SPEC.yaml CANDIDATES.yaml \

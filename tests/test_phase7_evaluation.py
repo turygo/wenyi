@@ -939,8 +939,8 @@ class Phase7EvaluationTests(unittest.TestCase):
             self.assertIn("localStorage", app)
             self.assertIn("responses-", app)
             html = (pack / "raters" / "r1" / "index.html").read_text()
-            self.assertIn("Eligibility:", html)
-            self.assertIn("Consent:", html)
+            self.assertIn("参与资格：", html)
+            self.assertIn("知情同意：", html)
             self.assertIn("&lt;", html)
             self.assertIn("disabled", html)
 

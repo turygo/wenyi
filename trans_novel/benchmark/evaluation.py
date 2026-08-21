@@ -1010,10 +1010,10 @@ def _leak(value: Any, identifiers: set[str], key_name: str = "") -> bool:
 _INDEX = (
     '<!doctype html><meta charset="utf-8"><title>Offline Evaluation</title>'
     '<script src="app.js" defer></script><link rel="stylesheet" href="style.css">'
-    '<main><h1>离线评估</h1><p id="eligibility">Eligibility: __ELIGIBILITY__</p>'
-    '<p id="consent-notice">Consent: __CONSENT__</p>'
-    '<p id="compensation">Compensation: __COMPENSATION__</p>'
-    '<p id="retention">Retention: __RETENTION__</p>'
+    '<main><h1>离线评估</h1><p id="eligibility">参与资格：__ELIGIBILITY__</p>'
+    '<p id="consent-notice">知情同意：__CONSENT__</p>'
+    '<p id="compensation">报酬：__COMPENSATION__</p>'
+    '<p id="retention">数据保留：__RETENTION__</p>'
     '<label><input id="consent" type="checkbox">我同意参与</label>'
     '<button id="start" disabled>开始</button>'
     '<button id="download" disabled>下载</button><p id="status"></p>'
@@ -1057,7 +1057,16 @@ const submittedIds=()=>new Set(state.responses.map(row=>row.assignment_id));
 const flush=endMs=>{if(visibleStart!==0){state.active_ms+=Math.max(0,endMs-visibleStart);visibleStart=0;save()}};
 const resume=()=>{if(state.current_assignment_id!==null&&visibleStart===0){visibleStart=Date.now()}};
 const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const options=(values,selected)=>`<option value=""></option>`+values.map(v=>`<option value="${v}" ${selected===v?"selected":""}>${v}</option>`).join("");
+const labels={"a_much_better":"A 大幅更好","a_slightly_better":"A 略好",tie:"两者相当",
+  "b_slightly_better":"B 略好","b_much_better":"B 大幅更好",
+  "clearly_improved":"明显改善","slightly_improved":"略有改善","no_material_change":"没有明显变化",
+  "fluent_but_semantic_damage":"表达流畅但语义受损","quality_declined":"质量下降",
+  correct:"正确",incorrect:"不正确",uncertain:"无法判断",
+  critical:"严重",major:"主要",minor:"次要",
+  mistranslation:"误译",omission:"漏译",addition:"增译",hallucination:"幻觉",
+  terminology:"术语",named_entity:"专名",pronoun_reference:"指代",style_register:"文体",
+  fluency:"流畅度",formatting:"格式"};
+const options=(values,selected)=>`<option value=""></option>`+values.map(v=>`<option value="${v}" ${selected===v?"selected":""}>${labels[v]??v}</option>`).join("");
 const draftValue=(key,defaultValue="")=>state.current_draft&&state.current_draft[key]!==undefined?state.current_draft[key]:defaultValue;
 const render=()=>{
   const done=submittedIds(), next=assignments.find(row=>!done.has(row.assignment_id));
@@ -1105,11 +1114,11 @@ const render=()=>{
   if(item.kind==="mqm"){
     const errors=document.getElementById("errors"), addError=(draft={})=>{
       const row=document.createElement("fieldset");row.className="mqm-error";
-      row.innerHTML=`<label>segment<select data-error="segment_id">${options(item.segment_ids||[],"")}</select></label>
-        <label>severity<select data-error="severity">${options(["critical","major","minor"],"")}</select></label>
-        <label>type<select data-error="type">${options(["mistranslation","omission","addition","hallucination","terminology","named_entity","pronoun_reference","style_register","fluency","formatting"],"")}</select></label>
-        <input data-error="source_quote" placeholder="source quote"><input data-error="target_quote" placeholder="target quote">
-        <input data-error="note" placeholder="note" required><button type="button" class="remove-error">删除</button>`;
+      row.innerHTML=`<label>段落<select data-error="segment_id">${options(item.segment_ids||[],"")}</select></label>
+        <label>严重程度<select data-error="severity">${options(["critical","major","minor"],"")}</select></label>
+        <label>错误类型<select data-error="type">${options(["mistranslation","omission","addition","hallucination","terminology","named_entity","pronoun_reference","style_register","fluency","formatting"],"")}</select></label>
+        <input data-error="source_quote" placeholder="原文摘录"><input data-error="target_quote" placeholder="译文摘录">
+        <input data-error="note" placeholder="备注" required><button type="button" class="remove-error">删除</button>`;
       errors.appendChild(row);
       row.querySelectorAll("[data-error]").forEach(input=>{
         if(draft[input.dataset.error]!==undefined)input.value=draft[input.dataset.error]||"";
