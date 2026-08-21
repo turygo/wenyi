@@ -301,6 +301,8 @@ class ChapterProgress(BaseModel):
     naturalized: bool = False
     review_issues: list[ReviewIssue] = Field(default_factory=list)
     backtranslation_issues: list[BacktranslationIssue] = Field(default_factory=list)
+    backtranslation_sample_key: str = ""
+    backtranslation_sample_indices: list[int] = Field(default_factory=list)
     back_matter_mode: str | None = None  # skip | light | full
 
     def review_issue_dicts(self) -> list[dict[str, Any]]:

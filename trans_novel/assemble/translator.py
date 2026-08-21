@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from trans_novel.agents import langprofile, prompts
 from trans_novel.agents.base import Agent, WorkflowProtocolError
+from trans_novel.agents.prompts import TranslationContextBundle
 from trans_novel.glossary.store import GlossaryTerm
 from trans_novel.llm.errors import JSONParseError
 
@@ -35,6 +36,7 @@ class Translator(Agent):
         *,
         agent: str,
         operation: str = "translate.batch",
+        context_bundle: TranslationContextBundle | None = None,
     ) -> list[str]:
         n = len(sources)
         system = prompts.render(
@@ -44,19 +46,36 @@ class Translator(Agent):
             n=n,
             lang_guidance=langprofile.translate_guidance(self.src, self.config.honorific_strategy),
         )
-        user = prompts.render(
-            "translator_user",
-            src=self.src,
-            tgt=self.tgt,
-            style=style or "（无）",
-            book_synopsis=book_synopsis or "（无）",
-            glossary=prompts.render_glossary(glossary_terms),
-            chapter_digest=chapter_digest or "（无）",
-            context=context or "（无）",
-            n=n,
-            n_minus_1=n - 1,
-            numbered_source=prompts.numbered(sources),
-        )
+        if context_bundle is None:
+            user = prompts.render(
+                "translator_user",
+                src=self.src,
+                tgt=self.tgt,
+                style=style or "（无）",
+                book_synopsis=book_synopsis or "（无）",
+                glossary=prompts.render_glossary(glossary_terms),
+                chapter_digest=chapter_digest or "（无）",
+                context=context or "（无）",
+                n=n,
+                n_minus_1=n - 1,
+                numbered_source=prompts.numbered(sources),
+            )
+        else:
+            user = prompts.render(
+                "benchmark_context_user",
+                src=self.src,
+                tgt=self.tgt,
+                style=style or "（无）",
+                book_synopsis=book_synopsis or "（无）",
+                glossary=(prompts.render_glossary(glossary_terms) if glossary_terms else "（无）"),
+                chapter_digest=chapter_digest or "（无）",
+                source_before=context_bundle.source_before or "（无）",
+                target_before=context_bundle.target_before or "（无）",
+                source_after=context_bundle.source_after or "（无）",
+                n=n,
+                n_minus_1=n - 1,
+                numbered_source=prompts.numbered(sources),
+            )
         # 不传 default：调用失败照常抛出，由 translate_batch 的重试/兜底逻辑处理
         items = self._ask_json(system, user, key="translations", agent=agent, operation=operation)
         if not isinstance(items, list):
@@ -81,6 +100,7 @@ class Translator(Agent):
         *,
         agent: str,
         operation: str = "translate.batch",
+        context_bundle: TranslationContextBundle | None = None,
     ) -> str:
         out = self._call_batch(
             [source],
@@ -91,6 +111,7 @@ class Translator(Agent):
             chapter_digest,
             agent=agent,
             operation=operation,
+            context_bundle=context_bundle,
         )
         return out[0]
 
@@ -204,6 +225,7 @@ class Translator(Agent):
         context: str = "",
         book_synopsis: str = "",
         chapter_digest: str = "",
+        context_bundle: TranslationContextBundle | None = None,
     ) -> list[str]:
         """翻译一批源段，返回与之等长的译文列表。
 
@@ -228,6 +250,7 @@ class Translator(Agent):
                     chapter_digest,
                     agent=agent,
                     operation=operation,
+                    context_bundle=context_bundle,
                 )
             except (AlignmentError, JSONParseError):
                 # 仅重试模型输出协议错误；Provider 异常和业务异常均原样向上抛出。
@@ -248,6 +271,7 @@ class Translator(Agent):
                         chapter_digest,
                         agent=agent,
                         operation=operation,
+                        context_bundle=context_bundle,
                     )
                 )
             except (AlignmentError, JSONParseError) as error:

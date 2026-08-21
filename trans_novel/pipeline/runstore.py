@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -56,6 +57,7 @@ __all__ = [
     "STATUS_DONE",
     "STATUS_PENDING",
     "RunStore",
+    "clone_closed_runstore",
     "slugify",
     "stable_digest",
 ]
@@ -72,6 +74,62 @@ def stable_digest(payload) -> str:
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def clone_closed_runstore(source: str, destination: str) -> None:
+    """Copy a closed store while holding its stable advisory lock inode."""
+    if os.path.exists(destination):
+        raise ValueError(f"runstore clone destination already exists: {destination}")
+    source_root = os.path.abspath(source)
+    destination_root = os.path.abspath(destination)
+    if not os.path.isdir(source_root):
+        raise ValueError(f"runstore source is not a directory: {source}")
+    lock_path = os.path.join(source_root, ".run.lock")
+    with open(lock_path, "a+b") as lock_file:
+        try:
+            if os.name == "nt":  # pragma: no cover - Windows-specific
+                import msvcrt
+
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as error:
+            raise ValueError("runstore source is actively locked") from error
+        try:
+            forbidden = {"journal.json"}
+            for root, dirs, files in os.walk(source_root):
+                relative = os.path.relpath(root, source_root)
+                for name in (*dirs, *files):
+                    if name == ".run.lock":
+                        continue
+                    if name in forbidden or name.endswith(".tmp") or ".pending" in name:
+                        raise ValueError(f"source runstore has transient marker: {name}")
+                    if name.startswith(".") and name not in {".gitkeep"}:
+                        raise ValueError(f"source runstore has transient marker: {name}")
+                if relative == ".":
+                    continue
+            shutil.copytree(
+                source_root,
+                destination_root,
+                ignore=shutil.ignore_patterns(".run.lock", "journal.json", "*.tmp", "*.pending"),
+            )
+        finally:
+            if os.name == "nt":  # pragma: no cover - Windows-specific
+                import msvcrt
+
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def slugify(name: str) -> str:
@@ -612,24 +670,30 @@ class RunStore:
         return self._read_json(self.usage_path) if os.path.isfile(self.usage_path) else None
 
     # ── 追加式事件日志 ────────────────────────────────────────────────────
-    def log_event(self, event: str, **data: Any) -> None:
-        """追加一条 JSONL 事件，用于翻译行为、改写前后和产物对账。
-
-        新行一律带 event_schema: 2；无该字段的历史行视为 V1，不回写。
-        事件日志采用尽力写入策略，仅用于审计，不是恢复状态的依据。若目录创建
-        或事件追加抛出 OSError，则发出 RuntimeWarning 后返回；这不会影响已
-        持久化的状态，也不会触发重跑。序列化错误和编程错误仍照常抛出。
-        """
-        row = {
+    def _event_row(self, event: str, **data: Any) -> dict[str, Any]:
+        return {
             "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
             "event": event,
             "event_schema": 2,
             **data,
         }
+
+    def log_event_required(self, event: str, **data: Any) -> None:
+        """Append an auditable event and propagate any durability failure."""
+        row = self._event_row(event, **data)
+        self.ensure_dirs()
+        with open(self.event_log_path, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def log_event(self, event: str, **data: Any) -> None:
+        """Append an audit event best-effort; failures do not affect workflow state."""
+        row = self._event_row(event, **data)
         try:
             self.ensure_dirs()
-            with open(self.event_log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+            with open(self.event_log_path, "a", encoding="utf-8") as stream:
+                stream.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
         except OSError as exc:
             warnings.warn(
                 f"event log append failed for {event!r}: {exc}", RuntimeWarning, stacklevel=2

@@ -511,3 +511,51 @@ def lint_targets(
             )
 
     return issues
+
+
+@dataclass(frozen=True, slots=True)
+class PolishGateResult:
+    proposal: str
+    selected: str
+    accepted: bool
+    rejection_reasons: tuple[str, ...] = ()
+
+
+def polish_gate(
+    source: str,
+    raw: str,
+    proposal: str,
+    *,
+    locked_terms: list[GlossaryTerm] | tuple[GlossaryTerm, ...] = (),
+    src_lang: str = "en",
+    normalize_punctuation: bool = True,
+) -> PolishGateResult:
+    """Apply the production polish lint gate to one segment."""
+    from trans_novel.postprocess.punct import normalize_zh
+
+    raw_normalized = normalize_zh(raw) if normalize_punctuation and raw else raw
+    proposed = normalize_zh(proposal) if normalize_punctuation and proposal else proposal
+    raw_types = {
+        issue.type
+        for issue in lint_targets(
+            [source], [raw_normalized], locked_terms=locked_terms, src_lang=src_lang
+        )
+    }
+    proposal_types = {
+        issue.type
+        for issue in lint_targets(
+            [source], [proposed], locked_terms=locked_terms, src_lang=src_lang
+        )
+    }
+    introduced = tuple(sorted(proposal_types - raw_types))
+    if introduced:
+        return PolishGateResult(
+            proposal=proposed,
+            selected=raw_normalized,
+            accepted=False,
+            rejection_reasons=introduced,
+        )
+    return PolishGateResult(proposal=proposed, selected=proposed, accepted=True)
+
+
+evaluate_polish_gate = polish_gate

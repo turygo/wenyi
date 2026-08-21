@@ -99,6 +99,7 @@ class PrescanInputs:
 
     digest_fingerprint: Callable[[int], str] | None = None
     mine_fingerprint: Callable[[], str] | None = None
+    name_terms_fingerprint: Callable[[], str] | None = None
     synopsis_fingerprint: Callable[[list[str]], str] | None = None
     prepare_fingerprint: Callable[[], str] | None = None
     analyze_fingerprint: Callable[[], str] | None = None
@@ -608,8 +609,8 @@ class Planner:
         fn = {
             NODE_PREPARE: prescan.prepare_fingerprint,
             NODE_ANALYZE: prescan.analyze_fingerprint,
-            NODE_DIGEST: prescan.digest_fingerprint,
             NODE_MINE_TERMS: prescan.mine_fingerprint,
+            NODE_NAME_TERMS: prescan.name_terms_fingerprint,
             NODE_BOOK_SYNOPSIS: (
                 (lambda: prescan.synopsis_fingerprint(self._digests(state, store)))
                 if prescan.synopsis_fingerprint is not None

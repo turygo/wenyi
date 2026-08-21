@@ -15,10 +15,12 @@ from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.segmenter import batch_segments
 from trans_novel.pipeline import checkpoint, lint
 from trans_novel.pipeline.backmatter import is_back_matter
-from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
+from trans_novel.pipeline.contracts import BatchCommitHook, NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
     back_matter_translate_input_fingerprint,
+    editor_model_profile,
     fast_model_profile,
+    frozen_input_fingerprint,
     polish_input_fingerprint,
     primary_model_profile,
     translate_input_fingerprint,
@@ -53,6 +55,9 @@ class TranslateNode:
         config: Config,
         style_brief: str,
         rolling_context,
+        frozen_book=None,
+        frozen_preparation=None,
+        batch_commit_hook: BatchCommitHook | None = None,
     ):
         self.translator = translator
         self.extractor = extractor
@@ -61,6 +66,9 @@ class TranslateNode:
         self.config = config
         self.style_brief = style_brief
         self.rolling_context = rolling_context
+        self.frozen_book = frozen_book
+        self.frozen_preparation = frozen_preparation
+        self.batch_commit_hook = batch_commit_hook
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         ci = request.ci
@@ -73,7 +81,7 @@ class TranslateNode:
         if not text_segs:
             store.set_chapter_status(ci, STATUS_DONE)
             store.log_event("chapter_skipped", chapter=ci, reason="empty")
-            fp = self._fingerprint("", store, bm_mode)
+            fp = self._fingerprint("", store, bm_mode, ci, request.shared)
             return NodeOutcome(chapter_finalized=True, fingerprint=fp)
 
         # 附属章档位升档（skip→light/full、light→full）：先重开已完成的章，
@@ -337,20 +345,25 @@ class TranslateNode:
 
             # 提交后再审计：本章译文、标记和检查点全部落盘后，才记录本批翻译和
             # 已采纳的 lint 修复，避免事件先于持久化结果出现。
-            store.log_event(
-                "batch_translated",
-                chapter=ci,
-                start_index=batch_start,
-                count=len(b),
-                polished=False,
-                punctuation_normalized=punctuation_normalized,
-                target_sha256=stable_digest(
+            event_payload = {
+                "chapter": ci,
+                "start_index": batch_start,
+                "count": len(b),
+                "polished": False,
+                "punctuation_normalized": punctuation_normalized,
+                "target_sha256": stable_digest(
                     [
                         {"index": s.index, "target": t}
                         for s, t in zip(b, event_targets, strict=False)
                     ]
                 ),
-            )
+            }
+            if self.batch_commit_hook is not None:
+                store.log_event_required("batch_translated", **event_payload)
+            else:
+                store.log_event("batch_translated", **event_payload)
+            if self.batch_commit_hook is not None:
+                self.batch_commit_hook.after_batch_committed(ci, batch_start, len(b))
             for entry in lint_refixed_entries:
                 store.log_event("lint_refixed", **entry)
 
@@ -403,11 +416,27 @@ class TranslateNode:
             chapter_progress.set_review_issue_dicts(review_issues + lint_review_issues)
         store.save_progress(ci, chapter_progress)
         store.save_context(context.to_dict())
-        fp = self._fingerprint("\n".join(s.source for s in text_segs), store, None)
+        fp = self._fingerprint(
+            "\n".join(s.source for s in text_segs), store, None, ci, request.shared
+        )
         return NodeOutcome(fingerprint=fp)
 
-    def _fingerprint(self, source_text: str, store, bm_mode: str | None) -> str:
+    def _fingerprint(
+        self,
+        source_text: str,
+        store,
+        bm_mode: str | None,
+        chapter_index: int | None = None,
+        shared=None,
+    ) -> str:
         """translate 输入指纹：正文含概览/风格/提示配置；旁路只含源文/语言/标点。"""
+        if self.frozen_book is not None and self.frozen_preparation is not None:
+            return frozen_input_fingerprint(
+                self.frozen_preparation.preparation_sha256,
+                self.node_id,
+                (self.frozen_book.book_id, shared.frozen_chapter_index(chapter_index)),
+                source_text,
+            )
         if bm_mode:
             return back_matter_translate_input_fingerprint(
                 source_text,
@@ -542,10 +571,11 @@ class TranslateNode:
             back_matter=True,
             mode=mode,
         )
-        fp = self._fingerprint("\n".join(s.source for s in text_segs), store, mode)
+        fp = self._fingerprint(
+            "\n".join(s.source for s in text_segs), store, mode, ci, request.shared
+        )
         return NodeOutcome(chapter_finalized=True, fingerprint=fp)
 
-    # ── 批处理 ────────────────────────────────────────────────────────────
     def _process_batch(
         self,
         batch,
@@ -602,12 +632,16 @@ class PolishNode:
         glossary: GlossaryStore,
         config: Config,
         style_brief: str,
+        frozen_book=None,
+        frozen_preparation=None,
     ):
         self.polisher = polisher
         self.extractor = extractor
         self.glossary = glossary
         self.config = config
         self.style_brief = style_brief
+        self.frozen_book = frozen_book
+        self.frozen_preparation = frozen_preparation
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         ci = request.ci
@@ -652,13 +686,22 @@ class PolishNode:
             tgt_text = "\n".join(s.target or "" for s in text_segs)
             self.extractor.extract_and_store(glossary, src_text, tgt_text, ci)
             store.log_event("chapter_glossary_extracted", chapter=ci)
-        fp = polish_input_fingerprint(
-            "\n".join(s.source for s in text_segs),
-            self.polisher.src,
-            style,
-            punctuation_normalize=self.config.punctuation_normalize,
-            model=primary_model_profile(self.config),
-        )
+        source_text = "\n".join(s.source for s in text_segs)
+        if self.frozen_book is not None and self.frozen_preparation is not None:
+            fp = frozen_input_fingerprint(
+                self.frozen_preparation.preparation_sha256,
+                self.node_id,
+                (self.frozen_book.book_id, request.shared.frozen_chapter_index(ci)),
+                source_text,
+            )
+        else:
+            fp = polish_input_fingerprint(
+                source_text,
+                self.polisher.src,
+                style,
+                punctuation_normalize=self.config.punctuation_normalize,
+                model=editor_model_profile(self.config),
+            )
         return NodeOutcome(fingerprint=fp)
 
     def _drain_chapter_polish(
@@ -699,41 +742,33 @@ class PolishNode:
             # workflow 必需路径：provider/协议失败必须冒泡（runner 落失败态并重试），
             # 不得把失败伪装成“润色成功”；lint 引入问题才回退原文（本地质量门）。
             final = fut.result() if fut is not None else raw
-            if self.config.punctuation_normalize:
-                final = [normalize_zh(t) if t else t for t in final]
             srcs = [text_segs[start + i].source for i in range(count)]
-            raw_normalized = (
-                [normalize_zh(t) if t else t for t in raw]
-                if self.config.punctuation_normalize
-                else raw
-            )
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
-            raw_types: dict[int, set[str]] = {}
-            for it in lint.lint_targets(
-                srcs, raw_normalized, locked_terms=locked, src_lang=self.polisher.src
-            ):
-                raw_types.setdefault(it.index, set()).add(it.type)
-            final_types: dict[int, set[str]] = {}
-            for it in lint.lint_targets(
-                srcs, final, locked_terms=locked, src_lang=self.polisher.src
-            ):
-                final_types.setdefault(it.index, set()).add(it.type)
-            for i in range(count):
-                introduced = final_types.get(i, set()) - raw_types.get(i, set())
-                if not introduced:
+            results = [
+                lint.polish_gate(
+                    srcs[i],
+                    raw[i],
+                    final[i],
+                    locked_terms=locked,
+                    src_lang=self.polisher.src,
+                    normalize_punctuation=self.config.punctuation_normalize,
+                )
+                for i in range(count)
+            ]
+            for i, result in enumerate(results):
+                final[i] = result.selected
+                if result.accepted:
                     self.polisher.client.usage.record_outcome(
                         "editor", "polish.batch", accepted=True
                     )
                     continue
                 self.polisher.client.usage.record_outcome("editor", "polish.batch", accepted=False)
-                rejected_text = final[i]
-                final[i] = raw_normalized[i]
                 store.log_event(
                     "polish_rejected",
                     chapter=ci,
                     index=start + i,
-                    reason=sorted(introduced),
-                    proposal_sha256=stable_digest(rejected_text),
+                    reason=list(result.rejection_reasons),
+                    proposal_sha256=stable_digest(result.proposal),
                 )
             for i, t in enumerate(final):
                 text_segs[start + i].target = t

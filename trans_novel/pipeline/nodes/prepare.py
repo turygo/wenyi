@@ -17,6 +17,7 @@ from trans_novel.pipeline.context import RollingContext
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
     analyze_input_fingerprint,
+    frozen_input_fingerprint,
     prepare_input_fingerprint,
     primary_model_profile,
 )
@@ -138,14 +139,33 @@ class AnalyzeNode:
         config: Config,
         doc: Document | None,
         glossary: GlossaryStore,
+        frozen_book=None,
     ):
         self.analyzer = analyzer
         self.config = config
         self.doc = doc
         self.glossary = glossary
+        self.frozen_book = frozen_book
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
+        if self.frozen_book is not None:
+            analysis = dict(self.frozen_book.analysis)
+            store.save_analysis(analysis)
+            if not store.exists():
+                manifest = (request.artifacts.get("prepare") or {}).get("manifest")
+                if manifest is not None:
+                    manifest["initialized"] = True
+                    store.save_manifest(manifest)
+            if self.doc is not None:
+                request.shared.resolved_source_lang = self.doc.source_lang
+            fp = frozen_input_fingerprint(
+                request.shared.frozen_preparation.preparation_sha256,
+                self.node_id,
+                self.frozen_book.book_id,
+                self.frozen_book.analysis,
+            )
+            return NodeOutcome(fingerprint=fp)
         if store.load_analysis() is not None:
             # 幂等：已分析过（续跑）。但 analysis.json 存在而 manifest 不存在 =
             # 崩溃窗口（save_analysis 之后、save_manifest 之前）——必须用本轮

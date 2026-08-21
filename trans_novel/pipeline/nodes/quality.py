@@ -10,7 +10,8 @@
 
 from __future__ import annotations
 
-import random
+import hashlib
+from fractions import Fraction
 
 from trans_novel.agents.naturalizer import naturalize_chapter
 from trans_novel.agents.reviewer import ReviewOutputError
@@ -20,9 +21,11 @@ from trans_novel.pipeline import checks
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
     backtranslate_input_fingerprint,
+    editor_fast_model_profile,
     fast_model_profile,
-    model_profile,
+    frozen_input_fingerprint,
     naturalize_input_fingerprint,
+    primary_fast_model_profile,
     review_input_fingerprint,
 )
 from trans_novel.pipeline.nodes.common import chapter_term_snapshot
@@ -42,21 +45,38 @@ class NaturalizeNode:
     node_id = NODE_NATURALIZE
     scope = SCOPE_CHAPTER
 
-    def __init__(self, *, naturalizer, glossary: GlossaryStore, config: Config):
+    def __init__(
+        self,
+        *,
+        naturalizer,
+        glossary: GlossaryStore,
+        config: Config,
+        frozen_book=None,
+        frozen_preparation=None,
+    ):
         self.naturalizer = naturalizer
         self.glossary = glossary
         self.config = config
+        self.frozen_book = frozen_book
+        self.frozen_preparation = frozen_preparation
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         ci = request.ci
         store = request.store
-        fp = naturalize_input_fingerprint(
-            "\n".join(s.source for s in store.load_chapter(ci).text_segments),
-            punctuation_normalize=self.config.punctuation_normalize,
-            model=model_profile(self.config),
-        )
-        if not self.config.pipeline.naturalize:
-            return NodeOutcome(fingerprint=fp)
+        source_text = "\n".join(s.source for s in store.load_chapter(ci).text_segments)
+        if self.frozen_book is not None and self.frozen_preparation is not None:
+            fp = frozen_input_fingerprint(
+                self.frozen_preparation.preparation_sha256,
+                self.node_id,
+                (self.frozen_book.book_id, request.shared.frozen_chapter_index(ci)),
+                source_text,
+            )
+        else:
+            fp = naturalize_input_fingerprint(
+                source_text,
+                punctuation_normalize=self.config.punctuation_normalize,
+                model=editor_fast_model_profile(self.config),
+            )
         progress = store.load_progress(ci)
         if progress.naturalized:
             return NodeOutcome(fingerprint=fp)  # 幂等：续跑不重复
@@ -93,22 +113,35 @@ class ReviewNode:
         glossary: GlossaryStore,
         config: Config,
         style_brief: str,
+        frozen_book=None,
+        frozen_preparation=None,
     ):
         self.reviewer = reviewer
         self.translator = translator
         self.glossary = glossary
         self.config = config
         self.style_brief = style_brief
+        self.frozen_book = frozen_book
+        self.frozen_preparation = frozen_preparation
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         ci = request.ci
         store = request.store
-        fp = review_input_fingerprint(
-            "\n".join(s.source for s in store.load_chapter(ci).text_segments),
-            autofix_severe=self.config.pipeline.autofix_severe,
-            review_output_retries=self.config.pipeline.review_output_retries,
-            model=fast_model_profile(self.config),
-        )
+        source_text = "\n".join(s.source for s in store.load_chapter(ci).text_segments)
+        if self.frozen_book is not None and self.frozen_preparation is not None:
+            fp = frozen_input_fingerprint(
+                self.frozen_preparation.preparation_sha256,
+                self.node_id,
+                (self.frozen_book.book_id, request.shared.frozen_chapter_index(ci)),
+                (source_text, self.config.pipeline.autofix_severe),
+            )
+        else:
+            fp = review_input_fingerprint(
+                source_text,
+                autofix_severe=self.config.pipeline.autofix_severe,
+                review_output_retries=self.config.pipeline.review_output_retries,
+                model=primary_fast_model_profile(self.config),
+            )
         if not self.config.pipeline.review:
             return NodeOutcome(fingerprint=fp)  # 不应到达（planner 已标记 skipped）
         chapter = store.load_chapter(ci)
@@ -365,21 +398,93 @@ class BacktranslateNode:
     node_id = NODE_BACKTRANSLATE
     scope = SCOPE_CHAPTER
 
-    def __init__(self, *, backtrans, config: Config):
+    def __init__(
+        self,
+        *,
+        backtrans,
+        config: Config,
+        frozen_book=None,
+        frozen_preparation=None,
+        backtranslation_sample_scope: str = "",
+    ):
         self.backtrans = backtrans
         self.config = config
+        self.frozen_book = frozen_book
+        self.frozen_preparation = frozen_preparation
+        self.backtranslation_sample_scope = backtranslation_sample_scope
+
+    def _sample_key(self, chapter_index: int, rate: float, text_segs) -> str:
+        segments = [
+            {
+                "index": seg.index,
+                "source_sha256": hashlib.sha256(seg.source.encode("utf-8")).hexdigest(),
+            }
+            for seg in text_segs
+        ]
+        return stable_digest(
+            {
+                "scope": self.backtranslation_sample_scope,
+                "chapter": chapter_index,
+                "rate": rate,
+                "segments": segments,
+            }
+        )
+
+    @staticmethod
+    def _valid_persisted_indices(progress, text_segs, sample_key: str) -> list[int] | None:
+        if progress.backtranslation_sample_key != sample_key:
+            return None
+        positions = {seg.index: position for position, seg in enumerate(text_segs)}
+        indices = progress.backtranslation_sample_indices
+        if (
+            any(not isinstance(index, int) or isinstance(index, bool) for index in indices)
+            or len(set(indices)) != len(indices)
+            or any(index not in positions for index in indices)
+        ):
+            return None
+        ordered_positions = [positions[index] for index in indices]
+        if ordered_positions != sorted(ordered_positions):
+            return None
+        return list(indices)
+
+    def _select_indices(self, sample_key: str, rate: float, text_segs) -> list[int]:
+        if rate <= 0:
+            return []
+        if rate >= 1:
+            return [seg.index for seg in text_segs]
+        fraction = Fraction(str(rate))
+        scale = 1 << 256
+        return [
+            seg.index
+            for seg in text_segs
+            if int.from_bytes(
+                hashlib.sha256(f"{sample_key}:{seg.index}".encode()).digest(),
+                "big",
+            )
+            * fraction.denominator
+            < fraction.numerator * scale
+        ]
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         ci = request.ci
         store = request.store
         chapter = store.load_chapter(ci)
         text_segs = chapter.text_segments
-        bt_samples: list[tuple[str, str]] = []
         rate = self.config.pipeline.backtranslate_sample
-        if rate > 0:
-            for seg in text_segs:
-                if random.random() < rate:
-                    bt_samples.append((seg.source, seg.target or ""))
+        progress = store.load_progress(ci)
+        sample_key = self._sample_key(ci, rate, text_segs)
+        sample_indices = self._valid_persisted_indices(progress, text_segs, sample_key)
+        if sample_indices is None:
+            sample_indices = self._select_indices(sample_key, rate, text_segs)
+            progress.backtranslation_sample_key = sample_key
+            progress.backtranslation_sample_indices = sample_indices
+        # Commit the selection before any provider call, including an empty selection.
+        store.save_progress(ci, progress)
+        segments_by_index = {seg.index: seg for seg in text_segs}
+        bt_samples = [
+            (segments_by_index[index].source, segments_by_index[index].target or "")
+            for index in sample_indices
+        ]
         bt_issues: list[dict] = []
         if bt_samples:
             srcs = [a for a, _ in bt_samples]
@@ -394,14 +499,25 @@ class BacktranslateNode:
                 issue_count=len(bt_issues),
                 issues_sha256=stable_digest(bt_issues),
             )
-        progress = store.load_progress(ci)
         progress.set_backtranslation_issue_dicts(bt_issues)
         store.save_progress(ci, progress)
-        fp = backtranslate_input_fingerprint(
-            "\n".join(s.source for s in text_segs),
-            backtranslate_sample=rate,
-            model=fast_model_profile(self.config),
-        )
+        source_text = "\n".join(s.source for s in text_segs)
+        if self.frozen_book is not None and self.frozen_preparation is not None:
+            fp = frozen_input_fingerprint(
+                self.frozen_preparation.preparation_sha256,
+                self.node_id,
+                (self.frozen_book.book_id, request.shared.frozen_chapter_index(ci)),
+                (source_text, rate, self.backtranslation_sample_scope),
+            )
+        else:
+            fp = backtranslate_input_fingerprint(
+                source_text,
+                backtranslate_sample=rate,
+                model=(
+                    f"{fast_model_profile(self.config)}"
+                    f"|backtranslation_sample_scope={self.backtranslation_sample_scope}"
+                ),
+            )
         return NodeOutcome(findings_count=len(bt_issues), fingerprint=fp)
 
 

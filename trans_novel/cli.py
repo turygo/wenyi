@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import sys
 from importlib.metadata import version as package_version
@@ -60,6 +61,25 @@ app = typer.Typer(
 tools_app = typer.Typer(
     add_completion=False,
     help="高级/调试工具：glossary（术语表）/ assemble（回填）/ qa / report",
+)
+
+benchmark_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="离线基准测试工具。",
+)
+corpus_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="扫描、冻结和校验基准语料库。",
+)
+
+prepare_app = typer.Typer(add_completion=False, no_args_is_help=True)
+benchmark_run_app = typer.Typer(add_completion=False, no_args_is_help=True)
+integration_app = typer.Typer(add_completion=False, no_args_is_help=True)
+evaluate_app = typer.Typer(add_completion=False, no_args_is_help=True, help="离线人工评估包。")
+report_app = typer.Typer(
+    add_completion=False, no_args_is_help=True, help="Phase 8 benchmark report."
 )
 console = Console()
 
@@ -604,6 +624,297 @@ def naturalize(
             console.print(f"  after:  {e['after']}")
 
 
+def _corpus_error(error: Exception) -> typer.NoReturn:
+    console.print(f"[red]{error}[/]")
+    raise typer.Exit(2) from error
+
+
+@corpus_app.command("scan")
+def benchmark_corpus_scan(
+    book_spec: str = typer.Argument(..., metavar="BOOK_SPEC.yaml"),
+    out: str = typer.Option(..., "--out", metavar="INVENTORY_DIR"),
+) -> None:
+    """Parse each source book once and write deterministic selection inventory."""
+    from trans_novel.benchmark.corpus import CorpusError, scan
+
+    try:
+        scan(book_spec, out)
+    except CorpusError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Inventory written:[/] {Path(out).expanduser().resolve()}")
+
+
+@corpus_app.command("build")
+def benchmark_corpus_build(
+    book_spec: str = typer.Argument(..., metavar="BOOK_SPEC.yaml"),
+    selection: str = typer.Argument(..., metavar="SELECTION.yaml"),
+    out: str = typer.Option(..., "--out", metavar="CORPUS_DIR"),
+) -> None:
+    """Reparse sources and freeze runner/evaluator corpus artifacts."""
+    from trans_novel.benchmark.corpus import CorpusError, build
+
+    try:
+        build(book_spec, selection, out)
+    except CorpusError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Corpus written:[/] {Path(out).expanduser().resolve()}")
+
+
+@corpus_app.command("validate")
+def benchmark_corpus_validate(
+    corpus_dir: str = typer.Argument(..., metavar="CORPUS_DIR"),
+) -> None:
+    """Validate a frozen corpus without opening original source books."""
+    from trans_novel.benchmark.corpus import CorpusError, validate_corpus
+
+    try:
+        result = validate_corpus(corpus_dir)
+    except CorpusError as error:
+        _corpus_error(error)
+    table = Table(title="Benchmark corpus")
+    table.add_column("Scope")
+    table.add_column("Name")
+    table.add_column("Count")
+    for split, count in result["split_counts"].items():
+        table.add_row("split", split, str(count))
+    for bucket, count in result["bucket_counts"].items():
+        table.add_row("bucket", bucket, str(count))
+    for book_id, count in result["book_counts"].items():
+        table.add_row("book", book_id, str(count))
+    table.add_row("total", "passages", str(result["runner_count"]))
+    table.add_row("total", "context keys", str(result["challenge_count"]))
+    console.print(table)
+    console.print(result["corpus_sha256"])
+
+
+@prepare_app.command("freeze")
+def benchmark_prepare_freeze(
+    corpus_dir: str = typer.Argument(..., metavar="CORPUS_DIR"),
+    book_spec: str = typer.Argument(..., metavar="BOOK_SPEC.yaml"),
+    preparation_spec: str = typer.Argument(..., metavar="PREPARATION_SPEC.yaml"),
+    out: str = typer.Option(..., "--out", metavar="PREP_DIR"),
+) -> None:
+    from trans_novel.benchmark.runner import BenchmarkError, freeze_preparation
+
+    try:
+        freeze_preparation(corpus_dir, book_spec, preparation_spec, out)
+    except BenchmarkError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Preparation written:[/] {Path(out).expanduser().resolve()}")
+
+
+@prepare_app.command("validate")
+def benchmark_prepare_validate(
+    preparation_dir: str = typer.Argument(..., metavar="PREP_DIR"),
+) -> None:
+    from trans_novel.benchmark.runner import BenchmarkError, validate_preparation
+
+    try:
+        value = validate_preparation(preparation_dir)
+    except BenchmarkError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Preparation valid:[/] {value['preparation_sha256']}")
+
+
+@benchmark_run_app.command("canary")
+def benchmark_run_canary(
+    corpus_dir: str = typer.Argument(..., metavar="CORPUS_DIR"),
+    candidates: str = typer.Argument(..., metavar="CANDIDATES.yaml"),
+    preparation: str = typer.Argument(..., metavar="PREPARATION.json"),
+    out: str = typer.Option(..., "--out", metavar="RUN_DIR"),
+    sample_id: str | None = typer.Option(None, "--sample-id"),
+) -> None:
+    from trans_novel.benchmark.runner import AttributionRunner, BenchmarkError
+
+    try:
+        AttributionRunner().run(
+            corpus_dir, candidates, preparation, out, mode="canary", sample_id=sample_id
+        )
+    except BenchmarkError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Canary passed:[/] {Path(out).expanduser().resolve()}")
+
+
+@benchmark_run_app.command("attribution")
+def benchmark_run_attribution(
+    corpus_dir: str = typer.Argument(..., metavar="CORPUS_DIR"),
+    candidates: str = typer.Argument(..., metavar="CANDIDATES.yaml"),
+    preparation: str = typer.Argument(..., metavar="PREPARATION.json"),
+    out: str = typer.Option(..., "--out", metavar="RUN_DIR"),
+) -> None:
+    from trans_novel.benchmark.runner import AttributionRunner, BenchmarkError
+
+    try:
+        result = AttributionRunner().run(
+            corpus_dir, candidates, preparation, out, mode="attribution"
+        )
+    except BenchmarkError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Attribution complete:[/] {result['candidate_count']} candidates")
+
+
+@benchmark_run_app.command("full")
+def benchmark_run_full(
+    corpus_dir: str = typer.Argument(..., metavar="CORPUS_DIR"),
+    candidates: str = typer.Argument(..., metavar="CANDIDATES.yaml"),
+    preparation: str = typer.Argument(..., metavar="PREP_DIR"),
+    out: str = typer.Option(..., "--out", metavar="RUN_DIR"),
+) -> None:
+    from trans_novel.benchmark.runner import BenchmarkError, FullRunner
+
+    try:
+        result = FullRunner().run(corpus_dir, candidates, preparation, out)
+    except BenchmarkError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Full run complete:[/] {result['branch_count']} branches")
+
+
+@integration_app.command("run")
+def benchmark_integration_run(
+    corpus_dir: str = typer.Argument(..., metavar="CORPUS_DIR"),
+    book_spec: str = typer.Argument(..., metavar="BOOK_SPEC.yaml"),
+    candidates: str = typer.Argument(..., metavar="CANDIDATES.yaml"),
+    integration_spec: str = typer.Argument(..., metavar="INTEGRATION_SPEC.yaml"),
+    out: str = typer.Option(..., "--out", metavar="INTEGRATION_DIR"),
+) -> None:
+    from trans_novel.benchmark.integration import IntegrationError, IntegrationRunner
+
+    try:
+        result = IntegrationRunner().run(corpus_dir, book_spec, candidates, integration_spec, out)
+    except (IntegrationError, OSError, ValueError) as error:
+        _corpus_error(error)
+    failed = list(result.get("failed_candidates", []))
+    status = "no-op" if result.get("no_op") else "resumed" if result.get("resumed") else "fresh"
+    console.print(f"[bold yellow]Integration {status}:[/] {Path(out).expanduser().resolve()}")
+    if failed:
+        console.print(f"[bold red]Failed candidates:[/] {', '.join(sorted(failed))}")
+        for cid in sorted(failed):
+            result_path = Path(out).expanduser().resolve() / "candidates" / cid / "result.json"
+            with contextlib.suppress(OSError, ValueError):
+                evidence = json.loads(result_path.read_text(encoding="utf-8"))
+                reasons = evidence.get("failure_reasons", ["failed predicate"])
+                console.print(f"  {cid}: {', '.join(str(reason) for reason in reasons)}")
+        raise typer.Exit(1)
+
+
+@evaluate_app.command("pack")
+def benchmark_evaluate_pack(
+    corpus_dir: str = typer.Argument(..., metavar="CORPUS_DIR"),
+    run_dir: str = typer.Argument(..., metavar="RUN_DIR"),
+    evaluation_spec: str = typer.Argument(..., metavar="EVALUATION_SPEC.yaml"),
+    out: str = typer.Option(..., "--out", metavar="PACK_DIR"),
+) -> None:
+    from trans_novel.benchmark.evaluation import EvaluationError, generate_pack
+
+    try:
+        generate_pack(corpus_dir, run_dir, evaluation_spec, out)
+    except EvaluationError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Evaluation pack written:[/] {Path(out).expanduser().resolve()}")
+
+
+@evaluate_app.command("validate")
+def benchmark_evaluate_validate(pack_dir: str = typer.Argument(..., metavar="PACK_DIR")) -> None:
+    from trans_novel.benchmark.evaluation import EvaluationError, validate_pack
+
+    try:
+        result = validate_pack(pack_dir)
+    except EvaluationError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Evaluation pack valid:[/] {result['pack_sha256']}")
+
+
+@evaluate_app.command("import")
+def benchmark_evaluate_import(
+    pack_dir: str = typer.Argument(..., metavar="PACK_DIR"),
+    responses_dir: str = typer.Argument(..., metavar="RESPONSES_DIR"),
+    out: str = typer.Option(..., "--out", metavar="EVALUATION_DIR"),
+) -> None:
+    from trans_novel.benchmark.evaluation import EvaluationError, import_responses
+
+    try:
+        import_responses(pack_dir, responses_dir, out)
+    except EvaluationError as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Responses imported:[/] {Path(out).expanduser().resolve()}")
+
+
+@report_app.command("build")
+def benchmark_report_build(
+    corpus_dir: str = typer.Argument(..., metavar="CORPUS_DIR"),
+    run_dir: str = typer.Argument(..., metavar="RUN_DIR"),
+    preparation_dir: str = typer.Argument(..., metavar="PREP_DIR"),
+    pack_dir: str = typer.Argument(..., metavar="PACK_DIR"),
+    evaluation_dir: str = typer.Argument(..., metavar="EVALUATION_DIR"),
+    price_path: str = typer.Argument(..., metavar="PRICE.yaml"),
+    report_spec_path: str = typer.Argument(..., metavar="REPORT_SPEC.yaml"),
+    out: str = typer.Option(..., "--out", metavar="REPORT_DIR"),
+    integration: str | None = typer.Option(None, "--integration", metavar="INTEGRATION.json"),
+) -> None:
+    from trans_novel.benchmark.report import ReportError, build_report
+
+    try:
+        result = build_report(
+            Path(corpus_dir),
+            Path(run_dir),
+            Path(preparation_dir),
+            Path(pack_dir),
+            Path(evaluation_dir),
+            Path(price_path),
+            Path(report_spec_path),
+            Path(out),
+            integration_path=Path(integration) if integration else None,
+        )
+        report_hash = result["report_sha256"]
+        status = result["status"]
+    except (ReportError, OSError, ValueError) as error:
+        _corpus_error(error)
+    console.print(
+        f"[bold yellow]Report no-op:[/] {result['out_dir']} status={status} report_sha256={report_hash}"
+        if result.get("no_op")
+        else f"[bold green]Report written:[/] {result['out_dir']} status={status} report_sha256={report_hash}"
+    )
+
+
+@report_app.command("reprice")
+def benchmark_report_reprice(
+    report_dir: str = typer.Argument(..., metavar="REPORT_DIR"),
+    new_price_path: str = typer.Argument(..., metavar="NEW_PRICE.yaml"),
+    out: str = typer.Option(..., "--out", metavar="REPORT_DIR"),
+) -> None:
+    from trans_novel.benchmark.report import ReportError, reprice_report
+
+    try:
+        result = reprice_report(Path(report_dir), Path(new_price_path), Path(out))
+        manifest = result
+        status = result["status"]
+    except (ReportError, OSError, ValueError) as error:
+        _corpus_error(error)
+    console.print(
+        f"[bold yellow]Report reprice no-op:[/] {result['out_dir']} status={status} report_sha256={manifest['report_sha256']}"
+        if result.get("no_op")
+        else f"[bold green]Report repriced:[/] {result['out_dir']} status={status} report_sha256={manifest['report_sha256']}"
+    )
+
+
+@report_app.command("validate")
+def benchmark_report_validate(report_dir: str = typer.Argument(..., metavar="REPORT_DIR")) -> None:
+    from trans_novel.benchmark.report import ReportError, validate_report
+
+    try:
+        value = validate_report(Path(report_dir))
+    except (ReportError, OSError, ValueError) as error:
+        _corpus_error(error)
+    console.print(f"[bold green]Report valid:[/] {value['report_sha256']}")
+
+
+benchmark_app.add_typer(report_app, name="report")
+benchmark_app.add_typer(prepare_app, name="prepare")
+benchmark_app.add_typer(benchmark_run_app, name="run")
+benchmark_app.add_typer(corpus_app, name="corpus")
+benchmark_app.add_typer(evaluate_app, name="evaluate")
+benchmark_app.add_typer(integration_app, name="integration")
+tools_app.add_typer(benchmark_app, name="benchmark")
 app.add_typer(tools_app, name="tools")
 
 

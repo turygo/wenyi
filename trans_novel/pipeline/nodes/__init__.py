@@ -75,16 +75,26 @@ class RunShared:
     runner 只按不透明对象传递本类型，节点仅消费协调状态（计数/锁/在途 future）。
     """
 
-    def __init__(self, *, store, config: Config, doc, agent_builder):
+    def __init__(
+        self,
+        *,
+        store,
+        config: Config,
+        doc,
+        agent_builder,
+        frozen_preparation=None,
+    ):
         self.store = store
         self.config = config
         self.doc = doc
         self._agent_builder = agent_builder
+        self.frozen_preparation = frozen_preparation
         self.resolved_source_lang: str | None = None  # prepare 解析后写入
         self._agents: AgentBundle | None = None
         self._context: RollingContext | None = None
         self._glossary: GlossaryStore | None = None
         self._style_brief: str | None = None
+        self._frozen_book = None
         self.segments_done = 0
         self.segments_total = 0
         # 并行层（digest ∥ mine_terms）节点在 worker 线程写 RunStore：锁串行化
@@ -93,6 +103,74 @@ class RunShared:
         self.store_lock = threading.Lock()
         # translate 提交的润色 future（批起点 → Future），polish 节点排干时取用。
         self.polish_futures: dict[tuple[int, int], Any] = {}
+
+    def frozen_book(self):
+        if self.frozen_preparation is None:
+            return None
+        if self._frozen_book is None:
+            book_id = ""
+            source_sha256 = ""
+            if self.store.exists():
+                state = self.store.load_state()
+                book_id = str(
+                    state.meta.get("benchmark_book_id") or state.meta.get("book_id") or state.title
+                )
+                source_sha256 = str(state.meta.get("source_sha256") or "")
+                if not source_sha256:
+                    source_sha256 = state.identity.source_bytes_sha256
+            if not book_id and self.doc is not None:
+                book_id = str(
+                    self.doc.meta.get("benchmark_book_id")
+                    or self.doc.meta.get("book_id")
+                    or self.doc.title
+                )
+            if not source_sha256 and self.doc is not None:
+                source_sha256 = str(self.doc.meta.get("source_sha256") or "")
+            if not source_sha256 and self.doc is not None:
+                from trans_novel.pipeline.state import source_bytes_hash
+
+                source_sha256 = source_bytes_hash(self.doc.source_path)
+            self._frozen_book = self.frozen_preparation.book_for(
+                book_id=book_id,
+                source_sha256=source_sha256,
+            )
+        return self._frozen_book
+
+    def frozen_chapter_index(self, chapter_index: int) -> int:
+        """Resolve a synthetic chapter to its single original chapter."""
+        if self.frozen_preparation is None:
+            return chapter_index
+        chapter = next(
+            (item for item in getattr(self.doc, "chapters", []) if item.index == chapter_index),
+            None,
+        )
+        chapter_meta = getattr(chapter, "meta", {})
+        chapter_value = (
+            chapter_meta.get("original_chapter_index") if isinstance(chapter_meta, dict) else None
+        )
+        document_meta = getattr(self.doc, "meta", {})
+        mapping = (
+            document_meta.get("continuous_chapter_mapping", {})
+            if isinstance(document_meta, dict)
+            else {}
+        )
+        mapped_value = mapping.get(str(chapter_index)) if isinstance(mapping, dict) else None
+        if (
+            chapter_value is not None
+            and mapped_value is not None
+            and str(chapter_value) != str(mapped_value)
+        ):
+            raise ValueError(f"ambiguous frozen chapter mapping: {chapter_index}")
+        value = chapter_value if chapter_value is not None else mapped_value
+        if value is None:
+            return chapter_index
+        try:
+            resolved = int(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"invalid frozen chapter mapping: {chapter_index}") from error
+        if resolved < 0:
+            raise ValueError(f"invalid frozen chapter mapping: {chapter_index}")
+        return resolved
 
     @property
     def agents(self) -> AgentBundle:
@@ -111,6 +189,17 @@ class RunShared:
             self._agents = self._agent_builder(src, tgt)
         return self._agents
 
+    def style_brief(self) -> str:
+        if self._style_brief is None:
+            if self.frozen_preparation is not None:
+                book = self.frozen_book()
+                self._style_brief = book.style_brief
+            else:
+                self._style_brief = self.agents.analyzer.style_brief(
+                    self.store.load_analysis() or {}
+                )
+        return self._style_brief
+
     def rolling_context(self) -> RollingContext:
         if self._context is None:
             self._context = RollingContext.from_dict(
@@ -123,11 +212,6 @@ class RunShared:
         if self._glossary is None:
             self._glossary = GlossaryStore(self.store.glossary_path)
         return self._glossary
-
-    def style_brief(self) -> str:
-        if self._style_brief is None:
-            self._style_brief = self.agents.analyzer.style_brief(self.store.load_analysis() or {})
-        return self._style_brief
 
     def close(self) -> None:
         if self._glossary is not None:

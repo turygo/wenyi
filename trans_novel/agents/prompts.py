@@ -13,10 +13,21 @@ render() 按 src 自动注入 langprofile 默认值（调用方可显式覆盖�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from string import Template
 
 from trans_novel.agents import langprofile
 from trans_novel.glossary.store import GlossaryTerm
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationContextBundle:
+    """Adjacent source/target context used only by benchmark translation calls."""
+
+    source_before: str = ""
+    target_before: str = ""
+    source_after: str = ""
+
 
 # 译文标点统一规范（简体中文大陆通用），翻译/润色提示词共用。
 PUNCT_RULE = (
@@ -61,6 +72,34 @@ $glossary
 
 【前文译文（最近）】
 $context
+
+【待译$src_label段落】（共 $n 段，编号 0 至 ${n_minus_1}）
+$numbered_source
+
+请翻译以上每一段，输出 JSON：{"translations":[...]}，数组长度必须恰好为 $n。\
+""")
+
+BENCHMARK_CONTEXT_USER = Template("""\
+【角色信息 / 风格指南】
+$style
+
+【全书概览】
+$book_synopsis
+
+【本章梗概】
+$chapter_digest
+
+【专有名词对照表】（必须遵守）
+$glossary
+
+【前文原文（仅供消歧）】
+$source_before
+
+【前文译文（最近）】
+$target_before
+
+【后文原文（仅供消歧）】
+$source_after
 
 【待译$src_label段落】（共 $n 段，编号 0 至 ${n_minus_1}）
 $numbered_source
@@ -440,6 +479,7 @@ _DEFAULTS = {
     "translator_user": TRANSLATOR_USER,
     "translator_fix_user": TRANSLATOR_FIX_USER,
     "translator_fix_multi_user": TRANSLATOR_FIX_MULTI_USER,
+    "benchmark_context_user": BENCHMARK_CONTEXT_USER,
     "reviewer_system": REVIEWER_SYSTEM,
     "reviewer_user": REVIEWER_USER,
     "polisher_system": POLISHER_SYSTEM,

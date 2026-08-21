@@ -59,6 +59,12 @@ def failure_reason(exc: BaseException) -> str:
     return "provider_error"
 
 
+class BatchCommitHook(Protocol):
+    """通知 benchmark harness：正文翻译批次已完整持久化。"""
+
+    def after_batch_committed(self, chapter_index: int, start: int, count: int) -> None: ...
+
+
 ProgressFn = Callable[[int, int, str], None]
 
 
@@ -94,6 +100,7 @@ class RunRepository(Protocol):
     def load_chapter(self, ci: int): ...
 
     def log_event(self, event: str, **data: Any) -> None: ...
+    def log_event_required(self, event: str, **data: Any) -> None: ...
 
     def set_chapter_status(self, ci: int, status: str) -> None: ...
 

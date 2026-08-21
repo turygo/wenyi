@@ -30,6 +30,7 @@ from trans_novel.pipeline.contracts import (
     GOAL_PREPARE,
     GOAL_RUN_ALL,
     GOAL_TRANSLATE,
+    BatchCommitHook,
     ExecutionGoal,
     assemble_goal,
     qa_goal,
@@ -44,12 +45,15 @@ from trans_novel.pipeline.fingerprints import (
     back_matter_translate_input_fingerprint,
     backtranslate_input_fingerprint,
     consistency_input_fingerprint,
+    editor_fast_model_profile,
+    editor_model_profile,
     fast_model_profile,
+    frozen_input_fingerprint,
     glossary_semantic_fingerprint_part,
-    model_profile,
     naturalize_input_fingerprint,
     polish_input_fingerprint,
     prepare_input_fingerprint,
+    primary_fast_model_profile,
     primary_model_profile,
     report_input_fingerprint,
     review_input_fingerprint,
@@ -196,11 +200,22 @@ def build_workflow_definition() -> WorkflowDefinition:
 class Application:
     """工作流应用门面：CLI 的唯一生产入口（组合根）。"""
 
-    def __init__(self, config: Config, client: LLMClient | None = None):
+    def __init__(
+        self,
+        config: Config,
+        client: LLMClient | None = None,
+        *,
+        frozen_preparation=None,
+        batch_commit_hook: BatchCommitHook | None = None,
+        backtranslation_sample_scope: str = "",
+    ):
         self.config = config
         self.client = client or build_client(config)
         # client 的统计是进程内累计；checkpoint 用于每次落盘时只提取新增部分。
         self._usage_checkpoint = self.client.usage_summary()
+        self.frozen_preparation = frozen_preparation
+        self.batch_commit_hook = batch_commit_hook
+        self.backtranslation_sample_scope = backtranslation_sample_scope
         self.definition = build_workflow_definition()
         self.planner = Planner(self.definition)
 
@@ -209,9 +224,6 @@ class Application:
         return AgentBundle(client=self.client, config=self.config, src=src, tgt=tgt)
 
     def _node_factory(self, shared: RunShared, goal: ExecutionGoal):
-        # 具体节点只接收精确依赖（Agent/语言/术语库/文档/风格/上下文/配置）。
-        # AgentBundle 与语言对在 prepare 解析后惰性解析；术语库/滚动上下文/风格
-        # 是 run 共享的可变执行状态，由 RunShared 持有同一实例、构造时注入。
         def _style() -> str:
             return shared.style_brief()
 
@@ -224,24 +236,31 @@ class Application:
                 config=self.config,
                 doc=shared.doc,
                 glossary=shared.glossary(),
+                frozen_book=shared.frozen_book(),
             ),
             NODE_DIGEST: lambda shared, ci: DigestNode(
-                synopsizer=shared.agents.synopsizer, config=self.config
+                synopsizer=shared.agents.synopsizer,
+                config=self.config,
+                frozen_book=shared.frozen_book(),
             ),
             NODE_MINE_TERMS: lambda shared, ci: MineTermsNode(
-                namer=shared.agents.namer, config=self.config
+                namer=shared.agents.namer,
+                config=self.config,
+                frozen_book=shared.frozen_book(),
             ),
             NODE_NAME_TERMS: lambda shared, ci: NameTermsNode(
                 namer=shared.agents.namer,
                 analyzer=shared.agents.analyzer,
                 glossary=shared.glossary(),
                 config=self.config,
+                frozen_book=shared.frozen_book(),
             ),
             NODE_BOOK_SYNOPSIS: lambda shared, ci: BookSynopsisNode(
                 synopsizer=shared.agents.synopsizer,
                 analyzer=shared.agents.analyzer,
                 glossary=shared.glossary(),
                 config=self.config,
+                frozen_book=shared.frozen_book(),
             ),
             NODE_TRANSLATE: lambda shared, ci: TranslateNode(
                 translator=shared.agents.translator,
@@ -251,6 +270,9 @@ class Application:
                 config=self.config,
                 style_brief=_style(),
                 rolling_context=shared.rolling_context(),
+                frozen_book=shared.frozen_book(),
+                frozen_preparation=shared.frozen_preparation,
+                batch_commit_hook=self.batch_commit_hook,
             ),
             NODE_POLISH: lambda shared, ci: PolishNode(
                 polisher=shared.agents.polisher,
@@ -258,11 +280,15 @@ class Application:
                 glossary=shared.glossary(),
                 config=self.config,
                 style_brief=_style(),
+                frozen_book=shared.frozen_book(),
+                frozen_preparation=shared.frozen_preparation,
             ),
             NODE_NATURALIZE: lambda shared, ci: NaturalizeNode(
                 naturalizer=shared.agents.naturalizer,
                 glossary=shared.glossary(),
                 config=self.config,
+                frozen_book=shared.frozen_book(),
+                frozen_preparation=shared.frozen_preparation,
             ),
             NODE_REVIEW: lambda shared, ci: ReviewNode(
                 reviewer=shared.agents.reviewer,
@@ -270,9 +296,15 @@ class Application:
                 glossary=shared.glossary(),
                 config=self.config,
                 style_brief=_style(),
+                frozen_book=shared.frozen_book(),
+                frozen_preparation=shared.frozen_preparation,
             ),
             NODE_BACKTRANSLATE: lambda shared, ci: BacktranslateNode(
-                backtrans=shared.agents.backtrans, config=self.config
+                backtrans=shared.agents.backtrans,
+                config=self.config,
+                frozen_book=shared.frozen_book(),
+                frozen_preparation=shared.frozen_preparation,
+                backtranslation_sample_scope=self.backtranslation_sample_scope,
             ),
             NODE_TITLES: lambda shared, ci: TitlesNode(
                 client=self.client,
@@ -351,6 +383,8 @@ class Application:
             return None
 
         def _glossary_sources() -> list[str]:
+            if frozen_book is not None:
+                return [t.source for t in frozen_book.glossary]
             return [t.source for t in shared.glossary().all_terms()]
 
         def _titles() -> list[str]:
@@ -375,12 +409,39 @@ class Application:
                 parts.append(_targets_text(c.index))
             return "\n".join(parts)
 
-        style_brief = _style_brief()
+        frozen_book = shared.frozen_book() if shared.frozen_preparation is not None else None
+        style_brief = frozen_book.style_brief if frozen_book is not None else _style_brief()
 
         def digest_fp(ci: int) -> str:
+            if frozen_book is not None:
+                original_index = shared.frozen_chapter_index(ci)
+                digest = frozen_book.chapter_digest(ci, original_index=original_index)
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_DIGEST,
+                    (frozen_book.book_id, original_index),
+                    digest,
+                )
             return digest_input_fingerprint(_source_text(ci), _src_lang(), fast_model_profile(cfg))
 
+        def name_terms_fp() -> str | None:
+            if frozen_book is None:
+                return None
+            return frozen_input_fingerprint(
+                shared.frozen_preparation.preparation_sha256,
+                NODE_NAME_TERMS,
+                frozen_book.book_id,
+                [t.source for t in frozen_book.glossary],
+            )
+
         def mine_fp() -> str:
+            if frozen_book is not None:
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_MINE_TERMS,
+                    frozen_book.book_id,
+                    [t.source for t in frozen_book.glossary],
+                )
             state = store.load_state()
             n = len(state.chapters)
             mine = [
@@ -394,12 +455,26 @@ class Application:
             )
 
         def synopsis_fp(digests: list[str]) -> str:
+            if frozen_book is not None:
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_BOOK_SYNOPSIS,
+                    frozen_book.book_id,
+                    (frozen_book.book_synopsis, tuple(digests)),
+                )
             return book_synopsis_input_fingerprint(
                 digests, style_brief, _src_lang(), _tgt_lang(), fast_model_profile(cfg)
             )
 
         def translate_fp(ci: int) -> str:
             src = _source_text(ci)
+            if frozen_book is not None:
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_TRANSLATE,
+                    (frozen_book.book_id, shared.frozen_chapter_index(ci)),
+                    src,
+                )
             if _mode(ci):
                 return back_matter_translate_input_fingerprint(
                     src,
@@ -421,37 +496,79 @@ class Application:
             )
 
         def polish_fp(ci: int) -> str:
+            src = _source_text(ci)
+            if frozen_book is not None:
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_POLISH,
+                    (frozen_book.book_id, shared.frozen_chapter_index(ci)),
+                    src,
+                )
             return polish_input_fingerprint(
-                _source_text(ci),
+                src,
                 _src_lang(),
                 style_brief,
                 punctuation_normalize=cfg.punctuation_normalize,
-                model=primary_model_profile(cfg),
+                model=editor_model_profile(cfg),
             )
 
         def naturalize_fp(ci: int) -> str:
+            src = _source_text(ci)
+            if frozen_book is not None:
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_NATURALIZE,
+                    (frozen_book.book_id, shared.frozen_chapter_index(ci)),
+                    src,
+                )
             return naturalize_input_fingerprint(
-                _source_text(ci),
+                src,
                 punctuation_normalize=cfg.punctuation_normalize,
-                model=model_profile(cfg),
+                model=editor_fast_model_profile(cfg),
             )
 
         def review_fp(ci: int) -> str:
+            src = _source_text(ci)
+            if frozen_book is not None:
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_REVIEW,
+                    (frozen_book.book_id, shared.frozen_chapter_index(ci)),
+                    (src, policy.autofix_severe),
+                )
             return review_input_fingerprint(
-                _source_text(ci),
+                src,
                 autofix_severe=policy.autofix_severe,
                 review_output_retries=cfg.pipeline.review_output_retries,
-                model=fast_model_profile(cfg),
+                model=primary_fast_model_profile(cfg),
             )
 
         def backtranslate_fp(ci: int) -> str:
+            src = _source_text(ci)
+            if frozen_book is not None:
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_BACKTRANSLATE,
+                    (frozen_book.book_id, shared.frozen_chapter_index(ci)),
+                    (src, policy.backtranslate_sample, self.backtranslation_sample_scope),
+                )
             return backtranslate_input_fingerprint(
-                _source_text(ci),
+                src,
                 backtranslate_sample=policy.backtranslate_sample,
-                model=fast_model_profile(cfg),
+                model=(
+                    f"{fast_model_profile(cfg)}"
+                    f"|backtranslation_sample_scope={self.backtranslation_sample_scope}"
+                ),
             )
 
         def titles_fp() -> str:
+            if frozen_book is not None:
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_TITLES,
+                    frozen_book.book_id,
+                    _titles(),
+                )
             return titles_input_fingerprint(
                 _titles(), _src_lang(), _tgt_lang(), _book_synopsis(), primary_model_profile(cfg)
             )
@@ -485,6 +602,13 @@ class Application:
             )
 
         def analyze_fp() -> str:
+            if frozen_book is not None:
+                return frozen_input_fingerprint(
+                    shared.frozen_preparation.preparation_sha256,
+                    NODE_ANALYZE,
+                    frozen_book.book_id,
+                    frozen_book.analysis,
+                )
             # 风格/角色分析使用 primary（analyst）模型；样本从持久化章节重建
             # （与 AnalyzeNode 对同一解析文档的 sample_text 计算一致）。
             state = store.load_state()
@@ -520,6 +644,7 @@ class Application:
         return PrescanInputs(
             digest_fingerprint=digest_fp,
             mine_fingerprint=mine_fp,
+            name_terms_fingerprint=name_terms_fp,
             synopsis_fingerprint=synopsis_fp,
             prepare_fingerprint=lambda: prepare_input_fingerprint(
                 store.load_state().identity.source_bytes_sha256, _src_lang(), _tgt_lang()
@@ -557,10 +682,35 @@ class Application:
             self.config.target_lang,
             split_segments=self.config.segment.max_chars_per_segment,
         )
+        return self._run_document_goal(doc, input_path, goal, progress=progress)
+
+    def run_document_goal(
+        self,
+        doc,
+        identity_path: str,
+        goal: ExecutionGoal,
+        *,
+        progress: Callable[[int, int, str], None] | None = None,
+    ) -> tuple[RunResult, RunStore]:
+        """Run the built-in workflow for an already constructed Document."""
+        return self._run_document_goal(doc, identity_path, goal, progress=progress)
+
+    def _run_document_goal(
+        self,
+        doc,
+        identity_path: str,
+        goal: ExecutionGoal,
+        *,
+        progress: Callable[[int, int, str], None] | None = None,
+    ) -> tuple[RunResult, RunStore]:
         run_dir = os.path.join(self.config.state_dir, slugify(doc.title))
         store = RunStore(run_dir)
         shared = RunShared(
-            store=store, config=self.config, doc=doc, agent_builder=self._build_agents
+            store=store,
+            config=self.config,
+            doc=doc,
+            agent_builder=self._build_agents,
+            frozen_preparation=self.frozen_preparation,
         )
         policy = WorkflowPolicy.from_config(self.config)
         result: RunResult | None = None
@@ -569,7 +719,7 @@ class Application:
             if prep_phases:
                 prep_goal = ExecutionGoal(name="prepare", phases=tuple(prep_phases))
                 result = self._run_plan(
-                    store, shared, policy, prep_goal, input_path, progress, "prepare"
+                    store, shared, policy, prep_goal, identity_path, progress, "prepare"
                 )
 
             translate_phases = [p for p in goal.phases if p in self._TRANSLATE_PHASES]
@@ -582,8 +732,6 @@ class Application:
                     out_path=goal.out_path,
                 )
 
-                # 翻译进度初始化与 run 生命周期事件：规划在 runner 锁内完成（build_plan
-                # 含指纹对账/升档重开写操作），这里在锁内先定好计数与起始事件。
                 def build_translate_plan():
                     prescan = self._prescan_inputs(store, policy, shared, translate_goal)
                     plan = self.planner.build_plan(
@@ -604,7 +752,7 @@ class Application:
                     shared,
                     policy,
                     translate_goal,
-                    input_path,
+                    identity_path,
                     progress,
                     "translate" if "translate" in translate_phases else "prepare",
                     plan_builder=build_translate_plan,
@@ -624,7 +772,7 @@ class Application:
                     do_qa=goal.do_qa,
                 )
                 result = self._run_plan(
-                    store, shared, policy, finish_goal, input_path, progress, "pipeline"
+                    store, shared, policy, finish_goal, identity_path, progress, "pipeline"
                 )
             assert result is not None
             return result, store

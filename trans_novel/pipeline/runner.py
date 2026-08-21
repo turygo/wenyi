@@ -473,14 +473,16 @@ class WorkflowRunner:
         if progress.status == STATUS_DONE:
             return
         chapter = store.load_chapter(ci)
-        store.log_event(
-            "chapter_done",
-            chapter=ci,
-            title=chapter.title,
-            segment_count=len(chapter.text_segments),
-            review_issue_count=len(progress.review_issues),
-            backtranslation_issue_count=len(progress.backtranslation_issues),
-        )
+        payload = {
+            "chapter": ci,
+            "title": chapter.title,
+            "segment_count": len(chapter.text_segments),
+            "review_issue_count": len(progress.review_issues),
+            "backtranslation_issue_count": len(progress.backtranslation_issues),
+        }
+        if progress.back_matter_mode:
+            payload.update({"back_matter": True, "mode": progress.back_matter_mode})
+        store.log_event("chapter_done", **payload)
         store.set_chapter_status(ci, STATUS_DONE)
 
     # ── 异步排干 ──────────────────────────────────────────────────────────
