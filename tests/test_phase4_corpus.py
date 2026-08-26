@@ -25,7 +25,7 @@ from trans_novel.benchmark.corpus import (
     source_digest,
     validate_corpus,
 )
-from trans_novel.benchmark.schema import BookSpec, ContextChallenge, PassageSelection
+from trans_novel.benchmark.schema import BookEntry, BookSpec, ContextChallenge, PassageSelection
 from trans_novel.cli import app
 from trans_novel.ingest.models import Chapter, Document, Segment
 
@@ -53,7 +53,6 @@ def _write_minimal_artifact(
             "book_id": "book",
             "source_sha256": "a" * 64,
             "basename": "book.txt",
-            "license_note": "fixture",
             "split": "screen",
             "format": "text",
             "title": "book",
@@ -67,10 +66,7 @@ def _write_minimal_artifact(
         "word_counter": "en-v1",
         "parser_schema": 1,
         "run_input_schema_version": 1,
-        "books": [
-            {key: value for key, value in row.items() if key != "license_note"}
-            for row in manifest_books
-        ],
+        "books": manifest_books,
         "passages": [
             {
                 key: row[key]
@@ -184,10 +180,18 @@ class CorpusSchemaTests(unittest.TestCase):
                             "book_id": "x",
                             "path": "x.txt",
                             "split": "screen",
-                            "license_note": "owned",
                             "unexpected": True,
                         }
                     ],
+                }
+            )
+        with self.assertRaises(ValueError):
+            BookEntry.model_validate(
+                {
+                    "book_id": "x",
+                    "path": "x.txt",
+                    "split": "screen",
+                    "license_note": "owned",
                 }
             )
         with self.assertRaises(ValueError):
@@ -312,7 +316,7 @@ class CorpusPrimitiveTests(unittest.TestCase):
             {"basename": "/private/book.txt"},
             {"basename": "nested/book.txt"},
             {"source_sha256": "bad"},
-            {"license_note": ""},
+            {"license_note": "fixture"},
             {"parser_schema": "1"},
         ):
             with self.subTest(updates=updates), tempfile.TemporaryDirectory() as directory:
@@ -321,7 +325,6 @@ class CorpusPrimitiveTests(unittest.TestCase):
                     "book_id": "book",
                     "source_sha256": "a" * 64,
                     "basename": "book.txt",
-                    "license_note": "fixture",
                     "split": "screen",
                     "format": "text",
                     "title": "book",
@@ -450,7 +453,6 @@ class CorpusPrimitiveTests(unittest.TestCase):
                         "book_id": book_id,
                         "path": source_path.name,
                         "split": split,
-                        "license_note": "generated fixture",
                     }
                 )
             spec = root / "BOOK_SPEC.yaml"
@@ -518,7 +520,6 @@ class CorpusPrimitiveTests(unittest.TestCase):
                         "book_id": f"book{index}",
                         "path": "~/book0.txt" if index == 0 else source.name,
                         "split": split,
-                        "license_note": "generated fixture",
                     }
                 )
             spec = root / "BOOK_SPEC.yaml"

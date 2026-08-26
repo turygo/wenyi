@@ -237,101 +237,89 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest discover -s tests
 ```bash
 uv run python -m unittest discover -s tests
 ```
-## 本地基准语料库
+## 本地模型基准
 
-基准语料库工具完全离线运行，既不调用模型，也不访问网络。`BOOK_SPEC.yaml` 中的源书籍路径按文件
-所在目录解析；请仅处理已获授权的书籍，并注意扫描目录会包含原文片段。
+基准运行直接把 `BOOK_SPEC.yaml` 中的原始章节 EPUB 交给生产 `Application.run_all()`。
+每个候选和章节使用独立的 `RunStore`；不共享准备结果、译文或术语库，也不存在
+benchmark 专用翻译提示词。`economy` 不润色，`balanced`、`quality` 和 benchmark
+始终执行生产润色路径。
 
-```bash
-trans-novel tools benchmark corpus scan BOOK_SPEC.yaml --out benchmark_data/inventory
-trans-novel tools benchmark corpus build BOOK_SPEC.yaml SELECTION.yaml --out benchmark_runs/corpus
-trans-novel tools benchmark corpus validate benchmark_runs/corpus
-```
-
-指定的输出目录必须尚未创建，工具不会覆盖或删除已有目录。`challenge_keys.jsonl` 含有人审答案和理由，
-仅供评估器使用，不得作为运行器的输入。`benchmark_data/` 和 `benchmark_runs/` 已被 Git
-忽略；不要提交受版权保护的书籍、扫描结果或冻结语料。
-
-Layer one consumes a frozen `PREPARATION.json` and strict `CANDIDATES.yaml`; it performs
-only translation and optional production-gated polish. The same primary translation
-artifact is shared by all editor branches and unpolished controls. Context passages
-produce C0/C1/C2 diagnostics; screen and other non-context passages use C2 preparation
-context. Resume is allowed only with matching immutable hashes:
-
-Phase six freezes real production preparation once, then reuses it for the full quality
-DAG on formal continuous passages. Preparation is an internal source protocol, not a
-provider or model transport; controls are skipped by the full layer. Raw translation
-stores are closed before cloning editor/fast branches, and branch telemetry must contain
-no new translation calls:
+`BOOK_SPEC.yaml` 必须包含至少 3 个 `screen`、恰好用于正式运行的 6 个 `formal`
+以及至少 1 个 `hidden` EPUB。`CANDIDATES.yaml` 中每个候选都必须显式配置
+`primary_model`、`editor_model` 和 thinking 级别；支持关闭时使用 `:off`。
 
 ```bash
-trans-novel tools benchmark prepare freeze CORPUS_DIR BOOK_SPEC.yaml PREPARATION_SPEC.yaml --out benchmark_runs/preparation
-trans-novel tools benchmark prepare validate benchmark_runs/preparation
-trans-novel tools benchmark run full CORPUS_DIR CANDIDATES.yaml benchmark_runs/preparation --out benchmark_runs/full
+# 先用一个真实 screen 章节验证生产请求、路由、输出和遥测
+trans-novel tools benchmark run canary BOOK_SPEC.yaml CANDIDATES.yaml \
+  --out benchmark_runs/canary
+
+# 对全部 6 个 formal 章节逐候选运行完整生产质量流水线
+trans-novel tools benchmark run full BOOK_SPEC.yaml CANDIDATES.yaml \
+  --out benchmark_runs/full
 ```
 
-All preparation and full-run directories are create-or-resume only with exact immutable hashes. They contain local artifacts and source identities only; never commit source books, prompts, provider credentials, or generated translations.
+运行目录采用严格的创建/续跑语义。已有 `run.json` 必须与本次输入身份完全一致；
+已完成分支只校验文件哈希，不会重新翻译。`benchmark_data/`、`benchmark_runs/`、
+源书、模型输出和 Provider 凭据均不得提交。
 
-## 离线人工评估包
+## 自动分片评审
 
-Phase seven generates deterministic, model-blind packs from a validated corpus and
-completed attribution/full run. The evaluator receives only the local files under
-`raters/<opaque-id>/`; the secret mapping stays at the pack root with restrictive
-permissions and is never copied into a rater directory.
+评审准备从每个正式章节确定性抽取风险、对话、专名、长句和普通叙事段落。
+对三个以上候选时，评审准备先枚举候选对，再把每对译文按单元确定性盲化为 A/B；
+所有候选对被均衡拆入互不重叠的 shard。每个 reviewer 只接收一个候选对的严格
+JSON；每条问题都必须引用原文和对应译文中的真实子串。
 
 ```bash
-trans-novel tools benchmark evaluate pack CORPUS_DIR RUN_DIR EVALUATION_SPEC.yaml --out PACK_DIR
-trans-novel tools benchmark evaluate validate PACK_DIR
-trans-novel tools benchmark evaluate import PACK_DIR RESPONSES_DIR --out EVALUATION_DIR
+trans-novel tools benchmark evaluate prepare \
+  benchmark_runs/full REVIEW_SPEC.yaml --out benchmark_runs/review
+
+# 将各 shard 的 JSON 结果写入 RESULTS_DIR 后：
+trans-novel tools benchmark evaluate finalize benchmark_runs/review RESULTS_DIR
+trans-novel tools benchmark evaluate validate benchmark_runs/review
 ```
 
-Pack generation, validation, and import are offline and create-only. The static UI
-loads no external resource and stores autosaves in local storage scoped by pack and
-rater. It displays eligibility, consent, compensation, and retention notices and
-requires explicit consent before work; no name, email, IP, or device identifier is
-collected. Imports are strict and incremental: each rater file is hash-bound,
-revalidated, and atomically incorporated into canonical JSONL outputs. A completion
-manifest is emitted only after every expected rater has been accepted.
-Rater assignment/response envelopes bind to `pack_semantic_sha256`, which covers the
-specification, source/run hashes, task counts, and secret assignment semantics.
-`pack_sha256` is a separate final manifest hash covering the immutable manifest,
-secret mapping hash, and every rater asset byte hash; it is never embedded in the
-assets, avoiding a self-referential hash cycle.
+`REVIEW_SPEC.yaml` 绑定 `run.json` 的原始字节 SHA-256：
 
+```yaml
+schema_version: 1
+benchmark_id: wenyi-benchmark
+run_sha256: "<sha256-of-run.json>"
+seed: 17
+segments_per_book: 24
+shard_count: 8
+```
 
-## Phase 8 报告与发布门禁
+汇总器严格校验 shard 身份、完整且不重复的单元集合、盲化映射，以及每条
+`source_quote` / `target_quote` 证据。最终生成 `comparison.json`、
+`findings.jsonl`、`summary.json` 和 `review_complete.json`。没有可区分证据时
+不会虚构获胜者。
 
-报告构建过程完全离线，只读取冻结后的语料库、运行结果、准备数据、评估包、评估导入结果和人民币价格快照，既不调用模型，也不访问网络。工具不会覆盖不匹配的已有输出目录；已有结果的完整哈希一致时，重复调用不会重新构建。
+## 自动评审报告
+
+报告只读取已完成的生产运行、自动评审结果和冻结价格快照，不调用模型或网络：
 
 ```bash
-trans-novel tools benchmark report build CORPUS_DIR RUN_DIR PREP_DIR PACK_DIR EVALUATION_DIR PRICE.yaml REPORT_SPEC.yaml --out REPORT_DIR
-trans-novel tools benchmark report build CORPUS_DIR RUN_DIR PREP_DIR PACK_DIR EVALUATION_DIR PRICE.yaml REPORT_SPEC.yaml --out REPORT_DIR --integration INTEGRATION.json
-trans-novel tools benchmark report reprice REPORT_DIR NEW_PRICE.yaml --out NEW_REPORT_DIR
-trans-novel tools benchmark report validate REPORT_DIR
+trans-novel tools benchmark report build \
+  benchmark_runs/full benchmark_runs/review PRICE.yaml \
+  --out benchmark_runs/report
+trans-novel tools benchmark report validate benchmark_runs/report
 ```
 
-`INTEGRATION.json` 必须与同目录的 `integration_complete.json` 配对；报告会校验候选
-结果文件路径和原始字节哈希，并只把 Phase 9 选中的非对照候选纳入最终门禁。
-`candidates.csv` 的 `effective_cost_rate_*` 列根据 `REPORT_SPEC` 中设定的每位编辑的时薪生成，结果确定且可复现。
+报告包含候选严重度计数、错误类型、每万原文词加权错误、逐书胜负、证据明细、
+生产调用系统状态和 API 成本。出现失败请求、缺失输出或无法定价的模型时，报告
+状态为 `provisional` 且不宣布获胜者；否则为 `final`。原生 reasoning token 仍计入系统与成本事实。
 
-缺少集成完成文件时，报告保持 `provisional` 状态，只发布质量表和诊断性 `Pareto` 前沿，不选出获胜者。所有待裁决项和未达标的校准 `alpha` 指标，都会明确列入 `gates` 和 `withheld_reasons`。提供有效的终态集成结果后，报告才可能进入 `final` 状态；每个候选仍须通过人工、系统、统计和逐书门禁。计费用量未知不会降低质量分数，但相关候选会被排除在成本/有效成本 `Pareto` 前沿及推荐结果之外，避免把成本下界误当作实际成本。`reprice` 只读取报告中冻结的人工评估数据、系统评估数据和规范化定价数据，因此即使删除原始源文件、运行目录和准备目录仍可执行；质量相关 `CSV` 的字节保持不变。`report.html` 自包含、无外链且不嵌入原文段落。
-
-## Phase 9 隐藏 EPUB 中断续跑集成
-
-Phase 9 只处理一本已获许可且 `split=hidden` 的 EPUB，并在通过全部校验后才调用模型。每个候选的状态、输出、遥测和金丝雀测试数据相互独立，不共享翻译或准备状态，也不设后备路径。只允许在正文翻译批次完整持久化后中断；请勿强制终止进程，也不要在写入过程中人为触发崩溃。
+隐藏 EPUB 的中断续跑集成仍可单独运行：
 
 ```bash
 trans-novel tools benchmark integration run CORPUS_DIR BOOK_SPEC.yaml CANDIDATES.yaml \
   INTEGRATION_SPEC.yaml --out benchmark_runs/integration
 ```
-
-命令采用 `create/resume` 语义：输入与已完成记录完全一致时，命令会先校验哈希，随后不再执行其他操作；任务尚未完成时，工具会新建 `Application`，复用 `RunStore` 状态并只翻译剩余批次。如果请求与状态不一致、数据损坏或隐藏源文件哈希不匹配，命令会拒绝继续。实际运行会消耗 `Provider` 配额。
-
-每个候选都必须通过基于合成输入的三角色金丝雀测试、生产质量流水线的就绪门禁，以及源 `EPUB`、单语 `EPUB` 和双语 `EPUB` 的结构校验。
 输出包括 `integration_request.json`、
 `integration_state.json`、`candidates/<id>/result.json`、`integration.json` 和
 `integration_complete.json`；最终清单只在所有候选进入终态后写入，并记录单语与双语
 输出路径及其原始字节哈希。
+
 ## 提交与发版
 
 启用提交钩子：

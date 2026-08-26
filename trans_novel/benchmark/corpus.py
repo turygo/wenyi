@@ -550,10 +550,7 @@ def build(
         "word_counter": WORD_COUNTER,
         "parser_schema": RUN_INPUT_SCHEMA_VERSION,
         "run_input_schema_version": RUN_INPUT_SCHEMA_VERSION,
-        "books": [
-            {key: value for key, value in book.items() if key not in {"license_note", "path"}}
-            for book in books
-        ],
+        "books": books,
         "passages": [
             {
                 "passage_id": row["passage_id"],
@@ -581,7 +578,6 @@ def build(
                 "book_id": book.book_id,
                 "source_sha256": by_id[book.book_id]["sha"],
                 "basename": by_id[book.book_id]["path"].name,
-                "license_note": book.license_note,
                 "split": book.split,
                 "format": by_id[book.book_id]["doc"].fmt,
                 "title": by_id[book.book_id]["doc"].title,

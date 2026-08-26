@@ -370,22 +370,11 @@ class TestPhase9Integration(unittest.TestCase):
                 "temperature": 0.1,
                 "seed": None,
                 "replicates": 1,
-                "default_context_strategy": "c2",
                 "candidates": [
-                    {
-                        "candidate_id": "candidate-a",
-                        "primary_model": "qwen3.8-max:off",
-                        "editor_model": None,
-                    },
                     {
                         "candidate_id": "candidate-a-polished",
                         "primary_model": "qwen3.8-max:off",
                         "editor_model": "deepseek-v4-pro:off",
-                    },
-                    {
-                        "candidate_id": "candidate-b",
-                        "primary_model": "deepseek-v4-flash:off",
-                        "editor_model": None,
                     },
                     {
                         "candidate_id": "candidate-b-polished",
@@ -395,10 +384,7 @@ class TestPhase9Integration(unittest.TestCase):
                 ],
             }
         )
-        selected = [
-            candidate_spec.candidates[1],
-            candidate_spec.candidates[3],
-        ]
+        selected = list(candidate_spec.candidates)
         integration_spec = IntegrationSpec.model_validate(
             _spec(
                 candidate_ids=["candidate-a-polished", "candidate-b-polished"],
@@ -1018,7 +1004,6 @@ class TestPhase9Integration(unittest.TestCase):
                             "book_id": book_id,
                             "source_sha256": digest,
                             "basename": path.name,
-                            "license_note": "fixture",
                             "split": split,
                             "format": "text",
                             "title": book_id,
@@ -1031,7 +1016,6 @@ class TestPhase9Integration(unittest.TestCase):
                             "book_id": book_id,
                             "path": path.name,
                             "split": split,
-                            "license_note": "fixture",
                         }
                     )
             manifest_books.append(
@@ -1039,7 +1023,6 @@ class TestPhase9Integration(unittest.TestCase):
                     "book_id": "hidden-book",
                     "source_sha256": hidden_hash,
                     "basename": hidden.name,
-                    "license_note": "fixture",
                     "split": "hidden",
                     "format": "epub",
                     "title": "hidden-book",
@@ -1052,7 +1035,6 @@ class TestPhase9Integration(unittest.TestCase):
                     "book_id": "hidden-book",
                     "path": hidden.name,
                     "split": "hidden",
-                    "license_note": "fixture",
                 }
             )
             runner_rows: list[dict] = []
@@ -1178,22 +1160,11 @@ class TestPhase9Integration(unittest.TestCase):
                         "temperature": 0.1,
                         "seed": None,
                         "replicates": 1,
-                        "default_context_strategy": "c2",
                         "candidates": [
-                            {
-                                "candidate_id": "a",
-                                "primary_model": "qwen3.8-max:off",
-                                "editor_model": None,
-                            },
                             {
                                 "candidate_id": "a-polished",
                                 "primary_model": "qwen3.8-max:off",
                                 "editor_model": "deepseek-v4-pro:off",
-                            },
-                            {
-                                "candidate_id": "b",
-                                "primary_model": "deepseek-v4-flash:off",
-                                "editor_model": None,
                             },
                             {
                                 "candidate_id": "b-polished",

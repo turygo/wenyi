@@ -1,0 +1,40 @@
+schema_version: 1
+provider: opencode-go
+region: global
+currency: USD
+retrieved_at: "2026-08-24T18:04:45Z"
+source_urls:
+  - https://opencode.ai/docs/go/
+models:
+  opencode-go:deepseek-v4-flash:
+    model_id: opencode-go:deepseek-v4-flash
+    rules:
+      - min_prompt_tokens: 0
+        time_band: off_peak
+        input_uncached_per_million: "0.22"
+        input_cached_per_million: "0.007"
+        output_per_million: "0.66"
+      - min_prompt_tokens: 0
+        max_prompt_tokens: null
+        time_band: peak
+        input_uncached_per_million: "0.44"
+        input_cached_per_million: "0.014"
+        output_per_million: "1.32"
+  opencode-go:muse-spark-1.2-contributor:
+    model_id: opencode-go:muse-spark-1.2-contributor
+    rules:
+      - min_prompt_tokens: 0
+        max_prompt_tokens: null
+        time_band: all
+        input_uncached_per_million: "0.10"
+        input_cached_per_million: "0.002"
+        output_per_million: "0.20"
+  opencode-go:mimo-v2.5:
+    model_id: opencode-go:mimo-v2.5
+    rules:
+      - min_prompt_tokens: 0
+        max_prompt_tokens: null
+        time_band: all
+        input_uncached_per_million: "0.14"
+        input_cached_per_million: "0.0028"
+        output_per_million: "0.28"

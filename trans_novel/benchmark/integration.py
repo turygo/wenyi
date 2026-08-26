@@ -776,10 +776,7 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
             or not isinstance(candidate.get("provider"), str)
             or not isinstance(candidate.get("primary_model"), str)
             or not isinstance(candidate.get("fast_model"), str)
-            or (
-                candidate.get("editor_model") is not None
-                and not isinstance(candidate.get("editor_model"), str)
-            )
+            or not isinstance(candidate.get("editor_model"), str)
             or isinstance(candidate.get("temperature"), bool)
             or not isinstance(candidate.get("temperature"), int | float)
             or (
@@ -799,39 +796,11 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
         raise IntegrationError("integration candidates must share one fast model")
     provider = next(iter(providers))
     if any(
-        candidate["editor_model"] is None
-        or candidate["temperature"] != 0.1
-        or candidate["seed"] is not None
+        candidate["temperature"] != 0.1 or candidate["seed"] is not None
         for candidate in request["candidates"].values()
     ):
-        raise IntegrationError("integration candidates must be polished with fixed controls")
+        raise IntegrationError("integration candidates require fixed generation controls")
     try:
-        transient_candidates: list[dict[str, Any]] = []
-        control_primaries: set[str] = set()
-        selected_ids = set(request["candidate_ids"])
-        for index, cid in enumerate(request["candidate_ids"]):
-            candidate = request["candidates"][cid]
-            transient_candidates.append(
-                {
-                    "candidate_id": cid,
-                    "primary_model": candidate["primary_model"],
-                    "editor_model": candidate["editor_model"],
-                }
-            )
-            primary = candidate["primary_model"]
-            if primary in control_primaries:
-                continue
-            control_id = f"terminal-control-{index}"
-            while control_id in selected_ids:
-                control_id = f"{control_id}-x"
-            transient_candidates.append(
-                {
-                    "candidate_id": control_id,
-                    "primary_model": primary,
-                    "editor_model": None,
-                }
-            )
-            control_primaries.add(primary)
         candidate_spec = CandidateSpec.model_validate(
             {
                 "schema_version": 1,
@@ -841,8 +810,14 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
                 "temperature": 0.1,
                 "seed": None,
                 "replicates": 1,
-                "default_context_strategy": "c2",
-                "candidates": transient_candidates,
+                "candidates": [
+                    {
+                        "candidate_id": cid,
+                        "primary_model": request["candidates"][cid]["primary_model"],
+                        "editor_model": request["candidates"][cid]["editor_model"],
+                    }
+                    for cid in request["candidate_ids"]
+                ],
             }
         )
         validate_candidate_capabilities(candidate_spec)
@@ -1126,7 +1101,7 @@ def _quality_config(spec: CandidateSpec, candidate: Candidate, state_dir: Path) 
     config = FullRunner._config(
         spec,
         candidate.primary_model,
-        candidate.editor_model or candidate.primary_model,
+        candidate.editor_model,
         quality=True,
         state_dir=str(state_dir),
     )
@@ -1159,7 +1134,7 @@ class IntegrationRunner:
     ) -> Any:
         roles = ModelRoles(
             primary=candidate.primary_model,
-            editor=candidate.editor_model or candidate.primary_model,
+            editor=candidate.editor_model,
             fast=spec.fast_model,
         )
         if self.client is not None:
@@ -1327,8 +1302,6 @@ class IntegrationRunner:
         if any(cid not in selected for cid in spec.candidate_ids):
             raise IntegrationError("integration selects an unknown candidate")
         chosen = [selected[cid] for cid in spec.candidate_ids]
-        if any(candidate.editor_model is None for candidate in chosen):
-            raise IntegrationError("integration candidates must be polished, not controls")
         book_spec = load_book_spec(book_spec_path)
         hidden = [
             book

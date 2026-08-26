@@ -1,0 +1,34 @@
+schema_version: 1
+source_language: en
+target_language: zh
+books:
+  - book_id: screen-01
+    path: benchmark_data/sources/screen-01.epub
+    split: screen
+  - book_id: screen-02
+    path: benchmark_data/sources/screen-02.epub
+    split: screen
+  - book_id: screen-03
+    path: benchmark_data/sources/screen-03.epub
+    split: screen
+  - book_id: formal-01
+    path: benchmark_data/single-chapter-sources/formal-01.epub
+    split: formal
+  - book_id: formal-02
+    path: benchmark_data/single-chapter-sources/formal-02.epub
+    split: formal
+  - book_id: formal-03
+    path: benchmark_data/single-chapter-sources/formal-03.epub
+    split: formal
+  - book_id: formal-04
+    path: benchmark_data/single-chapter-sources/formal-04.epub
+    split: formal
+  - book_id: formal-05
+    path: benchmark_data/single-chapter-sources/formal-05.epub
+    split: formal
+  - book_id: formal-06
+    path: benchmark_data/single-chapter-sources/formal-06.epub
+    split: formal
+  - book_id: hidden-01
+    path: benchmark_data/sources/hidden-01.epub
+    split: hidden
