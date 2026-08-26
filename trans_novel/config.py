@@ -172,7 +172,7 @@ class PipelineConfig(BaseModel):
             "balanced": {
                 "review": True,
                 "autofix_severe": True,
-                "polish": False,
+                "polish": True,
                 "backtranslate_sample": 0,
                 "consistency_qa": False,
                 "book_understanding": True,

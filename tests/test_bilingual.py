@@ -188,7 +188,7 @@ class TestBuildEpubFromChaptersBilingual(unittest.TestCase):
                 bodies = {n: z.read(n).decode("utf-8") for n in xhtml_names}
             all_html = "\n".join(bodies.values())
             self.assertIn("tn-source", all_html)
-            self.assertIn("译0", all_html)  # 译文仍在（fake 翻译器返回 译N）
+            self.assertIn("润0", all_html)  # balanced preset applies the fake editor output
             some_head_has_style = any(
                 "tn-bilingual-style" in html
                 and "@media (prefers-color-scheme: dark)" in html
@@ -207,9 +207,9 @@ class TestAssembleTextBilingual(unittest.TestCase):
             out = assemble(store, txt, out_format="txt", bilingual=True, order="target_first")
             with open(out, encoding="utf-8") as f:
                 content = f.read()
-            self.assertIn("译1", content)  # 译文（段落1，段落0是标题）
+            self.assertIn("润1", content)  # polished paragraph (segment 0 is the title)
             self.assertIn("綾小路は教室の窓際に座っていた", content)  # 原文
-            tgt_pos = content.index("译1")
+            tgt_pos = content.index("润1")
             src_pos = content.index("綾小路は教室の窓際に座っていた")
             self.assertLess(tgt_pos, src_pos)  # target_first：译文先于原文
 
@@ -221,7 +221,7 @@ class TestAssembleTextBilingual(unittest.TestCase):
             out = assemble(store, txt, out_format="txt", bilingual=True, order="source_first")
             with open(out, encoding="utf-8") as f:
                 content = f.read()
-            tgt_pos = content.index("译1")
+            tgt_pos = content.index("润1")
             src_pos = content.index("綾小路は教室の窓際に座っていた")
             self.assertLess(src_pos, tgt_pos)  # source_first：原文先于译文
 

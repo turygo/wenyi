@@ -48,7 +48,48 @@ class Polisher(Agent):
         if isinstance(items, list) and len(items) == n:
             return [str(x) for x in items]
         if strict:
-            # workflow 必需路径：provider/协议失败必须冒泡（runner 落失败态并重试），
-            # 不得伪装成“润色成功”。
-            raise WorkflowProtocolError("polish_count_mismatch")
+            retry_user = (
+                f"{user}\n\n"
+                f"Your previous response violated the output contract: `polished` must contain "
+                f"exactly {n} strings. Return the complete JSON object again."
+            )
+            items = self._ask_json(
+                system,
+                retry_user,
+                key="polished",
+                default=None,
+                agent="editor",
+                operation="polish.batch",
+                strict=True,
+            )
+            if isinstance(items, list) and len(items) == n:
+                return [str(x) for x in items]
+            recovered: list[str] = []
+            for source, target in zip(sources, targets, strict=True):
+                single_system = prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=1)
+                single_user = prompts.render(
+                    "polisher_user",
+                    src=self.src,
+                    tgt=self.tgt,
+                    glossary=prompts.render_glossary(glossary_terms or []),
+                    style=style or "（无）",
+                    n=1,
+                    numbered_source=prompts.numbered([source]),
+                    numbered_target=prompts.numbered([target]),
+                )
+                single_items = self._ask_json(
+                    single_system,
+                    single_user,
+                    key="polished",
+                    default=None,
+                    agent="editor",
+                    operation="polish.segment",
+                    strict=True,
+                )
+                if not isinstance(single_items, list) or len(single_items) != 1:
+                    # workflow 必需路径：provider/协议失败必须冒泡（runner 落失败态并重试），
+                    # 不得伪装成“润色成功”。
+                    raise WorkflowProtocolError("polish_count_mismatch")
+                recovered.append(str(single_items[0]))
+            return recovered
         return list(targets)  # 独立/宽松路径：失败/段数不符 → 保守保留原译

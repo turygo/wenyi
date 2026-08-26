@@ -123,6 +123,44 @@ class TestPolisher(unittest.TestCase):
         out = p.polish(["甲", "乙"], ["a", "b"])
         self.assertEqual(out, ["甲", "乙"])  # 段数不符 → 保守保留原译
 
+    def test_polish_strict_retries_count_mismatch_once(self):
+        responses = iter(
+            [
+                {"polished": ["只有一段"]},
+                {"polished": ["润色甲", "润色乙"]},
+            ]
+        )
+        client = FakeClient(
+            handler=lambda m, a, o, j: json.dumps(next(responses), ensure_ascii=False)
+        )
+
+        out = Polisher(client, _cfg()).polish(["甲", "乙"], ["a", "b"], strict=True)
+
+        self.assertEqual(out, ["润色甲", "润色乙"])
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("exactly 2 strings", client.calls[-1]["messages"][-1]["content"])
+
+    def test_polish_strict_recovers_each_segment_after_repeated_mismatch(self):
+        responses = iter(
+            [
+                {"polished": ["批次段数错误"]},
+                {"polished": ["重试仍错误"]},
+                {"polished": ["润色甲"]},
+                {"polished": ["润色乙"]},
+            ]
+        )
+        client = FakeClient(
+            handler=lambda m, a, o, j: json.dumps(next(responses), ensure_ascii=False)
+        )
+
+        out = Polisher(client, _cfg()).polish(["甲", "乙"], ["a", "b"], strict=True)
+
+        self.assertEqual(out, ["润色甲", "润色乙"])
+        self.assertEqual(
+            [call["operation"] for call in client.calls],
+            ["polish.batch", "polish.batch", "polish.segment", "polish.segment"],
+        )
+
     def test_polish_prompt_includes_source_for_fidelity(self):
         # 契约：润色必须把源文作为忠实度参照注入 prompt，且落在【源文对照】块内。
         client = FakeClient(
