@@ -71,6 +71,11 @@ def split_long_segments(chapters: list[Chapter], max_chars: int) -> None:
         new_segs: list[Segment] = []
         idx = 0
         for s in ch.segments:
+            if s.epub_state is not None:
+                s.index = idx
+                new_segs.append(s)
+                idx += 1
+                continue
             if len(s.source) <= max_chars:
                 s.index = idx
                 new_segs.append(s)

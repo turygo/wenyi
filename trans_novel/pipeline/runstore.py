@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
-from trans_novel.ingest.models import Chapter, Document
+from trans_novel.ingest.models import Chapter, Document, reset_segment_translation
 from trans_novel.pipeline.migration import migrate_v1_to_v2
 from trans_novel.pipeline.state import (
     NODE_FAILED_PERMANENT,
@@ -304,14 +304,28 @@ class RunStore:
     # ── V2 根状态 ─────────────────────────────────────────────────────────
     def load_state(self) -> RunState:
         self._ensure_migrated()
-        return RunState.model_validate(self._read_json(self.manifest_path))
+        raw = self._read_json(self.manifest_path)
+        if isinstance(raw, dict) and raw.get("fmt") == "epub" and raw.get("source_path"):
+            schema = (raw.get("meta") or {}).get("epub_schema")
+            if not isinstance(schema, int) or schema < 3:
+                raise ValueError(
+                    f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
+                )
+        return RunState.model_validate(raw)
 
     def save_state(self, state: RunState) -> None:
         self._ensure_migrated()
         self._write_json(self.manifest_path, state.model_dump(mode="json"))
 
     def load_manifest(self) -> dict:
-        return self.load_state().model_dump(mode="json")
+        manifest = self.load_state().model_dump(mode="json")
+        if manifest.get("fmt") == "epub" and manifest.get("source_path"):
+            schema = (manifest.get("meta") or {}).get("epub_schema")
+            if not isinstance(schema, int) or schema < 3:
+                raise ValueError(
+                    f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
+                )
+        return manifest
 
     def save_manifest(self, manifest: dict) -> None:
         self.save_state(RunState.model_validate(manifest))
@@ -538,7 +552,7 @@ class RunStore:
         """
         chapter = self.load_chapter(ci)
         for seg in chapter.text_segments:
-            seg.target = None
+            reset_segment_translation(seg)
         self.save_chapter(chapter)
         progress = state.progress.setdefault(ci, ChapterProgress())
         progress.status = STATUS_PENDING
@@ -573,7 +587,7 @@ class RunStore:
         """
         chapter = self.load_chapter(ci)
         for seg in chapter.segments:
-            seg.target = None
+            reset_segment_translation(seg)
         state = self.load_state()
         progress = state.progress.setdefault(ci, ChapterProgress())
         progress.back_matter_mode = None

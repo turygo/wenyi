@@ -17,6 +17,11 @@ from trans_novel.agents.naturalizer import naturalize_chapter
 from trans_novel.agents.reviewer import ReviewOutputError
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
+from trans_novel.ingest.models import (
+    assign_segment_translation,
+    normalize_slot_transport,
+    translation_text,
+)
 from trans_novel.pipeline import checks
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
@@ -349,7 +354,7 @@ class ReviewNode:
             feedback = "；".join(
                 f"{it.get('detail', '')}（建议：{it.get('suggestion', '')}）" for it in seg_issues
             )
-            new_t = self.translator.retranslate_with_feedback(
+            new_transport = self.translator.retranslate_with_feedback(
                 seg.source,
                 feedback=feedback,
                 operation="translate.review_fix",
@@ -359,16 +364,34 @@ class ReviewNode:
                 context_after=after,
                 book_synopsis=book_synopsis,
                 chapter_digest=chapter_digest,
+                segment=seg,
             )
-            accepted = bool(new_t) and not checks.length_flags([seg.source], [new_t])
-            self.translator.client.usage.record_outcome(
-                "translator", "translate.review_fix", accepted=accepted
+            try:
+                new_t = (
+                    translation_text(seg, new_transport)
+                    if seg.epub_state is not None
+                    else new_transport
+                )
+            except (TypeError, ValueError):
+                new_t = ""
+            accepted = (
+                isinstance(new_t, str)
+                and bool(new_t)
+                and not checks.length_flags([seg.source], [new_t])
             )
+            usage = getattr(getattr(self.translator, "client", None), "usage", None)
+            if usage is not None:
+                usage.record_outcome("translator", "translate.review_fix", accepted=accepted)
             if accepted:
+                final_transport = new_transport
                 if self.config.punctuation_normalize:
-                    new_t = normalize_zh(new_t)
+                    final_transport = (
+                        normalize_zh(str(new_t))
+                        if seg.epub_state is None
+                        else normalize_slot_transport(seg, new_transport)
+                    )
                 old_t = seg.target
-                seg.target = new_t
+                assign_segment_translation(seg, final_transport)
                 for it in seg_issues:
                     it["fixed"] = True
                 accepted_entries.append(
@@ -376,7 +399,7 @@ class ReviewNode:
                         "chapter": chapter_index,
                         "index": idx,
                         "before": old_t,
-                        "after": new_t,
+                        "after": seg.target,
                         "issues": [dict(it) for it in seg_issues],
                     }
                 )

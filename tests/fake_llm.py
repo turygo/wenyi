@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 
@@ -55,12 +56,46 @@ def routing_handler(messages, agent, operation, json_mode):
 
     if "文学翻译" in system:
         n = _count_numbered(user)
+        marker = "【EPUB 槽位协议】\n"
+        if marker in user:
+            try:
+                expected = json.loads(user.split(marker, 1)[1].split("\n", 1)[0])
+                return json.dumps(
+                    {
+                        "translations": [
+                            {
+                                "slots": [
+                                    {"id": slot["id"], "core": f"译{i}"} for slot in item["slots"]
+                                ]
+                            }
+                            for i, item in enumerate(expected)
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+                return json.dumps({"translations": []}, ensure_ascii=False)
         return json.dumps({"translations": [f"译{i}" for i in range(n)]}, ensure_ascii=False)
 
     if "中文润色编辑" in system:
-        # prompt 含【源文对照】+【待润色中文译文】两个编号块；只按待润色块计数。
         target_block = user.split("【待润色中文译文】", 1)[-1]
         n = _count_numbered(target_block)
+        if "【EPUB 槽位协议】" in user:
+            records = []
+            for line in target_block.splitlines():
+                match = re.match(r"^\[\d+\] (.+)$", line)
+                if match:
+                    with contextlib.suppress(json.JSONDecodeError):
+                        records.append(json.loads(match.group(1)))
+            return json.dumps(
+                {
+                    "polished": [
+                        {"slots": [{"id": slot["id"], "core": "润"} for slot in item]}
+                        for item in records
+                    ]
+                },
+                ensure_ascii=False,
+            )
         return json.dumps({"polished": [f"润{i}" for i in range(n)]}, ensure_ascii=False)
 
     if "译文审校" in system:

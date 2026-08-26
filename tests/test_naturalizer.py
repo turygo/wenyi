@@ -18,7 +18,14 @@ from trans_novel.agents.naturalizer import (
     run_naturalize,
 )
 from trans_novel.config import Config
-from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
+from trans_novel.ingest.models import (
+    KIND_HEADING,
+    KIND_TEXT,
+    Chapter,
+    EpubSegmentState,
+    EpubTextSlot,
+    Segment,
+)
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.runstore import RunStore
 from trans_novel.pipeline.state import ChapterIndex, ChapterProgress, RunIdentity, RunState
@@ -30,6 +37,43 @@ def _config(state_dir: str = "state") -> Config:
     config.source_lang = "en"
     config.state_dir = state_dir
     return config
+
+
+def _epub_seg() -> Segment:
+    slots = [
+        EpubTextSlot(
+            id="slot-a",
+            element_path=(0,),
+            field="text",
+            source_value="Alpha ",
+            trailing_whitespace=" ",
+            source_core="Alpha",
+            target_core="旧甲",
+        ),
+        EpubTextSlot(
+            id="slot-b",
+            element_path=(0,),
+            field="tail",
+            source_value="Beta",
+            source_core="Beta",
+            target_core="旧乙",
+        ),
+    ]
+    return Segment(
+        index=0,
+        source="Alpha Beta",
+        target="旧甲 旧乙",
+        resource_href="OEBPS/ch.xhtml",
+        epub_state=EpubSegmentState(
+            resource_href="OEBPS/ch.xhtml",
+            resource_sha256="resource",
+            block_path=(0,),
+            block_fingerprint="block",
+            parse_mode="xml",
+            slots=slots,
+            slot_contract_sha256="contract",
+        ),
+    )
 
 
 def _seg(
@@ -550,6 +594,66 @@ class TestFidelityGate(unittest.TestCase):
             self.assertEqual(stats["fidelity_rejected"], 1)
             self.assertEqual(stats["applied"], 0)
             self.assertTrue(store.load_progress(0).naturalized)
+
+
+class TestNaturalizerEpubSlots(unittest.TestCase):
+    def test_naturalize_rewrite_preserves_ordered_slots(self):
+        pair_calls = 0
+
+        def handler(messages, agent, operation, json_mode):
+            nonlocal pair_calls
+            system = messages[0]["content"]
+            if "书稿的母语审读编辑" in system:
+                return json.dumps(
+                    {"issues": [{"index": 0, "quote": "旧甲", "reason": "翻译腔"}]},
+                    ensure_ascii=False,
+                )
+            if "改写编辑" in system:
+                return json.dumps(
+                    {
+                        "rewritten": {
+                            "slots": [
+                                {"id": "slot-a", "core": "新甲"},
+                                {"id": "slot-b", "core": "新乙"},
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+            if "双语翻译审核员" in system:
+                return json.dumps({"faithful": True}, ensure_ascii=False)
+            if "两个版本" in system:
+                pair_calls += 1
+                return json.dumps(
+                    {"winner": "B" if pair_calls == 1 else "A"},
+                    ensure_ascii=False,
+                )
+            return "{}"
+
+        with tempfile.TemporaryDirectory() as directory:
+            segment = _epub_seg()
+            chapter = Chapter(index=0, title="第一章", segments=[segment])
+            store = _make_store(directory, [chapter])
+            config = _config(os.path.join(directory, "state"))
+            stats = naturalize_chapter(
+                Naturalizer(FakeClient(handler=handler), config),
+                chapter,
+                0,
+                1,
+                [],
+                config,
+                store,
+                dry_run=False,
+                remaining=None,
+            )
+
+            self.assertEqual(stats["applied"], 1)
+            saved = store.load_chapter(0).segments[0]
+            self.assertEqual(saved.target, "新甲 新乙")
+            self.assertEqual(
+                [slot.target_core for slot in saved.epub_state.slots],
+                ["新甲", "新乙"],
+            )
 
 
 class _FakeGlossary:

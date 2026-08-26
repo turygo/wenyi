@@ -10,15 +10,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import zipfile
+from copy import deepcopy
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
+from lxml import etree
 
 from trans_novel.ingest.epub_toc import nav_root_list, nav_toc_scopes
 from trans_novel.ingest.fb2_reader import read_fb2_binaries
-from trans_novel.ingest.models import KIND_HEADING, Chapter, Segment
+from trans_novel.ingest.models import (
+    KIND_HEADING,
+    Chapter,
+    EpubTextSlot,
+    Segment,
+    _normalized_slot_text,
+    _slot_contract_digest,
+)
 from trans_novel.pipeline.runstore import RunStore
 from trans_novel.postprocess.punct import normalize_heading_numbering
 
@@ -645,6 +655,11 @@ def _toc_kind_at(toc_entries: list[dict[str, object]], name: str) -> str | None:
         if entry.get("toc_path") == name:
             kind = entry.get("kind")
             return kind if isinstance(kind, str) else None
+    lowered = name.lower()
+    if lowered.endswith(".ncx"):
+        return "ncx"
+    if lowered.endswith(("/nav.xhtml", "/nav.html", "nav.xhtml", "nav.html")):
+        return "nav"
     return None
 
 
@@ -728,6 +743,517 @@ def _rewrite_toc(
         return data
 
 
+def _parse_source_markup(data: bytes, expected_mode: str | None = None):
+    from trans_novel.ingest.epub_reader import _resource_parser
+
+    tree, mode, _diagnostics = _resource_parser(data)
+    if expected_mode and mode != expected_mode:
+        raise ValueError(f"EPUB parse mode mismatch: expected {expected_mode}, got {mode}")
+    return tree, mode
+
+
+def _element_children_lxml(element: etree._Element) -> list[etree._Element]:
+    return [child for child in element if isinstance(child.tag, str)]
+
+
+def _resolve_element_path(root: etree._Element, path: tuple[int, ...]) -> etree._Element:
+    current = root
+    for index in path:
+        children = _element_children_lxml(current)
+        if index < 0 or index >= len(children):
+            raise ValueError("EPUB block/slot locator mismatch")
+        current = children[index]
+    return current
+
+
+def _serialize_source_tree(tree: etree._ElementTree, data: bytes, mode: str) -> bytes:
+    probe = data
+    for bom in (b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff"):
+        if probe.startswith(bom):
+            probe = probe[len(bom) :]
+            break
+    declaration = bool(re.match(rb"\s*<\?xml\b", probe))
+    if mode == "recovered":
+        return etree.tostring(tree, encoding="UTF-8", xml_declaration=declaration, method="xml")
+    encoding = tree.docinfo.encoding or "UTF-8"
+    return etree.tostring(
+        tree,
+        encoding=encoding,
+        xml_declaration=declaration,
+        doctype=tree.docinfo.doctype or None,
+        method="xml",
+    )
+
+
+def _rewrite_markup_languages(tree: etree._Element, target_lang: str) -> None:
+    xml_lang = "{http://www.w3.org/XML/1998/namespace}lang"
+    root = tree.getroottree().getroot()
+    for key in ("lang", xml_lang):
+        if key in root.attrib:
+            root.attrib[key] = target_lang
+
+
+def _set_visible_label(node: etree._Element, title: str) -> None:
+    node.text = title
+    for descendant in node.iterdescendants():
+        descendant.text = None
+        descendant.tail = None
+
+
+def _rewrite_toc_lxml(
+    data: bytes,
+    entries: list[dict[str, object]],
+    *,
+    is_ncx: bool,
+    toc_path: str,
+    target_lang: str,
+    expected_mode: str | None = None,
+) -> bytes:
+    tree, mode = _parse_source_markup(data, expected_mode)
+    root = tree.getroot()
+    indexed = _indexed_toc_entries(entries, toc_path)
+    if is_ncx:
+        points = [
+            node
+            for node in root.iter()
+            if isinstance(node.tag, str) and node.tag.rsplit("}", 1)[-1] == "navPoint"
+        ]
+        for node_index, point in enumerate(points):
+            entry = indexed.get(node_index)
+            if entry is None:
+                continue
+            content = next(
+                (
+                    child
+                    for child in point.iter()
+                    if isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1] == "content"
+                ),
+                None,
+            )
+            expected = entry.get("raw_href")
+            if isinstance(expected, str) and content is not None and content.get("src") != expected:
+                raise ValueError(f"EPUB TOC href mismatch in {toc_path}")
+            label = next(
+                (
+                    node
+                    for node in point.iter()
+                    if isinstance(node.tag, str) and node.tag.rsplit("}", 1)[-1] == "text"
+                ),
+                None,
+            )
+            title = _translated_toc_title(entry)
+            if label is not None and title:
+                _set_visible_label(label, title)
+
+    else:
+        labels: list[tuple[etree._Element, str]] = []
+        from trans_novel.ingest.epub_reader import _nav_toc_roots
+
+        def visit_li(li: etree._Element) -> None:
+            label = next(
+                (
+                    child
+                    for child in li
+                    if isinstance(child.tag, str)
+                    and child.tag.rsplit("}", 1)[-1].lower() in {"a", "span"}
+                ),
+                None,
+            )
+            if label is not None:
+                labels.append((label, _attr_local_lxml(label, "href")))
+            child_ol = next(
+                (
+                    child
+                    for child in li
+                    if isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1].lower() == "ol"
+                ),
+                None,
+            )
+            if child_ol is not None:
+                for child in child_ol:
+                    if isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1].lower() == "li":
+                        visit_li(child)
+
+        for root_list in _nav_toc_roots(root):
+            for li in root_list:
+                if isinstance(li.tag, str) and li.tag.rsplit("}", 1)[-1].lower() == "li":
+                    visit_li(li)
+        for node_index, (label, raw_href) in enumerate(labels):
+            entry = indexed.get(node_index)
+            if entry is None:
+                continue
+            expected = entry.get("raw_href")
+            if isinstance(expected, str) and expected != raw_href:
+                raise ValueError(f"EPUB TOC href mismatch in {toc_path}")
+            title = _translated_toc_title(entry)
+            if title:
+                _set_visible_label(label, title)
+    _rewrite_markup_languages(root, target_lang)
+    return _serialize_source_tree(tree, data, mode)
+
+
+def _resolve_slot_owner(
+    block: etree._Element, path: tuple[int, ...], field: str, source_value: str
+) -> etree._Element:
+    owner = _resolve_element_path(block, path)
+    if field != "tail" or owner.tail == source_value:
+        return owner
+    matches = [
+        node for node in block.iter() if not isinstance(node.tag, str) and node.tail == source_value
+    ]
+    if len(matches) != 1:
+        raise ValueError("EPUB slot locator mismatch")
+    return matches[0]
+
+
+def _attr_local_lxml(element: etree._Element, name: str) -> str:
+    for key, value in element.attrib.items():
+        if key.rsplit("}", 1)[-1].split(":", 1)[-1] == name:
+            return value
+    return ""
+
+
+def _sanitized_source_copy(original: etree._Element, block: etree._Element) -> etree._Element:
+    """Copy visible source structure without duplicating active EPUB nodes."""
+    atomic = {"audio", "canvas", "embed", "img", "math", "object", "svg", "video"}
+
+    def clone(node: etree._Element, *, root: bool = False):
+        local = node.tag.rsplit("}", 1)[-1].lower() if isinstance(node.tag, str) else ""
+        if not root and local in atomic:
+            return None
+        copied = etree.Element(node.tag)
+        copied.text = node.text
+        for child in node:
+            if not isinstance(child.tag, str):
+                continue
+            child_copy = clone(child)
+            if child_copy is not None:
+                copied.append(child_copy)
+                if child.tail:
+                    child_copy.tail = child.tail
+            elif child.tail:
+                copied.text = (copied.text or "") + child.tail
+        return copied
+
+    return clone(original, root=True)
+
+
+def _add_bilingual_sources(
+    root: etree._Element,
+    segments: list[Segment],
+    *,
+    order: str = "target_first",
+    source_blocks: dict[tuple[int, ...], etree._Element] | None = None,
+    block_refs: dict[tuple[int, ...], etree._Element] | None = None,
+) -> None:
+    """Add source copies while preserving ruby/inline structure and ordering."""
+    grouped: dict[tuple[int, ...], list[Segment]] = {}
+    for segment in segments:
+        state = segment.epub_state
+        if (
+            state is None
+            or segment.kind == KIND_HEADING
+            or not segment.target
+            or segment.target.strip() == segment.source.strip()
+        ):
+            continue
+        grouped.setdefault(state.block_path, []).append(segment)
+
+    for block_path, block_segments in grouped.items():
+        block = block_refs.get(block_path) if block_refs else None
+        if block is None:
+            block = _resolve_element_path(root, block_path)
+        original = source_blocks.get(block_path) if source_blocks else None
+        tag = block.tag.rsplit("}", 1)[-1].lower() if isinstance(block.tag, str) else "p"
+        container = tag in {"li", "blockquote", "td", "th"}
+
+        # A direct ``<br>`` creates one segment per text/tail slot in the
+        # same block.  Wrap each translated slot so every source node has an
+        # unambiguous adjacent target without flattening or re-splitting text.
+        if len(block_segments) > 1 and not container:
+            namespace = block.nsmap.get(None)
+            span_name = f"{{{namespace}}}span" if namespace else "span"
+            if all(
+                segment.epub_state is not None and len(segment.epub_state.slots) == 1
+                for segment in block_segments
+            ):
+                owners: list[tuple[Segment, EpubTextSlot, etree._Element]] = []
+                for segment in block_segments:
+                    state = segment.epub_state
+                    assert state is not None
+                    slot = state.slots[0]
+                    owners.append((segment, slot, _resolve_element_path(block, slot.element_path)))
+                for segment, slot, owner in owners:
+                    state = segment.epub_state
+                    assert state is not None
+                    source = etree.Element(span_name)
+                    source.text = segment.source
+                    source.set("class", "tn-source ibooks-dark-theme-use-custom-text-color")
+                    target = etree.Element(span_name)
+                    target.text = owner.text if slot.field == "text" else owner.tail
+                    if slot.field == "text":
+                        owner.text = None
+                        if order == "source_first":
+                            owner.insert(0, source)
+                            owner.insert(1, target)
+                        else:
+                            owner.insert(0, target)
+                            owner.insert(1, source)
+                    else:
+                        owner.tail = None
+                        if order == "source_first":
+                            owner.addnext(source)
+                            source.addnext(target)
+                        else:
+                            owner.addnext(target)
+                            target.addnext(source)
+                continue
+
+        sources: list[etree._Element] = []
+        source_tag = "div" if container else "p"
+        for segment in block_segments:
+            if original is not None and len(block_segments) == 1 and not container:
+                source = _sanitized_source_copy(original, block)
+                source.tag = (
+                    f"{{{block.nsmap.get(None)}}}{source_tag}"
+                    if block.nsmap.get(None)
+                    else source_tag
+                )
+            else:
+                namespace = block.nsmap.get(None)
+                source_name = f"{{{namespace}}}{source_tag}" if namespace else source_tag
+                source = etree.Element(source_name)
+                source.text = segment.source
+            source.set("class", "tn-source ibooks-dark-theme-use-custom-text-color")
+            source.tail = None
+            sources.append(source)
+
+        if container:
+            if order == "source_first":
+                for source in reversed(sources):
+                    source.tail = block.text
+                    block.text = None
+                    block.insert(0, source)
+            else:
+                for source in sources:
+                    block.append(source)
+        elif order == "source_first":
+            for source in reversed(sources):
+                block.addprevious(source)
+        else:
+            old_tail = block.tail
+            block.tail = None
+            anchor = block
+            for index, source in enumerate(sources):
+                if index == len(sources) - 1:
+                    source.tail = old_tail
+                anchor.addnext(source)
+                anchor = source
+
+
+def _render_source_resource(
+    data: bytes,
+    href: str,
+    segments: list[Segment],
+    *,
+    expected_digest: str,
+    expected_mode: str,
+    target_lang: str,
+    bilingual: bool = False,
+    order: str = "target_first",
+) -> bytes:
+    actual_digest = hashlib.sha256(data).hexdigest()
+    if actual_digest != expected_digest:
+        raise ValueError(f"EPUB resource digest mismatch: {href}")
+    tree, mode = _parse_source_markup(data, expected_mode)
+    root = tree.getroot()
+    writes: list[tuple[etree._Element, str, str]] = []
+    source_blocks: dict[tuple[int, ...], etree._Element] = {}
+    block_refs: dict[tuple[int, ...], etree._Element] = {}
+    for segment in segments:
+        state = segment.epub_state
+        if state is None:
+            raise ValueError(f"EPUB segment missing slot state: {href}")
+        if state.resource_href != href or state.resource_sha256 != actual_digest:
+            raise ValueError(f"EPUB segment resource contract mismatch: {href}")
+        if state.slot_contract_sha256 != _slot_contract_digest(state.slots):
+            raise ValueError(f"EPUB slot contract digest mismatch: {href}")
+        block = _resolve_element_path(root, state.block_path)
+        block_refs.setdefault(state.block_path, block)
+        if bilingual and state.block_path not in source_blocks:
+            source_blocks[state.block_path] = deepcopy(block)
+        expected_fingerprint = hashlib.sha256(
+            etree.tostring(block, encoding="utf-8", with_tail=False)
+        ).hexdigest()
+        if expected_fingerprint != state.block_fingerprint:
+            raise ValueError(f"EPUB block fingerprint mismatch: {href}")
+        if segment.source != _normalized_slot_text(state.slots, target=False):
+            raise ValueError(f"EPUB segment source derivation mismatch: {href}")
+        expected_target = _normalized_slot_text(state.slots, target=True)
+        if segment.target is None:
+            if any(slot.target_core is not None for slot in state.slots):
+                raise ValueError(f"EPUB segment target derivation mismatch: {href}")
+        elif segment.target != expected_target:
+            raise ValueError(f"EPUB segment target derivation mismatch: {href}")
+        for slot in state.slots:
+            owner = _resolve_element_path(block, slot.element_path)
+            value = owner.text if slot.field == "text" else owner.tail
+            if value != slot.source_value:
+                raise ValueError(f"EPUB slot source mismatch: {href}")
+            core = slot.target_core if slot.target_core is not None else slot.source_core
+            if segment.kind == KIND_HEADING:
+                core = normalize_heading_numbering(core)
+            if not slot.source_core.strip() and core.strip():
+                raise ValueError(f"EPUB whitespace-only slot target: {href}")
+            writes.append(
+                (owner, slot.field, slot.leading_whitespace + core + slot.trailing_whitespace)
+            )
+    for owner, field, replacement in writes:
+        if field == "text":
+            owner.text = replacement
+        else:
+            owner.tail = replacement
+    if bilingual:
+        _add_bilingual_sources(
+            root,
+            segments,
+            order=order,
+            source_blocks=source_blocks,
+            block_refs=block_refs,
+        )
+    _rewrite_markup_languages(root, target_lang)
+    return _serialize_source_tree(tree, data, mode)
+
+
+def _assemble_source_epub(
+    store: RunStore,
+    source_path: str,
+    out_path: str,
+    *,
+    target_lang: str,
+    bilingual: bool = False,
+    order: str = "target_first",
+) -> str:
+    manifest = store.load_manifest()
+    raw_meta = manifest.get("meta")
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    schema = meta.get("epub_schema")
+    if not isinstance(schema, int) or schema < 3:
+        raise ValueError(
+            f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
+        )
+    expected_archive = meta.get("epub_sha256")
+    with open(source_path, "rb") as source_file:
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+        actual_archive = digest.hexdigest()
+    if expected_archive != actual_archive:
+        raise ValueError("EPUB source archive digest mismatch")
+    resources_meta = {
+        str(item.get("href")): item
+        for item in meta.get("epub_resources", [])
+        if isinstance(item, dict) and isinstance(item.get("href"), str)
+    }
+    chapters = [store.load_chapter(c["index"]) for c in manifest["chapters"]]
+    grouped: dict[str, list[Segment]] = {}
+    seen_slots: set[tuple[str, tuple[int, ...], tuple[int, ...], str]] = set()
+    for chapter in chapters:
+        for segment in chapter.segments:
+            if segment.epub_state is None or not segment.resource_href:
+                raise ValueError("EPUB state contains a segment without schema-3 slot metadata")
+            state = segment.epub_state
+            if state.slot_contract_sha256 != _slot_contract_digest(state.slots):
+                raise ValueError(f"EPUB slot contract digest mismatch: {segment.resource_href}")
+            for slot in state.slots:
+                key = (
+                    segment.resource_href,
+                    state.block_path,
+                    slot.element_path,
+                    slot.field,
+                )
+                if key in seen_slots:
+                    raise ValueError(f"EPUB slot contract overlap: {segment.resource_href}")
+                seen_slots.add(key)
+            grouped.setdefault(segment.resource_href, []).append(segment)
+    toc_entries = [entry for entry in meta.get("toc_entries", []) if isinstance(entry, dict)]
+    with zipfile.ZipFile(source_path, "r") as zin, zipfile.ZipFile(out_path, "w") as zout:
+        for info in zin.infolist():
+            name = info.filename
+            data = zin.read(name)
+            low = name.lower()
+            resource_info = resources_meta.get(name)
+            if resource_info is not None and hashlib.sha256(data).hexdigest() != str(
+                resource_info.get("resource_sha256", "")
+            ):
+                raise ValueError(f"EPUB resource digest mismatch: {name}")
+            if name == "mimetype":
+                zout.writestr(info, data, zipfile.ZIP_STORED)
+            elif low.endswith(".opf"):
+                tree, mode = _parse_source_markup(data)
+                _rewrite_opf_language_lxml(tree, target_lang)
+                zout.writestr(info, _serialize_source_tree(tree, data, mode))
+            elif name in grouped:
+                resource = resources_meta.get(name)
+                if resource is None:
+                    raise ValueError(f"EPUB resource missing persisted metadata: {name}")
+                rendered = _render_source_resource(
+                    data,
+                    name,
+                    grouped[name],
+                    expected_digest=str(resource.get("resource_sha256", "")),
+                    expected_mode=str(resource.get("parse_mode", "")),
+                    target_lang=target_lang,
+                    bilingual=bilingual,
+                    order=order,
+                )
+                toc_kind = _toc_kind_at(toc_entries, name)
+                if toc_kind in {"nav", "ncx"}:
+                    rendered = _rewrite_toc_lxml(
+                        rendered,
+                        toc_entries,
+                        is_ncx=toc_kind == "ncx",
+                        toc_path=name,
+                        target_lang=target_lang,
+                    )
+                zout.writestr(info, rendered)
+            elif _toc_kind_at(toc_entries, name) in {"nav", "ncx"}:
+                resource = resources_meta.get(name)
+                expected_mode = str(resource.get("parse_mode", "")) if resource else None
+                kind = _toc_kind_at(toc_entries, name)
+                zout.writestr(
+                    info,
+                    _rewrite_toc_lxml(
+                        data,
+                        toc_entries,
+                        is_ncx=kind == "ncx",
+                        toc_path=name,
+                        target_lang=target_lang,
+                        expected_mode=expected_mode,
+                    ),
+                )
+            elif name in resources_meta and low.endswith(_HTML_EXTS):
+                resource = resources_meta[name]
+                tree, mode = _parse_source_markup(data, str(resource.get("parse_mode", "")))
+                _rewrite_markup_languages(tree.getroot(), target_lang)
+                zout.writestr(info, _serialize_source_tree(tree, data, mode))
+            else:
+                zout.writestr(info, data)
+    if bilingual:
+        chapter_filenames = {
+            os.path.basename(href) for href in resources_meta if href.lower().endswith(_HTML_EXTS)
+        }
+        _inject_bilingual_style(out_path, chapter_filenames, target_lang)
+    return out_path
+
+
+def _rewrite_opf_language_lxml(tree: etree._ElementTree, target_lang: str) -> None:
+    dc_language = "{http://purl.org/dc/elements/1.1/}language"
+    for node in tree.getroot().iter():
+        if node.tag == dc_language:
+            node.text = target_lang
+
+
 def _assemble_epub(
     store: RunStore,
     source_path: str,
@@ -745,6 +1271,20 @@ def _assemble_epub(
     """
     m = store.load_manifest()
     target_lang = _epub_lang(m.get("target_lang", "zh"))
+    meta = m.get("meta") if isinstance(m.get("meta"), dict) else {}
+    schema = meta.get("epub_schema")
+    if not isinstance(schema, int) or schema < 3:
+        raise ValueError(
+            f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
+        )
+    return _assemble_source_epub(
+        store,
+        source_path,
+        out_path,
+        target_lang=target_lang,
+        bilingual=bilingual,
+        order=order,
+    )
     raw_source_lang = m.get("source_lang", "")
     source_lang = raw_source_lang if isinstance(raw_source_lang, str) else ""
     raw_meta = m.get("meta")

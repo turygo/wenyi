@@ -705,6 +705,8 @@ class Application:
     ) -> tuple[RunResult, RunStore]:
         run_dir = os.path.join(self.config.state_dir, slugify(doc.title))
         store = RunStore(run_dir)
+        if store.exists() and doc.fmt == "epub":
+            store.load_manifest()
         shared = RunShared(
             store=store,
             config=self.config,

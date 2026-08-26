@@ -12,6 +12,13 @@ from __future__ import annotations
 
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
+from trans_novel.ingest.models import (
+    assign_segment_translation,
+    normalize_slot_transport,
+    reset_segment_translation,
+    slot_transport,
+    translation_text,
+)
 from trans_novel.ingest.segmenter import batch_segments
 from trans_novel.pipeline import checkpoint, lint
 from trans_novel.pipeline.backmatter import is_back_matter
@@ -166,9 +173,13 @@ class TranslateNode:
                 continue
 
             ctx_text = context.render(config.pipeline.rolling_context_segments)
-            raw_targets = self._process_batch(
+            raw_transports = self._process_batch(
                 b, term_snapshot, ctx_text, style, book_synopsis, chapter_digest
             )
+            raw_targets: list[str] = []
+            for segment, transport in zip(b, raw_transports, strict=True):
+                assign_segment_translation(segment, transport)
+                raw_targets.append(segment.target or "")
 
             # 确定性 lint（零 LLM）：flag 段带审校意见定向重译，每段最多一轮。
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
@@ -217,7 +228,7 @@ class TranslateNode:
 
                 def _apply_fix_result(
                     idx: int,
-                    new_t: str,
+                    new_t: object,
                     *,
                     by_idx: dict[int, list] = by_idx,
                     b: list = b,
@@ -228,32 +239,38 @@ class TranslateNode:
                 ) -> None:
                     seg_issues = by_idx[idx]
                     seg = b[idx]
+                    try:
+                        candidate_text = translation_text(seg, new_t) if seg.epub_state else new_t
+                    except ValueError:
+                        candidate_text = ""
                     new_issues = (
                         lint.lint_targets(
                             [seg.source],
-                            [new_t],
+                            [candidate_text],
                             locked_terms=locked,
                             src_lang=self.translator.src,
                         )
-                        if new_t
+                        if isinstance(candidate_text, str) and candidate_text
                         else []
                     )
-                    if new_t and len(new_issues) < len(seg_issues):
+                    if candidate_text and len(new_issues) < len(seg_issues):
                         self.translator.client.usage.record_outcome(
                             "translator", "translate.lint_fix", accepted=True
                         )
+                        old_text = raw_targets[idx]
+                        assign_segment_translation(seg, new_t)
+                        raw_targets[idx] = seg.target or ""
                         lint_refixed_entries.append(
                             {
                                 "chapter": ci,
                                 "index": seg_base + idx,
-                                "before": raw_targets[idx],
-                                "after": new_t,
+                                "before": old_text,
+                                "after": raw_targets[idx],
                                 "issues": [
                                     {"type": it.type, "detail": it.detail} for it in seg_issues
                                 ],
                             }
                         )
-                        raw_targets[idx] = new_t
                         remaining = new_issues
                     else:
                         self.translator.client.usage.record_outcome(
@@ -285,6 +302,7 @@ class TranslateNode:
                         style=style,
                         book_synopsis=book_synopsis,
                         chapter_digest=chapter_digest,
+                        segments=b,
                     )
                     if len(merged) == len(actionable_idx):
                         merged_targets = dict(zip(actionable_idx, merged, strict=False))
@@ -310,10 +328,9 @@ class TranslateNode:
                             context_after=after,
                             book_synopsis=book_synopsis,
                             chapter_digest=chapter_digest,
+                            segment=seg,
                         )
                         _apply_fix_result(idx, new_t)
-            for s, t in zip(b, raw_targets, strict=False):
-                s.target = t
             batch_start = seg_base
             request.shared.segments_done += len(b)
             seg_base += len(b)
@@ -324,18 +341,24 @@ class TranslateNode:
                 event_targets = raw_targets
                 punctuation_normalized = False
             else:
-                final_targets = raw_targets
                 if config.punctuation_normalize:
-                    final_targets = [normalize_zh(t) if t else t for t in final_targets]
-                    for s, t in zip(b, final_targets, strict=False):
-                        s.target = t
+                    for s in b:
+                        if s.epub_state is None:
+                            assign_segment_translation(s, normalize_zh(s.target or ""))
+                        else:
+                            assign_segment_translation(
+                                s,
+                                normalize_slot_transport(
+                                    s,
+                                    slot_transport(s),
+                                ),
+                            )
+                    final_targets = [s.target or "" for s in b]
+                else:
+                    final_targets = raw_targets
                 context.add_targets(final_targets)
                 event_targets = final_targets
                 punctuation_normalized = config.punctuation_normalize
-
-            # 增量持久化：本批译文（+ pending_polish / review_issues 标记）立即落盘。
-            # 崩溃一致性（polish_on 时）：译文在章节文件、标记在 manifest，两次独立
-            # 原子写；先写检查点日志再落盘，崩溃后由锁内恢复补齐/清除标记。
             chapter_progress.set_review_issue_dicts(review_issues)
             if polish_on:
                 checkpoint.begin_translate(store, ci, batch_start, len(b))
@@ -343,7 +366,8 @@ class TranslateNode:
             store.save_progress(ci, chapter_progress)
             checkpoint.clear(store)
 
-            # 提交后再审计：本章译文、标记和检查点全部落盘后，才记录本批翻译和
+            # 增量持久化：本批译文（+ pending_polish / review_issues 标记）立即落盘。
+            # 崩溃一致性（polish_on 时）：译文在章节文件、标记在 manifest，两次独立
             # 已采纳的 lint 修复，避免事件先于持久化结果出现。
             event_payload = {
                 "chapter": ci,
@@ -371,11 +395,12 @@ class TranslateNode:
                 # 润色批间无依赖：提交共享线程池，章末由 polish 节点统一排干。
                 request.shared.polish_futures[(ci, batch_start)] = request.executor.submit(
                     self.polisher.polish,
-                    list(raw_targets),
+                    [slot_transport(s) if s.epub_state else (s.target or "") for s in b],
                     [s.source for s in b],
                     glossary_terms=list(term_snapshot),
                     style=style,
                     strict=True,
+                    segments=b,
                 )
 
             if not bm and config.pipeline.inflight_glossary:
@@ -476,7 +501,7 @@ class TranslateNode:
         if _BM_RANK[cur] <= _BM_RANK[prev]:
             return
         for s in chapter.segments:
-            s.target = None
+            reset_segment_translation(s)
         progress.back_matter_mode = None
         progress.pending_polish = []
         progress.set_review_issue_dicts([])
@@ -500,7 +525,10 @@ class TranslateNode:
         config = self.config
         if mode == "skip":
             for s in text_segs:
-                s.target = s.source
+                assign_segment_translation(
+                    s,
+                    s.source if s.epub_state is None else slot_transport(s, target=False),
+                )
             store.save_chapter(chapter)
             request.shared.segments_done += len(text_segs)
             if request.progress:
@@ -527,11 +555,16 @@ class TranslateNode:
                     chapter_digest="",
                     agent="light-translator",
                     operation="translate.back_matter",
+                    segments=b,
                 )
-                if config.punctuation_normalize:
-                    raw = [normalize_zh(t) if t else t for t in raw]
-                for s, t in zip(b, raw, strict=False):
-                    s.target = t
+                for s, t in zip(b, raw, strict=True):
+                    if config.punctuation_normalize:
+                        if s.epub_state is None:
+                            t = normalize_zh(t)
+                        else:
+                            t = normalize_slot_transport(s, t)
+                    assign_segment_translation(s, t)
+                raw = [s.target or "" for s in b]
                 store.save_chapter(chapter)
                 store.log_event(
                     "batch_translated",
@@ -584,7 +617,7 @@ class TranslateNode:
         style: str,
         book_synopsis: str = "",
         chapter_digest: str = "",
-    ) -> list[str]:
+    ) -> list:
         sources = [s.source for s in batch]
         return self.translator.translate_batch(
             sources,
@@ -594,6 +627,7 @@ class TranslateNode:
             context=ctx_text,
             book_synopsis=book_synopsis,
             chapter_digest=chapter_digest,
+            segments=batch,
         )
 
     def _extract_batch_glossary(
@@ -726,37 +760,58 @@ class PolishNode:
             key = (ci, start)
             if key not in futures_by_key:
                 count = entry.count
-                raw = [text_segs[start + i].target or "" for i in range(count)]
+                batch = text_segs[start : start + count]
+                raw_transport = [
+                    slot_transport(segment) if segment.epub_state else (segment.target or "")
+                    for segment in batch
+                ]
                 futures_by_key[key] = executor.submit(
                     self.polisher.polish,
-                    raw,
-                    [text_segs[start + i].source for i in range(count)],
+                    raw_transport,
+                    [segment.source for segment in batch],
                     glossary_terms=list(term_snapshot),
                     style=style,
                     strict=True,
+                    segments=batch,
                 )
         for entry in sorted(pending, key=lambda e: e.start):
             start, count = entry.start, entry.count
             fut = futures_by_key.pop((ci, start), None)
-            raw = [text_segs[start + i].target or "" for i in range(count)]
-            # workflow 必需路径：provider/协议失败必须冒泡（runner 落失败态并重试），
-            # 不得把失败伪装成“润色成功”；lint 引入问题才回退原文（本地质量门）。
-            final = fut.result() if fut is not None else raw
-            srcs = [text_segs[start + i].source for i in range(count)]
+            batch = text_segs[start : start + count]
+            raw_transport = [
+                slot_transport(segment) if segment.epub_state else (segment.target or "")
+                for segment in batch
+            ]
+            final_transport = fut.result() if fut is not None else raw_transport
+            srcs = [segment.source for segment in batch]
+            raw_plain = [segment.target or "" for segment in batch]
+            final_plain = [
+                translation_text(segment, value) if segment.epub_state else value
+                for segment, value in zip(batch, final_transport, strict=True)
+            ]
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
             results = [
                 lint.polish_gate(
                     srcs[i],
-                    raw[i],
-                    final[i],
+                    raw_plain[i],
+                    final_plain[i],
                     locked_terms=locked,
                     src_lang=self.polisher.src,
                     normalize_punctuation=self.config.punctuation_normalize,
                 )
                 for i in range(count)
             ]
+            selected_transport = []
             for i, result in enumerate(results):
-                final[i] = result.selected
+                base = final_transport[i] if result.accepted else raw_transport[i]
+                if batch[i].epub_state is not None:
+                    selected_transport.append(
+                        normalize_slot_transport(batch[i], base)
+                        if result.selected != translation_text(batch[i], base)
+                        else base
+                    )
+                else:
+                    selected_transport.append(result.selected)
                 if result.accepted:
                     self.polisher.client.usage.record_outcome(
                         "editor", "polish.batch", accepted=True
@@ -770,10 +825,22 @@ class PolishNode:
                     reason=list(result.rejection_reasons),
                     proposal_sha256=stable_digest(result.proposal),
                 )
-            for i, t in enumerate(final):
-                text_segs[start + i].target = t
+            final = []
+            for segment, value in zip(batch, selected_transport, strict=True):
+                assign_segment_translation(segment, value)
+                final.append(segment.target or "")
             chapter_progress.pending_polish = [
                 e for e in chapter_progress.pending_polish if e.start != start
+            ]
+
+            changes = [
+                {
+                    "index": text_segs[start + i].index,
+                    "before": raw_plain[i],
+                    "after": final[i],
+                }
+                for i in range(count)
+                if raw_plain[i] != final[i]
             ]
             # 崩溃一致性：润色结果在章节文件、清标记在 manifest；先写检查点日志再
             # 落盘，崩溃后由锁内恢复清除已提交标记（避免同一段被润色两次）。
@@ -788,11 +855,11 @@ class PolishNode:
             changes = [
                 {
                     "index": text_segs[start + i].index,
-                    "before": raw[i],
+                    "before": raw_plain[i],
                     "after": final[i],
                 }
                 for i in range(count)
-                if raw[i] != final[i]
+                if raw_plain[i] != final[i]
             ]
             store.log_event(
                 "batch_polished",

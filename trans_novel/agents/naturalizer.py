@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -19,7 +20,16 @@ from typing import Any
 from trans_novel.agents import prompts
 from trans_novel.agents.base import Agent
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
-from trans_novel.ingest.models import KIND_TEXT, Chapter, Segment
+from trans_novel.ingest.models import (
+    KIND_TEXT,
+    Chapter,
+    Segment,
+    assign_segment_translation,
+    normalize_slot_transport,
+    slot_transport,
+    translation_text,
+    validate_slot_transport,
+)
 from trans_novel.pipeline import checkpoint, lint
 from trans_novel.pipeline.backmatter import is_back_matter
 from trans_novel.pipeline.runstore import RunStore, stable_digest
@@ -86,14 +96,29 @@ class Naturalizer(Agent):
             )
         )
 
-    def rewrite(self, text: str, quote: str, reason: str) -> str:
-        """单语改写整段；失败或空结果回退原文。"""
+    def rewrite(
+        self, text: str, quote: str, reason: str, *, segment: Segment | None = None
+    ) -> object:
+        """单语改写；EPUB 返回带原始ID的槽位记录，不接受扁平回填。"""
         system = prompts.render("naturalize_rewrite_system")
-        user = prompts.render("naturalize_rewrite_user", text=text, quote=quote, reason=reason)
+        source_text = (
+            json.dumps(slot_transport(segment), ensure_ascii=False, separators=(",", ":"))
+            if segment is not None and segment.epub_state is not None
+            else text
+        )
+        user = prompts.render(
+            "naturalize_rewrite_user", text=source_text, quote=quote, reason=reason
+        )
+        if segment is not None and segment.epub_state is not None:
+            user += "\n【EPUB 槽位协议】rewritten 必须是包含原始槽位 ID 的 slots 数组，不得返回扁平字符串。\n"
         data = self._ask_json(
             system, user, default={}, agent="editor", operation="naturalize.rewrite"
         )
         rewritten = data.get("rewritten") if isinstance(data, dict) else None
+        if segment is not None and segment.epub_state is not None:
+            if not isinstance(rewritten, dict) or not isinstance(rewritten.get("slots"), list):
+                raise ValueError("EPUB naturalizer slot response mismatch")
+            return validate_slot_transport(segment, rewritten["slots"])
         return rewritten.strip() if isinstance(rewritten, str) and rewritten.strip() else text
 
     def judge_pair(self, a: str, b: str) -> str:
@@ -214,13 +239,21 @@ def naturalize_chapter(
                 idx = issue.get("index")
                 if not isinstance(idx, int) or not (0 <= idx < len(batch)):
                     continue
-                seg = batch[idx]
                 stats["suspects"] += 1
+                seg = batch[idx]
                 quote = str(issue.get("quote", ""))
                 reason = str(issue.get("reason", ""))
                 before = seg.target or ""
-                rewritten = agent.rewrite(before, quote, reason)
-                if rewritten.strip() == before.strip():
+                rewritten_transport = agent.rewrite(before, quote, reason, segment=seg)
+                try:
+                    rewritten = (
+                        translation_text(seg, rewritten_transport)
+                        if seg.epub_state is not None
+                        else rewritten_transport
+                    )
+                except (TypeError, ValueError):
+                    rewritten = ""
+                if not isinstance(rewritten, str) or rewritten.strip() == before.strip():
                     agent.client.usage.record_outcome(
                         "editor", "naturalize.rewrite", accepted=False
                     )
@@ -282,9 +315,15 @@ def naturalize_chapter(
                         )
                     continue
 
+                final_transport = rewritten_transport
                 final = rewritten
                 if config.punctuation_normalize:
-                    final = normalize_zh(final)
+                    if seg.epub_state is None:
+                        final = normalize_zh(final)
+                        final_transport = final
+                    else:
+                        final_transport = normalize_slot_transport(seg, rewritten_transport)
+                        final = translation_text(seg, final_transport)
                 stats["applied"] += 1
                 agent.client.usage.record_outcome("editor", "naturalize.rewrite", accepted=True)
                 stats["applied_entries"].append(
@@ -300,7 +339,7 @@ def naturalize_chapter(
                 if remaining is not None:
                     remaining -= 1
                 if not dry_run:
-                    seg.target = final
+                    assign_segment_translation(seg, final_transport)
 
     if not dry_run:
         # 崩溃一致性：改写写章节文件、naturalized 标记写 manifest，两次独立原子写。

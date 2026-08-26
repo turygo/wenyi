@@ -137,6 +137,40 @@ def _review_node(cfg, client):
     )
 
 
+class TestEpubResumeSchemaGate(unittest.TestCase):
+    def test_old_schema_rejected_before_provider_calls(self):
+        from trans_novel.ingest.segmenter import load_document
+
+        for schema in (None, 1, 2):
+            with self.subTest(schema=schema), tempfile.TemporaryDirectory() as directory:
+                epub = os.path.join(directory, "book.epub")
+                write_sample_epub(epub)
+                document = load_document(epub, "ja", "zh")
+                state_dir = os.path.join(directory, "state")
+                run_dir = os.path.join(state_dir, slugify(document.title))
+                os.makedirs(run_dir, exist_ok=True)
+                meta = {} if schema is None else {"epub_schema": schema}
+                with open(os.path.join(run_dir, "manifest.json"), "w", encoding="utf-8") as stream:
+                    json.dump(
+                        {
+                            "title": document.title,
+                            "fmt": "epub",
+                            "source_path": epub,
+                            "source_lang": "ja",
+                            "target_lang": "zh",
+                            "meta": meta,
+                            "chapters": [],
+                        },
+                        stream,
+                        ensure_ascii=False,
+                    )
+
+                client = FakeClient(handler=routing_handler)
+                with self.assertRaisesRegex(ValueError, "fresh translation"):
+                    Application(_config(state_dir), client=client).run(epub)
+                self.assertEqual(client.calls, [])
+
+
 class TestApplication(unittest.TestCase):
     def test_prepare_retries_after_analysis_failure(self):
         with tempfile.TemporaryDirectory() as d:

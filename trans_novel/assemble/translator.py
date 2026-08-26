@@ -13,14 +13,38 @@ operation 只作用量/调试归因，不参与路由。
 
 from __future__ import annotations
 
+import json
+
 from trans_novel.agents import langprofile, prompts
 from trans_novel.agents.base import Agent, WorkflowProtocolError
 from trans_novel.glossary.store import GlossaryTerm
+from trans_novel.ingest.models import (
+    Segment,
+    slot_transport,
+    validate_slot_transport,
+)
 from trans_novel.llm.errors import JSONParseError
 
 
 class AlignmentError(WorkflowProtocolError):
     """句段对齐失败：协议错误的子类，reason 是稳定标识，message 是可读的中文说明。"""
+
+
+def _slot_prompt(segments: list[Segment] | None) -> str:
+    if not segments or not any(segment.epub_state is not None for segment in segments):
+        return ""
+    if any(segment.epub_state is None for segment in segments):
+        raise ValueError("EPUB slot transport cannot mix EPUB and flat segments")
+    expected = [
+        {"segment": index, "slots": slot_transport(segment, target=False)}
+        for index, segment in enumerate(segments)
+    ]
+    return (
+        "\n【EPUB 槽位协议】\n"
+        + json.dumps(expected, ensure_ascii=False, separators=(",", ":"))
+        + '\n每项必须输出 {"slots":[{"id":"原始槽位 ID","core":"译文核心"}]}；'
+        "槽位数量、顺序和 ID 必须完全一致；不得输出扁平字符串。\n"
+    )
 
 
 class Translator(Agent):
@@ -35,7 +59,8 @@ class Translator(Agent):
         *,
         agent: str,
         operation: str = "translate.batch",
-    ) -> list[str]:
+        segments: list[Segment] | None = None,
+    ) -> list:
         n = len(sources)
         system = prompts.render(
             "translator_system",
@@ -56,16 +81,27 @@ class Translator(Agent):
             n=n,
             n_minus_1=n - 1,
             numbered_source=prompts.numbered(sources),
-        )
-        # 不传 default：调用失败照常抛出，由 translate_batch 的重试/兜底逻辑处理
+        ) + _slot_prompt(segments)
         items = self._ask_json(system, user, key="translations", agent=agent, operation=operation)
-        if not isinstance(items, list):
-            raise AlignmentError("translation_collection_invalid", "模型未返回译文数组")
-        if len(items) != n:
+        if not isinstance(items, list) or len(items) != n:
             raise AlignmentError(
                 "translation_count_mismatch",
-                f"译文数量不匹配：期望 {n} 段，实际 {len(items)} 段",
+                f"译文数量不匹配：期望 {n} 段，实际 {len(items) if isinstance(items, list) else '非数组'}",
             )
+        if segments and any(segment.epub_state is not None for segment in segments):
+            if any(segment.epub_state is None for segment in segments):
+                raise ValueError("EPUB slot transport cannot mix EPUB and flat segments")
+            try:
+                return [
+                    validate_slot_transport(segment, item["slots"])
+                    if isinstance(item, dict) and isinstance(item.get("slots"), list)
+                    else (_ for _ in ()).throw(ValueError("EPUB translation item is not an object"))
+                    for segment, item in zip(segments, items, strict=True)
+                ]
+            except (ValueError, TypeError) as error:
+                raise AlignmentError(
+                    "translation_slot_mismatch", "EPUB 槽位返回结果不匹配"
+                ) from error
         if any(not isinstance(item, str) or not item.strip() for item in items):
             raise AlignmentError("translation_item_invalid", "模型返回了空译文或非字符串译文")
         return items
@@ -81,7 +117,8 @@ class Translator(Agent):
         *,
         agent: str,
         operation: str = "translate.batch",
-    ) -> str:
+        segment: Segment | None = None,
+    ) -> object:
         out = self._call_batch(
             [source],
             glossary_terms,
@@ -91,6 +128,7 @@ class Translator(Agent):
             chapter_digest,
             agent=agent,
             operation=operation,
+            segments=[segment] if segment else None,
         )
         return out[0]
 
@@ -106,14 +144,8 @@ class Translator(Agent):
         context_after: str = "",
         book_synopsis: str = "",
         chapter_digest: str = "",
-    ) -> str:
-        """带审校意见定向重译单段（lint 层单段回退/章末 autofix 用）。失败返回空串，由调用方决定弃用。
-
-        复用 translator_system（与主翻译共享稳定前缀，命中缓存）；
-        user 用 translator_fix_user：前缀块与主翻译一致，上下文换成前文+后文译文，附审校意见。
-        operation 由调用方按来源区分 translate.lint_fix / translate.review_fix，
-        采纳/拒绝在各自调用点记录，本方法不产生 outcome。
-        """
+        segment: Segment | None = None,
+    ) -> object:
         system = prompts.render(
             "translator_system",
             src=self.src,
@@ -133,13 +165,17 @@ class Translator(Agent):
             context_after=context_after or "（无）",
             feedback=feedback or "（无）",
             source=source,
-        )
+        ) + _slot_prompt([segment] if segment else None)
         items = self._ask_json(
             system, user, key="translations", default=None, agent="translator", operation=operation
         )
-        if isinstance(items, list) and items:
-            return str(items[0]).strip()
-        return ""
+        if not isinstance(items, list) or not items:
+            return ""
+        if segment is not None and segment.epub_state is not None:
+            if len(items) != 1 or not isinstance(items[0], dict):
+                raise AlignmentError("translation_slot_mismatch", "EPUB 槽位返回结果不匹配")
+            return validate_slot_transport(segment, items[0].get("slots"))
+        return items[0].strip() if isinstance(items[0], str) and items[0].strip() else ""
 
     def retranslate_batch_with_feedback(
         self,
@@ -151,18 +187,11 @@ class Translator(Agent):
         style: str = "",
         book_synopsis: str = "",
         chapter_digest: str = "",
-    ) -> list[str]:
-        """根据审校意见批量重译同一批次中的多个待修复段落（合并为一次调用，可减少 N-1 次
-        请求）。调用失败、返回值不是数组或数组长度不等于 N 时返回 []，由调用方回退到逐段
-        调用；各段是否采纳仍由调用方独立判断，本方法不记录 outcome。
-
-        items：（批内段号，源文，审校意见）三元组，长度为 N（N > 1，由调用方保证）。批内段号
-        必须与 batch_targets 的下标口径一致，模型才能据此在整批译文里定位原译及前后文。
-        batch_targets：按批内段号排列的整批当前译文，包含待修复段落的旧译文；按原顺序编号后注入。
-        """
-        n = len(items)
-        if n == 0:
+        segments: list[Segment] | None = None,
+    ) -> list:
+        if not items:
             return []
+        n = len(items)
         system = prompts.render(
             "translator_system",
             src=self.src,
@@ -181,17 +210,29 @@ class Translator(Agent):
             batch_targets=prompts.numbered(batch_targets),
             n=n,
             items=prompts.numbered_feedback(items),
-        )
+        ) + _slot_prompt([segments[idx] for idx, _source, _feedback in items] if segments else None)
         out = self._ask_json(
             system, user, key="translations", default=None, agent="translator", operation=operation
         )
-        if (
-            isinstance(out, list)
-            and len(out) == n
-            and all(isinstance(x, str) and x.strip() for x in out)
-        ):
-            return [x.strip() for x in out]
-        return []
+        if not isinstance(out, list) or len(out) != n:
+            return []
+        if segments and any(segment.epub_state is not None for segment in segments):
+            try:
+                return [
+                    validate_slot_transport(segments[idx], item["slots"])
+                    if isinstance(item, dict) and isinstance(item.get("slots"), list)
+                    else (_ for _ in ()).throw(ValueError("EPUB translation item is not an object"))
+                    for item, (idx, _source, _feedback) in zip(out, items, strict=True)
+                ]
+            except (ValueError, TypeError) as error:
+                raise AlignmentError(
+                    "translation_slot_mismatch", "EPUB 槽位返回结果不匹配"
+                ) from error
+        return (
+            [x.strip() for x in out if isinstance(x, str) and x.strip()]
+            if all(isinstance(x, str) and x.strip() for x in out)
+            else []
+        )
 
     def translate_batch(
         self,
@@ -204,18 +245,11 @@ class Translator(Agent):
         context: str = "",
         book_synopsis: str = "",
         chapter_digest: str = "",
-    ) -> list[str]:
-        """翻译一批源段，返回与之等长的译文列表。
-
-        agent 选择功能 Agent 路由：正文 translator；附属章旁路 light-translator。
-        operation 只作用量/调试归因（正文 translate.batch；附属章 translate.back_matter），
-        不参与路由。
-        """
+        segments: list[Segment] | None = None,
+    ) -> list:
         glossary_terms = glossary_terms or []
-        n = len(sources)
-        if n == 0:
+        if not sources:
             return []
-
         attempts = self.config.pipeline.align_retry_limit + 1
         for _ in range(attempts):
             try:
@@ -228,14 +262,11 @@ class Translator(Agent):
                     chapter_digest,
                     agent=agent,
                     operation=operation,
+                    segments=segments,
                 )
             except (AlignmentError, JSONParseError):
-                # 仅重试模型输出协议错误；Provider 异常和业务异常均原样向上抛出。
                 pass
-
-        # 兜底：逐段翻译。任一段仍失败时显式中断，保留已落盘
-        # 批次供续跑；不能用空字符串占位，否则章节会被错误标记为已完成。
-        targets: list[str] = []
+        targets: list = []
         for index, source in enumerate(sources):
             try:
                 targets.append(
@@ -248,11 +279,11 @@ class Translator(Agent):
                         chapter_digest,
                         agent=agent,
                         operation=operation,
+                        segment=segments[index] if segments else None,
                     )
                 )
             except (AlignmentError, JSONParseError) as error:
                 raise AlignmentError(
-                    "translation_segment_fallback_failed",
-                    f"索引为 {index} 的段落在兜底翻译时失败",
+                    "translation_segment_fallback_failed", f"索引为 {index} 的段落在兜底翻译时失败"
                 ) from error
         return targets

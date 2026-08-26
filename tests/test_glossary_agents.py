@@ -13,10 +13,44 @@ from trans_novel.agents.glossary_auditor import GlossaryAuditor
 from trans_novel.config import Config
 from trans_novel.glossary.extractor import GlossaryExtractor
 from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
-from trans_novel.ingest.models import Chapter, Segment
+from trans_novel.ingest.models import (
+    Chapter,
+    EpubSegmentState,
+    EpubTextSlot,
+    Segment,
+)
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.context import RollingContext
 from trans_novel.pipeline.runstore import RunStore
+
+
+def _epub_segment(index: int, cores: list[str], target_cores: list[str]) -> Segment:
+    slots = [
+        EpubTextSlot(
+            id=f"slot-{index}-{slot_index}",
+            element_path=(0,),
+            field="text" if slot_index == 0 else "tail",
+            source_value=core,
+            source_core=core,
+            target_core=target,
+        )
+        for slot_index, (core, target) in enumerate(zip(cores, target_cores, strict=True))
+    ]
+    return Segment(
+        index=index,
+        source="".join(cores),
+        target="".join(target_cores),
+        resource_href="OEBPS/ch.xhtml",
+        epub_state=EpubSegmentState(
+            resource_href="OEBPS/ch.xhtml",
+            resource_sha256="resource",
+            block_path=(0,),
+            block_fingerprint="block",
+            parse_mode="xml",
+            slots=slots,
+            slot_contract_sha256="contract",
+        ),
+    )
 
 
 def _cfg():
@@ -203,6 +237,57 @@ class TestExtractor(unittest.TestCase):
         self.assertEqual(result[0].gender, "")
         self.assertEqual(result[0].aliases, [])
         self.assertEqual(result[0].note, "")
+
+
+class TestEpubGlossaryRewrites(unittest.TestCase):
+    def test_variant_rewrite_updates_each_slot_and_derived_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RunStore(os.path.join(directory, "run"))
+            store.save_manifest({"fmt": "text", "chapters": [{"index": 0}]})
+            segment = _epub_segment(0, ["旧", "称"], ["旧", "称"])
+            store.save_chapter(Chapter(index=0, segments=[segment]))
+
+            glossary = GlossaryStore(os.path.join(directory, "glossary.db"))
+            changed = GlossaryAuditor._rewrite_targets(store, glossary, {"旧": "新"})
+            self.assertEqual(changed, 1)
+            saved = store.load_chapter(0).segments[0]
+            self.assertEqual(saved.target, "新称")
+            self.assertEqual(
+                [slot.target_core for slot in saved.epub_state.slots],
+                ["新", "称"],
+            )
+
+    def test_latin_residue_rewrite_updates_only_matching_slot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RunStore(os.path.join(directory, "run"))
+            store.save_manifest({"fmt": "text", "chapters": [{"index": 0}]})
+            segment = _epub_segment(
+                0,
+                ["他说 ", "Samsung 是巨头。"],
+                ["他说 ", "他说 Samsung 是巨头。"],
+            )
+            store.save_chapter(Chapter(index=0, segments=[segment]))
+            glossary = GlossaryStore(store.glossary_path)
+            glossary.upsert_term(
+                GlossaryTerm(
+                    source="Samsung",
+                    target="三星",
+                    type=TYPE_PERSON,
+                    confidence="high",
+                    locked=True,
+                )
+            )
+
+            applied = GlossaryAuditor._fix_latin_residue(store, glossary)
+
+            self.assertEqual(applied[0]["source"], "Samsung")
+            saved = store.load_chapter(0).segments[0]
+            self.assertEqual(saved.target, "他说 他说三星是巨头。")
+            self.assertEqual(
+                [slot.target_core for slot in saved.epub_state.slots],
+                ["他说 ", "他说三星是巨头。"],
+            )
+            glossary.close()
 
 
 class TestRollingContext(unittest.TestCase):

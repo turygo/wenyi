@@ -26,13 +26,13 @@ _CJK_RE = f"[{_CJK}]"
 _HALF_TO_FULL = {",": "，", ".": "。", "!": "！", "?": "？", ":": "：", ";": "；"}
 
 
-def _convert_quotes(text: str) -> str:
+def _convert_quotes(text: str, state: dict[str, bool] | None = None) -> str:
     # 日式引号直接映射
     text = text.translate(str.maketrans({"「": "“", "」": "”", "『": "‘", "』": "’"}))
 
     # 英式直双引号：按出现次序交替配对 → “ ”
     out = []
-    open_dq = True
+    open_dq = state.get("double", True) if state is not None else True
     for ch in text:
         if ch == '"':
             out.append("“" if open_dq else "”")
@@ -40,6 +40,8 @@ def _convert_quotes(text: str) -> str:
         else:
             out.append(ch)
     text = "".join(out)
+    if state is not None:
+        state["double"] = open_dq
 
     # 直单引号：仅当成对出现于引用语境时转弯引号；撇号（被字母包夹）保留为 ’
     def _single(m: re.Match) -> str:
@@ -47,13 +49,15 @@ def _convert_quotes(text: str) -> str:
 
     text = re.sub(r"(?<=[A-Za-z])'(?=[A-Za-z])", _single, text)
     # 其余成对单引号交替配对
-    out, open_sq = [], True
+    out, open_sq = [], state.get("single", True) if state is not None else True
     for ch in text:
         if ch == "'":
             out.append("‘" if open_sq else "’")
             open_sq = not open_sq
         else:
             out.append(ch)
+    if state is not None:
+        state["single"] = open_sq
     return "".join(out)
 
 
@@ -79,16 +83,84 @@ def _convert_halfwidth(text: str) -> str:
     return pattern.sub(repl, text)
 
 
-def normalize_zh(text: str) -> str:
+def normalize_zh(text: str, *, _quote_state: dict[str, bool] | None = None) -> str:
     """把一段中文译文的标点规范化为简体中文通用全角标点。"""
     if not text:
         return text
-    text = _convert_quotes(text)
+    text = _convert_quotes(text, _quote_state)
     text = _convert_ellipsis_dash(text)
     text = _convert_halfwidth(text)
     # 全角标点后的多余空格清理（中文标点后不留空格）
-    text = re.sub(r"([，。！？：；、”’》】])\s+", r"\1", text)
+    return re.sub(r"([，。！？：；、”’》】])\s+", r"\1", text)
+
+
+def _convert_ellipsis_dash_parts(text: str, marker: str) -> str:
+    """Apply ellipsis/dash collapsing across fragment boundaries."""
+    rules = (
+        ("。", 3, "……"),
+        ("・", 2, "……"),
+        (".", 3, "……"),
+        ("…", 1, "……"),
+        ("-", 2, "——"),
+        ("—", 1, "——"),
+    )
+    for char, minimum, replacement in rules:
+        pattern = re.compile(rf"(?:{re.escape(char)}|{re.escape(marker)})+")
+
+        def repl(
+            match: re.Match[str],
+            *,
+            char: str = char,
+            minimum: int = minimum,
+            replacement: str = replacement,
+        ) -> str:
+            value = match.group(0)
+            if value.count(char) < minimum:
+                return value
+            groups = value.split(marker)
+            nonempty = [index for index, group in enumerate(groups) if group]
+            if len(replacement) < len(nonempty):
+                return value
+            allocation = [""] * len(groups)
+            for index, output in enumerate(replacement):
+                allocation[nonempty[min(index, len(nonempty) - 1)]] += output
+            return marker.join(allocation)
+
+        text = pattern.sub(repl, text)
     return text
+
+
+def _convert_halfwidth_parts(text: str, marker: str) -> str:
+    """Convert punctuation when its CJK neighbor is in another fragment."""
+    text = re.sub(
+        rf"(?<={_CJK_RE}){re.escape(marker)}+([,.!?:;])",
+        lambda match: marker * (len(match.group(0)) - 1) + _HALF_TO_FULL[match.group(1)],
+        text,
+    )
+    text = re.sub(
+        rf"([,.!?:;]){re.escape(marker)}+(?={_CJK_RE})",
+        lambda match: _HALF_TO_FULL[match.group(1)] + marker * (len(match.group(0)) - 1),
+        text,
+    )
+    return _convert_halfwidth(text)
+
+
+def normalize_zh_parts(parts: list[str]) -> list[str]:
+    """Normalize ordered fragments with quote state shared across boundaries."""
+    if not parts:
+        return []
+    marker = "\x00"
+    state: dict[str, bool] = {}
+    quoted = [_convert_quotes(part, state) for part in parts]
+    text = marker.join(quoted)
+    text = _convert_ellipsis_dash_parts(text, marker)
+    text = _convert_halfwidth_parts(text, marker)
+    text = re.sub(
+        rf"([，。！？：；、”’》】]){re.escape(marker)}\s+",
+        rf"\1{marker}",
+        text,
+    )
+    return text.split(marker)
 
 
 # ── 章节标题数字风格规范化 ──────────────────────────────────────────────────

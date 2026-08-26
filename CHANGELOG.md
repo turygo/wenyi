@@ -14,6 +14,7 @@
 - 新增确定性自动评审：按风险、对话、术语、长句和叙事抽样，枚举二至六个候选的全部候选对并分别盲化为 A/B，再拆分成互不重叠的 reviewer shard；汇总时严格校验完整单元集合和原文/译文逐字证据。
 - 新增自动评审报告：输出候选严重度、错误类型、每万词加权错误、逐书胜负、证据明细、生产系统状态和基于冻结价格快照的 API 成本。
 - 新增第九阶段的隐藏 `EPUB` 集成测试框架：严格校验输入和哈希，执行三角色金丝雀测试；支持在批次完整提交后安全中断，续跑时为每个候选分别新建 `Application`，确保彼此独立；同时提供单语、双语结构门禁、资源链接校验，以及与第八阶段兼容的清单。
+- EPUB source runs now persist schema-3 lxml text-slot contracts and write translations back to reopened source XHTML while preserving inline structure, resources, and vertical layout.
 
 ### Changed
 
@@ -26,6 +27,7 @@
 
 - OpenAI SDK 客户端禁用内置重试，避免与集中式 Provider 重试叠加；缺失 `choices` 的畸形聊天响应按空响应重试；严格润色遇到段数协议错误时先携带精确数量约束重试，仍失败则逐段恢复；正式 benchmark 在发出请求前拒绝任何包含多个逻辑章节的 formal EPUB。
 - 严格润色在批量响应错位时保留逐段恢复结果，不再直接丢弃整批输出。
+- 修复 EPUB schema 3 槽位回填、双语源文配对、跨槽位标点规范化及脚注标记识别，并补齐严格流水线的断点续跑与审校统计。
 
 ## [0.1.3] - 2026-08-15
 

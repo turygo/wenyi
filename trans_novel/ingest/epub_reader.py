@@ -16,6 +16,8 @@ Segment 的 ``resource_href`` 仍记录它所属的物理资源，写回时据�
 
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import posixpath
 import re
@@ -24,6 +26,7 @@ import zipfile
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
+from lxml import etree
 
 from trans_novel.ingest.epub_toc import (
     nav_root_list,
@@ -32,9 +35,19 @@ from trans_novel.ingest.epub_toc import (
     resolve_epub_href,
     select_boundaries,
 )
-from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Document, Segment
+from trans_novel.ingest.models import (
+    KIND_HEADING,
+    KIND_TEXT,
+    Chapter,
+    Document,
+    EpubSegmentState,
+    EpubTextSlot,
+    Segment,
+    _slot_contract_digest,
+)
 
 _CONTAINER = "META-INF/container.xml"
+_HTML_EXTS = (".xhtml", ".html", ".htm")
 _BLOCK_TAGS = {
     "p",
     "h1",
@@ -131,9 +144,8 @@ def _has_footnote_hint(link: Tag, wrapper: Tag) -> bool:
         parts = urlsplit(href)
         if _FOOTNOTE_HINT_RE.search(parts.path) or _FOOTNOTE_HINT_RE.search(parts.fragment):
             return True
-
     return any(
-        _SHORT_MARKER_RE.fullmatch(node.get_text(strip=True)) is not None
+        _SHORT_MARKER_RE.fullmatch(node.get_text(strip=True) or "") is not None
         for node in (link, wrapper)
     )
 
@@ -449,6 +461,488 @@ def _looks_like_internal_title(title: str, href: str, book_title: str = "") -> b
     )
 
 
+_IMMUTABLE_TEXT_TAGS = {"script", "style", "rt", "rp"}
+_ATOMIC_TEXT_TAGS = {
+    "audio",
+    "canvas",
+    "embed",
+    "hr",
+    "iframe",
+    "img",
+    "math",
+    "object",
+    "svg",
+    "video",
+}
+_WS_RE = re.compile(r"[ \t\r\n\f\v]+")
+
+
+def _element_children(element: etree._Element) -> list[etree._Element]:
+    return [child for child in element if isinstance(child.tag, str)]
+
+
+def _element_path(root: etree._Element, element: etree._Element) -> tuple[int, ...]:
+    if element is root:
+        return ()
+    path: list[int] = []
+    current = element
+    while current is not root:
+        parent = current.getparent()
+        if parent is None:
+            raise ValueError("EPUB element is detached from its resource root")
+        children = _element_children(parent)
+        try:
+            path.append(children.index(current))
+        except ValueError as error:
+            raise ValueError("EPUB element locator is not an element-index path") from error
+        current = parent
+    return tuple(reversed(path))
+
+
+def _attr_local(element: etree._Element, name: str) -> str:
+    for key, value in element.attrib.items():
+        if key.rsplit("}", 1)[-1].split(":", 1)[-1] == name:
+            return value
+    return ""
+
+
+def _nav_toc_roots(root: etree._Element) -> list[etree._Element]:
+    """Match ``epub_toc.nav_toc_scopes``/``nav_root_list`` in lxml."""
+    navs = [
+        node
+        for node in root.iter()
+        if isinstance(node.tag, str) and node.tag.rsplit("}", 1)[-1].lower() == "nav"
+    ]
+    typed = [node for node in navs if "toc" in _attr_local(node, "type").split()]
+    scopes = typed or navs[:1] or [root]
+    roots: list[etree._Element] = []
+    for scope in scopes:
+        direct = next(
+            (
+                child
+                for child in scope
+                if isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1].lower() == "ol"
+            ),
+            None,
+        )
+        if direct is None:
+            direct = next(
+                (
+                    node
+                    for node in scope.iter()
+                    if isinstance(node.tag, str) and node.tag.rsplit("}", 1)[-1].lower() == "ol"
+                ),
+                None,
+            )
+        if direct is not None:
+            roots.append(direct)
+    return roots
+
+
+def _visible_text(element: etree._Element) -> str:
+    parts: list[str] = []
+
+    def walk(node: etree._Element) -> None:
+        tag = node.tag.rsplit("}", 1)[-1].lower() if isinstance(node.tag, str) else ""
+        if tag in _IMMUTABLE_TEXT_TAGS or tag in _ATOMIC_TEXT_TAGS or _is_footnote_marker(node):
+            return
+        if node.text:
+            parts.append(node.text)
+        for child in node:
+            if isinstance(child.tag, str):
+                walk(child)
+            if child.tail:
+                parts.append(child.tail)
+
+    walk(element)
+    return _WS_RE.sub(" ", "".join(parts)).strip()
+
+
+def _is_semantic_footnote_wrapper_lxml(node: etree._Element) -> bool:
+    tag = node.tag.rsplit("}", 1)[-1].lower() if isinstance(node.tag, str) else ""
+    if tag in {"sup", "sub"}:
+        return True
+    if tag != "span":
+        return False
+    classes = str(node.get("class", "")).split()
+    if any(token.lower() in _FOOTNOTE_CLASS_TOKENS for token in classes):
+        return True
+    for declaration in str(node.get("style", "")).split(";"):
+        name, separator, value = declaration.partition(":")
+        if (
+            separator
+            and name.strip().lower() == "vertical-align"
+            and value.strip().lower() in {"super", "sub"}
+        ):
+            return True
+    return False
+
+
+def _is_footnote_marker(element: etree._Element) -> bool:
+    tag = element.tag.rsplit("}", 1)[-1].lower() if isinstance(element.tag, str) else ""
+    if tag not in {"sup", "sub", "span", "a"}:
+        return False
+    wrapper = element if _is_semantic_footnote_wrapper_lxml(element) else None
+    parent = element.getparent()
+    while wrapper is None and parent is not None:
+        parent_tag = parent.tag.rsplit("}", 1)[-1].lower() if isinstance(parent.tag, str) else ""
+        if parent_tag in _BLOCK_TAGS:
+            break
+        if _is_semantic_footnote_wrapper_lxml(parent):
+            wrapper = parent
+            break
+        parent = parent.getparent()
+    if wrapper is None:
+        return False
+    for link in element.iter():
+        if not isinstance(link.tag, str) or link.tag.rsplit("}", 1)[-1].lower() != "a":
+            continue
+        href = _attr_local(link, "href")
+        if not href:
+            continue
+        parts = urlsplit(href)
+        if parts.scheme or parts.netloc or not parts.fragment:
+            continue
+        epub_type = _attr_local(link, "type")
+        hints = " ".join(
+            str(node.get(key, "")) for node in (link, wrapper) for key in _FOOTNOTE_HINT_ATTRS
+        )
+        href_hint = bool(
+            _FOOTNOTE_HINT_RE.search(parts.path) or _FOOTNOTE_HINT_RE.search(parts.fragment)
+        )
+        short_marker = any(
+            _SHORT_MARKER_RE.fullmatch("".join(node.itertext()).strip()) is not None
+            for node in (link, wrapper)
+        )
+        if "noteref" in epub_type.split() or _FOOTNOTE_HINT_RE.search(hints):
+            return True
+        if href_hint or short_marker:
+            return True
+    return False
+
+
+def _slot_parts(value: str) -> tuple[str, str, str]:
+    leading_match = re.match(r"[ \t\r\n\f\v]*", value)
+    trailing_match = re.search(r"[ \t\r\n\f\v]*$", value)
+    leading = leading_match.group(0) if leading_match else ""
+    trailing = trailing_match.group(0) if trailing_match else ""
+    end = len(value) - len(trailing) if trailing else len(value)
+    return leading, trailing, value[len(leading) : end]
+
+
+def _block_slots(
+    root: etree._Element,
+    block: etree._Element,
+    *,
+    resource_href: str,
+    resource_sha256: str,
+    parse_mode: str,
+    anchor: str,
+) -> list:
+    from trans_novel.ingest.models import EpubTextSlot
+
+    slots: list[EpubTextSlot] = []
+    slot_index = 0
+
+    def add(owner: etree._Element, field: str, value: str | None) -> None:
+        nonlocal slot_index
+        if not value or not value.strip():
+            return
+        leading, trailing, core = _slot_parts(value)
+        if not core:
+            return
+        relative = tuple(index for index in _element_path(block, owner))
+        slot_index += 1
+        slots.append(
+            EpubTextSlot(
+                id=f"{anchor}:s{slot_index}",
+                element_path=relative,
+                field=field,
+                source_value=value,
+                leading_whitespace=leading,
+                trailing_whitespace=trailing,
+                source_core=core,
+            )
+        )
+
+    def walk(owner: etree._Element) -> None:
+        tag = owner.tag.rsplit("}", 1)[-1].lower() if isinstance(owner.tag, str) else ""
+        if tag in _IMMUTABLE_TEXT_TAGS or tag in _ATOMIC_TEXT_TAGS or _is_footnote_marker(owner):
+            return
+        add(owner, "text", owner.text)
+        for child in owner:
+            # Comment/PI nodes have no QName-bearing path step.  Their tails
+            # remain immutable rather than being guessed by source text later.
+            if not isinstance(child.tag, str):
+                continue
+            walk(child)
+            add(child, "tail", child.tail)
+
+    walk(block)
+    return slots
+
+
+def _resource_fingerprint(block: etree._Element) -> str:
+    return hashlib.sha256(etree.tostring(block, encoding="utf-8", with_tail=False)).hexdigest()
+
+
+def _resource_parser(data: bytes) -> tuple[etree._ElementTree, str, list[dict[str, object]]]:
+    if len(data) > 512 * 1024 * 1024:
+        raise ValueError("EPUB XHTML resource exceeds 512 MiB limit")
+    diagnostics: list[dict[str, object]] = []
+    strict = etree.XMLParser(
+        no_network=True,
+        recover=False,
+        resolve_entities=False,
+        remove_comments=False,
+        remove_pis=False,
+        strip_cdata=False,
+    )
+    try:
+        return etree.fromstring(data, strict).getroottree(), "xml", diagnostics
+    except etree.XMLSyntaxError as strict_error:
+        first = strict_error.error_log[0] if strict_error.error_log else None
+        if first is not None:
+            diagnostics = [
+                {
+                    "level": first.level_name,
+                    "domain": first.domain_name,
+                    "type": first.type_name,
+                    "line": first.line,
+                    "column": first.column,
+                }
+            ]
+        recovered = etree.HTMLParser(
+            recover=True,
+            no_network=True,
+            remove_comments=False,
+            remove_pis=False,
+        )
+        tree = etree.parse(io.BytesIO(data), recovered)
+        root = tree.getroot()
+        if root is None or root.find(".//body") is None:
+            raise ValueError(
+                "EPUB malformed XHTML recovery did not produce a document body"
+            ) from strict_error
+        return tree, "recovered", diagnostics[:20]
+
+
+def _lxml_targets(root: etree._Element, *, skip_navigation: bool) -> list[etree._Element]:
+    candidates: list[etree._Element] = []
+    nav_roots = _nav_toc_roots(root) if skip_navigation else []
+    for element in root.iter():
+        if (
+            not isinstance(element.tag, str)
+            or element.tag.rsplit("}", 1)[-1].lower() not in _BLOCK_CANDIDATE_TAGS
+        ):
+            continue
+        local = element.tag.rsplit("}", 1)[-1].lower()
+        if any(
+            isinstance(parent.tag, str)
+            and parent.tag.rsplit("}", 1)[-1].lower() in _IMMUTABLE_TEXT_TAGS | _ATOMIC_TEXT_TAGS
+            for parent in element.iterancestors()
+        ):
+            continue
+        if skip_navigation and any(
+            element is nav_root or any(element is node for node in nav_root.iterdescendants())
+            for nav_root in nav_roots
+        ):
+            continue
+        descendants = [
+            child
+            for child in element.iterdescendants()
+            if isinstance(child.tag, str)
+            and child.tag.rsplit("}", 1)[-1].lower() in _BLOCK_CANDIDATE_TAGS
+            and _visible_text(child)
+        ]
+        if local == "li":
+            direct_link = next(
+                (
+                    child
+                    for child in element
+                    if isinstance(child.tag, str)
+                    and child.tag.rsplit("}", 1)[-1].lower() == "a"
+                    and _visible_text(child)
+                ),
+                None,
+            )
+            if direct_link is not None and not any(
+                isinstance(child.tag, str)
+                and child.tag.rsplit("}", 1)[-1].lower() in _BLOCK_CANDIDATE_TAGS
+                and _visible_text(child)
+                for child in direct_link.iterdescendants()
+            ):
+                candidates.append(direct_link)
+                continue
+        if descendants:
+            continue
+        candidates.append(element)
+    return [candidate for candidate in candidates if _visible_text(candidate)]
+
+
+def _annotate_lxml_resource(
+    data: bytes,
+    resource_index: int,
+    href: str,
+    *,
+    book_title: str = "",
+    skip_navigation: bool = False,
+) -> tuple[str, list[Segment], dict[str, object]]:
+    tree, parse_mode, diagnostics = _resource_parser(data)
+    root = tree.getroot()
+    digest = hashlib.sha256(data).hexdigest()
+    segments: list[Segment] = []
+    fragment_anchors: dict[str, str | None] = {}
+    for index, block in enumerate(_lxml_targets(root, skip_navigation=skip_navigation)):
+        anchor = f"tn{resource_index}_{index}"
+        slots = _block_slots(
+            root,
+            block,
+            resource_href=href,
+            resource_sha256=digest,
+            parse_mode=parse_mode,
+            anchor=anchor,
+        )
+        if not slots:
+            continue
+        runs: list[list] = [[]]
+        direct_children = _element_children(block)
+        for slot in slots:
+            if not slot.element_path:
+                run_index = 0
+            else:
+                child_index = slot.element_path[0]
+                run_index = sum(
+                    1
+                    for child in direct_children[: child_index + 1]
+                    if child.tag.rsplit("}", 1)[-1].lower() == "br"
+                )
+            while len(runs) <= run_index:
+                runs.append([])
+            runs[run_index].append(slot)
+
+        kind = KIND_HEADING if block.tag.rsplit("}", 1)[-1].lower() in _HEADING_TAGS else KIND_TEXT
+        for run_index, run_slots in enumerate(runs):
+            if not run_slots:
+                continue
+            run_anchor = anchor if run_index == 0 else f"{anchor}_br{run_index}"
+            if run_anchor != anchor:
+                run_slots = [
+                    slot.model_copy(update={"id": f"{run_anchor}:s{slot_index}"})
+                    for slot_index, slot in enumerate(run_slots, 1)
+                ]
+            source = _WS_RE.sub(
+                " ",
+                "".join(
+                    slot.leading_whitespace + slot.source_core + slot.trailing_whitespace
+                    for slot in run_slots
+                ),
+            ).strip()
+            state = EpubSegmentState(
+                resource_href=href,
+                resource_sha256=digest,
+                block_path=_element_path(root, block),
+                block_fingerprint=_resource_fingerprint(block),
+                parse_mode=parse_mode,
+                slots=run_slots,
+                slot_contract_sha256=_slot_contract_digest(run_slots),
+            )
+            segments.append(
+                Segment(
+                    index=len(segments),
+                    source=source,
+                    kind=kind,
+                    anchor=run_anchor,
+                    resource_href=href,
+                    epub_state=state,
+                )
+            )
+
+    def resolve(path: tuple[int, ...]) -> etree._Element:
+        current = root
+        for child_index in path:
+            current = _element_children(current)[child_index]
+        return current
+
+    ordered_nodes = list(root.iter())
+    node_positions = {id(node): index for index, node in enumerate(ordered_nodes)}
+    segment_blocks = [
+        (segment, resolve(segment.epub_state.block_path))
+        for segment in segments
+        if segment.epub_state is not None
+    ]
+    block_positions = [
+        (segment, block, node_positions[id(block)]) for segment, block in segment_blocks
+    ]
+
+    def containing_segment(node: etree._Element):
+        for segment, block, _block_index in block_positions:
+            if node is block or any(node is child for child in block.iterdescendants()):
+                top = node
+                while top.getparent() is not block and top.getparent() is not None:
+                    top = top.getparent()
+                direct = _element_children(block)
+                if top is block:
+                    run_index = 0
+                elif top in direct:
+                    top_index = direct.index(top)
+                    run_index = sum(
+                        1
+                        for child in direct[:top_index]
+                        if child.tag.rsplit("}", 1)[-1].lower() == "br"
+                    )
+                else:
+                    run_index = 0
+                return segment.anchor if run_index == 0 else f"{segment.anchor}_br{run_index}"
+        return None
+
+    for node_index, node in enumerate(ordered_nodes):
+        if not isinstance(node.tag, str):
+            continue
+        identifiers = [value for value in (node.get("id"), node.get("name")) if value]
+        if not identifiers:
+            continue
+        anchor_for_node = containing_segment(node)
+        if anchor_for_node is None:
+            later = [
+                segment
+                for segment, _block, block_index in block_positions
+                if block_index > node_index
+            ]
+            anchor_for_node = later[0].anchor if later else None
+        for identifier in identifiers:
+            fragment_anchors.setdefault(identifier, anchor_for_node)
+
+    title = ""
+    for heading in root.iter():
+        if isinstance(heading.tag, str) and heading.tag.rsplit("}", 1)[-1].lower() in _HEADING_TAGS:
+            title = _visible_text(heading)
+            if title:
+                break
+    if not title:
+        for title_node in root.iter():
+            if (
+                isinstance(title_node.tag, str)
+                and title_node.tag.rsplit("}", 1)[-1].lower() == "title"
+            ):
+                candidate = _visible_text(title_node)
+                if candidate and not _looks_like_internal_title(candidate, href, book_title):
+                    title = candidate
+                break
+    return (
+        title,
+        segments,
+        {
+            "href": href,
+            "index": resource_index,
+            "resource_sha256": digest,
+            "parse_mode": parse_mode,
+            "parser_diagnostics": diagnostics,
+            "fragment_anchors": fragment_anchors,
+        },
+    )
+
+
 def annotate_epub_resource(
     html: str,
     resource_index: int,
@@ -457,31 +951,18 @@ def annotate_epub_resource(
     book_title: str = "",
     skip_navigation: bool = False,
 ) -> tuple[str, list[Segment], str]:
-    """标注单个物理 XHTML，返回 (标题, segments, 带标记的模板 HTML)。
-
-    锚点使用物理资源序号而非最终 Chapter 序号，因此即使目录切章边界
-    发生变化，同一物理文件重新标注仍能生成相同的 ``data-tn-id``。
-    """
+    """Legacy marker/template helper retained for bilingual compatibility."""
     soup = BeautifulSoup(html, "html.parser")
     segments: list[Segment] = []
     first_heading: Tag | None = None
     heading_title_parts: list[str] = []
     idx = 0
-    # 目录项保护范围与解析端 epub_toc._parse_nav 使用相同的 nav_toc_scopes/
-    # nav_root_list 定位规则，也能识别 body > ol > li > a 这类没有 <nav> 包装的非标准 NAV。
     toc_lists = (
         [ol for scope in nav_toc_scopes(soup) if (ol := nav_root_list(scope)) is not None]
         if skip_navigation
         else []
     )
-    for el in _translation_targets(
-        soup,
-        skip_navigation=skip_navigation,
-        toc_lists=toc_lists,
-    ):
-        # 带文字的内联 id/name 包装会在回填纯译文时被拍平。先把它
-        # 改成同位置的空锚点，便可复用现有内联非文本节点恢复机制。
-        # 脚注标记是完整的原子节点，不能在这里拆走其原始属性。
+    for el in _translation_targets(soup, skip_navigation=skip_navigation, toc_lists=toc_lists):
         footnote_roots = _footnote_marker_roots(el)
         for descendant in list(el.find_all(True)):
             if _inside_roots(descendant, footnote_roots) or not descendant.get_text(strip=True):
@@ -493,7 +974,6 @@ def annotate_epub_resource(
                 marker = soup.new_tag("a")
                 marker.attrs.update(anchor_attrs)
                 descendant.insert_before(marker)
-
         anchor = f"tn{resource_index}_{idx}"
         text, meta = _segment_content(el, anchor)
         if not text:
@@ -522,15 +1002,11 @@ def annotate_epub_resource(
             )
         )
         idx += 1
-
-    # 物理资源的备用标题：首个 heading → 非内部文件名/书名的 <title> →
-    # 无标题。逻辑章标题在切章阶段直接取完整 TOC 节点 title，不看这里。
     title = " ".join(heading_title_parts)
     if not title and soup.title and soup.title.string:
         candidate = soup.title.string.strip()
         if not _looks_like_internal_title(candidate, href, book_title):
             title = candidate
-
     return title, segments, str(soup)
 
 
@@ -781,7 +1257,7 @@ def _logical_chapters(
 
 
 def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
-    """按 spine 读取物理资源，再根据切片粒度自动选择目录层级并生成逻辑章节（schema 2）。"""
+    """Read a source EPUB into schema-3 structural text-slot state."""
     with zipfile.ZipFile(path, "r") as zf:
         names = set(zf.namelist())
         opf_path = _find_opf_path(zf)
@@ -789,12 +1265,22 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
         toc_entries = parse_toc_entries(zf, toc_paths)
 
         resources: list[dict[str, object]] = []
-        for resource_index, href in enumerate(hrefs):
+        archive_hash = hashlib.sha256()
+        with open(path, "rb") as source_file:
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                archive_hash.update(chunk)
+        resource_hrefs = list(dict.fromkeys([*hrefs, *toc_paths]))
+        for resource_index, href in enumerate(resource_hrefs):
             if href not in names:
                 continue
-            html = _decode_markup(zf.read(href))
-            title, segments, template = annotate_epub_resource(
-                html,
+            info = zf.getinfo(href)
+            if info.file_size > 512 * 1024 * 1024:
+                raise ValueError(f"EPUB resource exceeds 512 MiB limit: {href}")
+            if not href.lower().endswith(_HTML_EXTS):
+                continue
+            data = zf.read(href)
+            title, segments, resource = _annotate_lxml_resource(
+                data,
                 resource_index,
                 href,
                 book_title=book_title,
@@ -802,15 +1288,13 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             )
             resources.append(
                 {
-                    "index": resource_index,
-                    "href": href,
+                    **resource,
                     "title": title,
                     "segments": segments,
-                    "template": template,
-                    "fragment_anchors": _fragment_anchor_map(template),
                 }
             )
-        chapters, split_strategy, split_toc_path = _logical_chapters(resources, toc_entries)
+        spine_resources = [resource for resource in resources if resource["href"] in hrefs]
+        chapters, split_strategy, split_toc_path = _logical_chapters(spine_resources, toc_entries)
 
     return Document(
         title=book_title or os.path.splitext(os.path.basename(path))[0],
@@ -820,17 +1304,22 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
         source_path=os.path.abspath(path),
         chapters=chapters,
         meta={
-            "epub_schema": 2,
+            "epub_schema": 3,
+            "epub_sha256": archive_hash.hexdigest(),
             "opf_path": opf_path,
             "toc_paths": toc_paths,
             "toc_entries": toc_entries,
             "epub_resources": [
-                {"index": resource["index"], "href": resource["href"]} for resource in resources
+                {
+                    "index": resource["index"],
+                    "href": resource["href"],
+                    "resource_sha256": resource["resource_sha256"],
+                    "parse_mode": resource["parse_mode"],
+                    "parser_diagnostics": resource["parser_diagnostics"],
+                }
+                for resource in resources
             ],
             "epub_split_strategy": split_strategy,
             "epub_split_toc_path": split_toc_path,
-            "epub_resource_templates": {
-                str(resource["href"]): str(resource["template"]) for resource in resources
-            },
         },
     )

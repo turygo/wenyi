@@ -11,6 +11,12 @@ from tests.fake_llm import fake_llm_dict
 from trans_novel.agents import prompts
 from trans_novel.agents.translator import AlignmentError, Translator
 from trans_novel.config import Config, ModelRef
+from trans_novel.ingest.models import (
+    EpubSegmentState,
+    EpubTextSlot,
+    Segment,
+    assign_segment_translation,
+)
 from trans_novel.llm import FakeClient
 from trans_novel.llm.errors import AllModelsFailedError
 from trans_novel.pipeline.checks import count_aligned, length_flags
@@ -18,6 +24,108 @@ from trans_novel.pipeline.checks import count_aligned, length_flags
 
 def _count_segments(user_content: str) -> int:
     return len(re.findall(r"^\[(\d+)\]", user_content, re.M))
+
+
+def _epub_segment() -> Segment:
+    slots = [
+        EpubTextSlot(
+            id="slot-a",
+            element_path=(0,),
+            field="text",
+            source_value="Alpha ",
+            leading_whitespace="",
+            trailing_whitespace=" ",
+            source_core="Alpha",
+        ),
+        EpubTextSlot(
+            id="slot-b",
+            element_path=(0,),
+            field="tail",
+            source_value="Beta",
+            source_core="Beta",
+        ),
+    ]
+    state = EpubSegmentState(
+        resource_href="OEBPS/ch.xhtml",
+        resource_sha256="resource",
+        block_path=(0,),
+        block_fingerprint="block",
+        parse_mode="xml",
+        slots=slots,
+        slot_contract_sha256="contract",
+    )
+    return Segment(
+        index=0,
+        source="Alpha Beta",
+        resource_href="OEBPS/ch.xhtml",
+        epub_state=state,
+    )
+
+
+class TestTranslatorEpubSlots(unittest.TestCase):
+    def _config(self):
+        config = Config.from_dict({"llm": fake_llm_dict()})
+        config.source_lang = "en"
+        config.pipeline.align_retry_limit = 1
+        return config
+
+    def test_translation_and_retry_return_ordered_slots(self):
+        responses = iter(
+            [
+                {
+                    "translations": [
+                        {"slots": [{"id": "slot-b", "core": "乙"}, {"id": "slot-a", "core": "甲"}]}
+                    ]
+                },
+                {
+                    "translations": [
+                        {"slots": [{"id": "slot-a", "core": "甲"}, {"id": "slot-b", "core": "乙"}]}
+                    ]
+                },
+                {
+                    "translations": [
+                        {
+                            "slots": [
+                                {"id": "slot-a", "core": "改甲"},
+                                {"id": "slot-b", "core": "改乙"},
+                            ]
+                        }
+                    ]
+                },
+            ]
+        )
+        client = FakeClient(
+            handler=lambda messages, agent, operation, json_mode: json.dumps(
+                next(responses), ensure_ascii=False
+            )
+        )
+        segment = _epub_segment()
+        translator = Translator(client, self._config())
+
+        translated = translator.translate_batch(
+            [segment.source],
+            agent="translator",
+            segments=[segment],
+        )
+        assign_segment_translation(segment, translated[0])
+        self.assertEqual(
+            translated[0],
+            [("slot-a", "甲"), ("slot-b", "乙")],
+        )
+        self.assertEqual(segment.target, "甲 乙")
+
+        retried = translator.retranslate_with_feedback(
+            segment.source,
+            feedback="保持槽位顺序",
+            operation="translate.review_fix",
+            segment=segment,
+        )
+        assign_segment_translation(segment, retried)
+        self.assertEqual(
+            retried,
+            [("slot-a", "改甲"), ("slot-b", "改乙")],
+        )
+        self.assertEqual(segment.target, "改甲 改乙")
 
 
 class TestTranslatorAlignment(unittest.TestCase):

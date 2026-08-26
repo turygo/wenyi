@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import os
 import tempfile
 import unittest
@@ -686,6 +688,94 @@ class TestEpubIngest(unittest.TestCase):
         assert isinstance(list_item, Tag)
         self.assertNotIn("data-tn-id", list_item.attrs)
 
+    def test_spine_nav_composes_body_segments_without_toc_links(self):
+        """A spine NAV contributes its visible body text, while its TOC list remains immutable."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "nav-spine.epub")
+            opf = """<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></metadata>
+<manifest>
+<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="body" href="body.xhtml" media-type="application/xhtml+xml"/>
+</manifest><spine><itemref idref="nav"/><itemref idref="body"/></spine></package>"""
+            nav = """<html xmlns="http://www.w3.org/1999/xhtml"
+ xmlns:epub="http://www.idpf.org/2007/ops"><head/><body>
+<h1>Contents</h1><nav epub:type="toc"><ol>
+<li><a href="body.xhtml#one">Chapter One</a></li></ol></nav><p>Nav body.</p>
+</body></html>"""
+            body = """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h1 id="one">Chapter One</h1><p>Body.</p></body></html>"""
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("mimetype", "application/epub+zip", zipfile.ZIP_STORED)
+                archive.writestr(
+                    "META-INF/container.xml",
+                    """<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+<rootfiles><rootfile full-path="content.opf"/></rootfiles></container>""",
+                )
+                archive.writestr("content.opf", opf)
+                archive.writestr("nav.xhtml", nav)
+                archive.writestr("body.xhtml", body)
+
+            document = load_document(path, "en", "zh")
+
+        self.assertEqual(
+            [chapter.href for chapter in document.chapters], ["nav.xhtml", "body.xhtml"]
+        )
+        self.assertEqual(
+            [segment.source for segment in document.chapters[0].segments],
+            ["Contents", "Nav body."],
+        )
+        self.assertEqual(
+            [segment.source for segment in document.chapters[1].segments],
+            ["Chapter One", "Body."],
+        )
+        self.assertTrue(
+            all(
+                segment.epub_state is not None
+                for chapter in document.chapters
+                for segment in chapter.segments
+            )
+        )
+
+    def test_standalone_nav_metadata_does_not_create_logical_chapter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "standalone-nav.epub")
+            opf = """<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></metadata>
+<manifest>
+<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="body" href="body.xhtml" media-type="application/xhtml+xml"/>
+</manifest><spine><itemref idref="body"/></spine></package>"""
+            nav = """<html xmlns="http://www.w3.org/1999/xhtml"
+ xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<h1>Contents</h1><p>Nav intro.</p><nav epub:type="toc"><ol>
+<li><a href="body.xhtml#one">Chapter One</a></li></ol></nav>
+</body></html>"""
+            body = """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h1 id="one">Chapter One</h1><p>Body.</p></body></html>"""
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("mimetype", "application/epub+zip", zipfile.ZIP_STORED)
+                archive.writestr(
+                    "META-INF/container.xml",
+                    """<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+<rootfiles><rootfile full-path="content.opf"/></rootfiles></container>""",
+                )
+                archive.writestr("content.opf", opf)
+                archive.writestr("nav.xhtml", nav)
+                archive.writestr("body.xhtml", body)
+
+            document = load_document(path, "en", "zh")
+
+        self.assertEqual([chapter.href for chapter in document.chapters], ["body.xhtml"])
+        self.assertEqual(document.meta["toc_paths"], ["nav.xhtml"])
+        self.assertEqual(document.meta["epub_schema"], 3)
+        nav_resource = next(
+            resource
+            for resource in document.meta["epub_resources"]
+            if resource["href"] == "nav.xhtml"
+        )
+        self.assertEqual(nav_resource["parse_mode"], "xml")
+
     def test_navless_toc_list_in_spine_is_still_skipped(self):
         """规则 8 的边界情况：没有 <nav> 包装、结构为 body>ol>li>a 的 NAV 位于 spine 中时，
         仍须跳过目录 li；不能因缺少 <nav> 祖先而将其当作普通正文，在回填时清空。"""
@@ -940,17 +1030,39 @@ class TestEpubIngest(unittest.TestCase):
         self.assertEqual(ch1.title, "第一章　出会い")
         self.assertEqual(len(ch1.text_segments), 3)  # h1 + 2 p
         self.assertNotIn("toc_entry_id", ch1.meta)
-        # Chapter.template 恒为 None（schema 2 不随章存模板），标注模板
-        # 改存在 doc.meta["epub_resource_templates"]，键为物理资源 href。
+        self.assertEqual(doc.meta["epub_schema"], 3)
+        self.assertNotIn("epub_resource_templates", doc.meta)
         self.assertIsNone(ch1.template)
         self.assertIsNotNone(ch1.href)
-        template = doc.meta["epub_resource_templates"][ch1.href]
         for s in ch1.text_segments:
-            anchor = s.anchor
-            self.assertIsNotNone(anchor)
-            assert anchor is not None
-            self.assertIn(anchor, template)
-            self.assertEqual(s.resource_href, ch1.href)
+            state = s.epub_state
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertEqual(state.resource_href, ch1.href)
+            self.assertEqual(state.parse_mode, "xml")
+            self.assertTrue(state.resource_sha256)
+            self.assertTrue(state.block_fingerprint)
+            self.assertEqual(
+                state.slot_contract_sha256,
+                hashlib.sha256(
+                    json.dumps(
+                        [
+                            {
+                                "id": slot.id,
+                                "element_path": list(slot.element_path),
+                                "field": slot.field,
+                                "source_value": slot.source_value,
+                                "leading_whitespace": slot.leading_whitespace,
+                                "trailing_whitespace": slot.trailing_whitespace,
+                                "source_core": slot.source_core,
+                            }
+                            for slot in state.slots
+                        ],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            )
 
     def test_epub_ignores_internal_file_title_when_no_heading(self):
         with tempfile.TemporaryDirectory() as d:

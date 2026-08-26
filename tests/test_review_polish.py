@@ -9,13 +9,55 @@ from tests.fake_llm import fake_llm_dict
 from trans_novel.agents.polisher import Polisher
 from trans_novel.agents.reviewer import BackTranslator, Reviewer, ReviewOutputError
 from trans_novel.config import Config
+from trans_novel.ingest.models import (
+    EpubSegmentState,
+    EpubTextSlot,
+    Segment,
+    assign_segment_translation,
+)
 from trans_novel.llm import FakeClient
+from trans_novel.pipeline.nodes.quality import ReviewNode
 
 
 def _cfg():
     config = Config.from_dict({"llm": fake_llm_dict()})
     config.source_lang = "ja"
     return config
+
+
+def _epub_segment() -> Segment:
+    slots = [
+        EpubTextSlot(
+            id="slot-a",
+            element_path=(0,),
+            field="text",
+            source_value="Alpha ",
+            trailing_whitespace=" ",
+            source_core="Alpha",
+        ),
+        EpubTextSlot(
+            id="slot-b",
+            element_path=(0,),
+            field="tail",
+            source_value="Beta",
+            source_core="Beta",
+        ),
+    ]
+    return Segment(
+        index=0,
+        source="Alpha Beta",
+        target="甲 乙",
+        resource_href="OEBPS/ch.xhtml",
+        epub_state=EpubSegmentState(
+            resource_href="OEBPS/ch.xhtml",
+            resource_sha256="resource",
+            block_path=(0,),
+            block_fingerprint="block",
+            parse_mode="xml",
+            slots=slots,
+            slot_contract_sha256="contract",
+        ),
+    )
 
 
 class TestReviewer(unittest.TestCase):
@@ -115,6 +157,33 @@ class TestPolisher(unittest.TestCase):
         self.assertEqual(client.calls[-1]["operation"], "polish.batch")
         self.assertEqual(client.calls[-1]["agent"], "editor")
 
+    def test_polish_preserves_ordered_epub_slots_and_derived_target(self):
+        client = FakeClient(
+            handler=lambda messages, agent, operation, json_mode: json.dumps(
+                {
+                    "polished": [
+                        {
+                            "slots": [
+                                {"id": "slot-a", "core": "润甲"},
+                                {"id": "slot-b", "core": "润乙"},
+                            ]
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        segment = _epub_segment()
+        polished = Polisher(client, _cfg()).polish(
+            [[{"id": "slot-a", "core": "甲"}, {"id": "slot-b", "core": "乙"}]],
+            [segment.source],
+            segments=[segment],
+            strict=True,
+        )
+        assign_segment_translation(segment, polished[0])
+        self.assertEqual(polished[0], [("slot-a", "润甲"), ("slot-b", "润乙")])
+        self.assertEqual(segment.target, "润甲 润乙")
+
     def test_polish_mismatch_keeps_original(self):
         client = FakeClient(
             handler=lambda m, a, o, j: json.dumps({"polished": ["只有一段"]}, ensure_ascii=False)
@@ -185,6 +254,38 @@ class TestPolisher(unittest.TestCase):
         system = messages[0]["content"]
         self.assertIn("源文", system)
         self.assertTrue("不得遗漏" in system or "增改" in system)
+
+
+class TestReviewAutofixEpubSlots(unittest.TestCase):
+    def test_severe_autofix_updates_slots_and_plain_target(self):
+        class _Translator:
+            def retranslate_with_feedback(self, *args, **kwargs):
+                return [("slot-a", "新甲"), ("slot-b", "新乙")]
+
+        segment = _epub_segment()
+        node = ReviewNode(
+            reviewer=None,
+            translator=_Translator(),
+            glossary=None,
+            config=_cfg(),
+            style_brief="",
+        )
+        issues = [
+            {
+                "index": 0,
+                "type": "missing",
+                "detail": "遗漏",
+                "suggestion": "补全",
+            }
+        ]
+        accepted = node._autofix_severe([segment], issues, [], "")
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(segment.target, "新甲 新乙")
+        self.assertEqual(
+            [slot.target_core for slot in segment.epub_state.slots],
+            ["新甲", "新乙"],
+        )
+        self.assertTrue(issues[0]["fixed"])
 
 
 class TestBackTranslator(unittest.TestCase):
