@@ -20,6 +20,7 @@
 - `balanced` 与 `quality` 质量档位现在始终执行润色，`economy` 仍保持不润色。
 - 基准候选必须显式配置 `editor_model`；移除 attribution、共享 preparation、未润色 control、人工评估包、后编辑计时、人力成本和重新定价路径。
 - 正式 benchmark Provider 从百炼切换到 OpenCode Go，比较 `deepseek-v4-flash`、`muse-spark-1.2-contributor` 和 `mimo-v2.5` 三个各自完成初译与润色的候选，并按 OpenCode Go 官方价格逐请求计费。
+- OpenAI Responses API 模型现在复用统一的请求控制、响应解析和 token 用量归一化。
 
 ### Fixed
 

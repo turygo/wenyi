@@ -90,24 +90,42 @@ def _usage_int(usage: Any, name: str) -> int:
 
 
 def _reasoning_tokens(usage: Any) -> int:
-    """Read direct reasoning tokens, then the provider completion details."""
+    """Read direct reasoning tokens, then provider completion/output details."""
     if _has_field(usage, "reasoning_tokens"):
         return _usage_int(usage, "reasoning_tokens")
-    _, details = _usage_value(usage, "completion_tokens_details")
-    return _usage_int(details, "reasoning_tokens")
+    for field in ("completion_tokens_details", "output_tokens_details"):
+        _, details = _usage_value(usage, field)
+        if _has_field(details, "reasoning_tokens"):
+            return _usage_int(details, "reasoning_tokens")
+    return 0
 
 
 def has_response_usage(usage: object) -> bool:
     """Whether a response exposes at least one recognized primary usage field."""
     return usage is not None and any(
-        _has_field(usage, field) for field in ("prompt_tokens", "completion_tokens", "total_tokens")
+        _has_field(usage, field)
+        for field in (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "input_tokens",
+            "output_tokens",
+        )
     )
 
 
 def normalize_response_usage(usage: object) -> dict[str, int]:
     """Normalize provider usage into the six persisted/telemetry token fields."""
-    prompt = _usage_int(usage, "prompt_tokens")
-    completion = _usage_int(usage, "completion_tokens")
+    prompt = (
+        _usage_int(usage, "prompt_tokens")
+        if _has_field(usage, "prompt_tokens")
+        else _usage_int(usage, "input_tokens")
+    )
+    completion = (
+        _usage_int(usage, "completion_tokens")
+        if _has_field(usage, "completion_tokens")
+        else _usage_int(usage, "output_tokens")
+    )
     total = (
         _usage_int(usage, "total_tokens")
         if _has_field(usage, "total_tokens")
@@ -116,7 +134,12 @@ def normalize_response_usage(usage: object) -> dict[str, int]:
     if _has_field(usage, "prompt_cache_hit_tokens"):
         hit = _usage_int(usage, "prompt_cache_hit_tokens")
     else:
-        _, details = _usage_value(usage, "prompt_tokens_details")
+        details_field = (
+            "prompt_tokens_details"
+            if _has_field(usage, "prompt_tokens_details")
+            else "input_tokens_details"
+        )
+        _, details = _usage_value(usage, details_field)
         hit = _usage_int(details, "cached_tokens")
     if _has_field(usage, "prompt_cache_miss_tokens"):
         miss = _usage_int(usage, "prompt_cache_miss_tokens")

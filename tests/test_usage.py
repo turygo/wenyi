@@ -395,6 +395,26 @@ class TestEmptyResponseAccounting(unittest.TestCase):
             )
         self.assertEqual(len(t._client.chat.completions.calls), 2)
 
+    def test_missing_choices_retries_as_empty_response(self):
+        tracker = UsageTracker()
+        t = _transport(tracker)
+        malformed = SimpleNamespace(choices=None, usage=None)
+        t._client = _ClientStub([malformed, _make_response("visible", None)])
+        with patch(
+            "trans_novel.llm.providers.transport.wait_exponential", return_value=wait_none()
+        ):
+            self.assertEqual(
+                t.complete(
+                    [{"role": "user", "content": "x"}],
+                    ModelRef("deepseek", "m1"),
+                    agent="preparer",
+                    operation="prescan.digest",
+                ),
+                "visible",
+            )
+        self.assertEqual(len(t._client.chat.completions.calls), 2)
+        self.assertEqual(tracker.summary()["by_operation"]["prescan.digest"]["failed_attempts"], 1)
+
     def test_exhaustion_raises_and_keeps_consumed_usage(self):
         tracker = UsageTracker()
         t = _transport(tracker)

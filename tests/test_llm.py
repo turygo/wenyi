@@ -110,6 +110,19 @@ class TestConfigValidation(unittest.TestCase):
         flash = transport.capabilities_for("deepseek-v4-flash")
         self.assertEqual(flash.request_dialect, DIALECT_DEEPSEEK)
         self.assertEqual(flash.reasoning_efforts, frozenset({"high", "max"}))
+        self.assertTrue(flash.catalogued)
+        self.assertTrue(flash.supports_thinking_disabled)
+        self.assertTrue(flash.supports_temperature)
+        mimo = transport.capabilities_for("mimo-v2.5")
+        self.assertEqual(mimo.request_dialect, DIALECT_DEEPSEEK)
+        self.assertTrue(mimo.catalogued)
+        self.assertTrue(mimo.supports_thinking_disabled)
+        self.assertTrue(mimo.supports_temperature)
+        muse = transport.capabilities_for("muse-spark-1.2-contributor")
+        self.assertTrue(muse.catalogued)
+        self.assertEqual(muse.reasoning_efforts, frozenset({"low"}))
+        self.assertTrue(muse.responses_api)
+        self.assertTrue(muse.supports_temperature)
         unknown = transport.capabilities_for("unknown-model")
         self.assertEqual(unknown.request_dialect, DIALECT_GENERIC)
         self.assertEqual(unknown.reasoning_efforts, frozenset())
@@ -255,7 +268,7 @@ class TestConfigValidation(unittest.TestCase):
         quality = PipelineConfig.for_quality("quality")
         self.assertFalse(economy.review)
         self.assertTrue(balanced.review)
-        self.assertFalse(balanced.polish)
+        self.assertTrue(balanced.polish)
         self.assertTrue(quality.polish)
         self.assertEqual(quality.backtranslate_sample, 0.05)
 
@@ -468,6 +481,33 @@ class TestProviderRequestCapabilities(unittest.TestCase):
             self.messages,
         )
         self.assertEqual(router["extra_body"], {"reasoning": {"enabled": False}})
+
+    def test_responses_api_conversion_preserves_controls(self):
+        from trans_novel.llm.providers.transport import (
+            build_request_kwargs,
+            build_responses_request_kwargs,
+        )
+        from trans_novel.model_profiles import DIALECT_OPENAI, ModelCapabilities
+
+        chat = build_request_kwargs(
+            ModelCapabilities(
+                request_dialect=DIALECT_OPENAI,
+                reasoning_efforts=frozenset({"low"}),
+                supports_temperature=True,
+            ),
+            self._model(effort="low"),
+            self.messages,
+            json_mode=True,
+            max_tokens=8,
+            generation_options=GenerationOptions(temperature=0.1),
+        )
+        responses = build_responses_request_kwargs(chat)
+        self.assertEqual(responses["input"], self.messages)
+        self.assertEqual(responses["max_output_tokens"], 4096)
+        self.assertEqual(responses["reasoning"], {"effort": "low"})
+        self.assertEqual(responses["text"], {"format": {"type": "json_object"}})
+        self.assertEqual(responses["temperature"], 0.1)
+        self.assertNotIn("messages", responses)
 
     def test_unknown_capabilities_do_not_send_or_budget_reasoning(self):
         from trans_novel.llm.providers.transport import build_request_kwargs

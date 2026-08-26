@@ -141,6 +141,22 @@ def build_request_kwargs(
     return kwargs
 
 
+def build_responses_request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Convert validated chat-completions arguments for a Responses API model."""
+    value = dict(kwargs)
+    value["input"] = value.pop("messages")
+    max_tokens = value.pop("max_tokens", None)
+    if max_tokens is not None:
+        value["max_output_tokens"] = max(16, max_tokens)
+    response_format = value.pop("response_format", None)
+    if response_format is not None:
+        value["text"] = {"format": response_format}
+    reasoning_effort = value.pop("reasoning_effort", None)
+    if reasoning_effort is not None:
+        value["reasoning"] = {"effort": reasoning_effort}
+    return value
+
+
 def _safe_attr(obj: Any, name: str) -> object:
     try:
         return getattr(obj, name, None)
@@ -226,6 +242,7 @@ class OpenAICompatibleTransport:
                     api_key=api_key or "no-key",
                     base_url=self.base_url,
                     timeout=_REQUEST_TIMEOUT_SECONDS,
+                    max_retries=0,
                 )
         return self._client
 
@@ -240,14 +257,17 @@ class OpenAICompatibleTransport:
         agent: str,
         operation: str,
     ) -> str:
+        capabilities = self.capabilities_for(model_ref.model)
         kwargs = build_request_kwargs(
-            self.capabilities_for(model_ref.model),
+            capabilities,
             model_ref,
             messages,
             json_mode=json_mode,
             max_tokens=max_tokens,
             generation_options=self.generation_options,
         )
+        if capabilities.responses_api:
+            kwargs = build_responses_request_kwargs(kwargs)
         client = self._ensure_client()
 
         telemetry_enabled = self.telemetry_sink is not None
@@ -342,7 +362,11 @@ class OpenAICompatibleTransport:
                 model_ref=model_ref,
             )
             try:
-                response = client.chat.completions.create(**kwargs)
+                response = (
+                    client.responses.create(**kwargs)
+                    if capabilities.responses_api
+                    else client.chat.completions.create(**kwargs)
+                )
             except Exception as error:
                 self.usage.record_attempt_failed(
                     agent=agent,
@@ -378,7 +402,12 @@ class OpenAICompatibleTransport:
                 stage=stage,
             )
             try:
-                content = getattr(response.choices[0].message, "content", None)
+                if capabilities.responses_api:
+                    content = getattr(response, "output_text", None)
+                else:
+                    choices = getattr(response, "choices", None)
+                    message = getattr(choices[0], "message", None) if choices else None
+                    content = getattr(message, "content", None)
             except Exception:
                 emit(
                     started_at=started_at,

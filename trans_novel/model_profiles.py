@@ -35,6 +35,7 @@ class ModelCapabilities:
     supports_thinking_disabled: bool = False
     supports_temperature: bool = False
     supports_seed: bool = False
+    responses_api: bool = False
 
 
 _GENERIC_CAPABILITIES = ModelCapabilities()
@@ -63,6 +64,22 @@ _MODEL_CAPABILITIES: dict[tuple[str, str], ModelCapabilities] = {
     ("opencode-go", "deepseek-v4-flash"): ModelCapabilities(
         request_dialect=DIALECT_DEEPSEEK,
         reasoning_efforts=frozenset({"high", "max"}),
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
+    ("opencode-go", "mimo-v2.5"): ModelCapabilities(
+        request_dialect=DIALECT_DEEPSEEK,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
+    ("opencode-go", "muse-spark-1.2-contributor"): ModelCapabilities(
+        request_dialect=DIALECT_OPENAI,
+        reasoning_efforts=frozenset({"low"}),
+        catalogued=True,
+        supports_temperature=True,
+        responses_api=True,
     ),
     # 百炼的 DeepSeek V4 使用 enable_thinking，并接受四档 reasoning_effort。
     ("bailian", "deepseek-v4-flash"): ModelCapabilities(

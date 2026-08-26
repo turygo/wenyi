@@ -93,6 +93,26 @@ class TestPhase3TelemetryPricing(unittest.TestCase):
                 "reasoning_tokens": 0,
             },
         )
+        self.assertEqual(
+            normalize_response_usage(
+                {
+                    "input_tokens": 20,
+                    "output_tokens": 7,
+                    "total_tokens": 27,
+                    "input_tokens_details": {"cached_tokens": 5},
+                    "output_tokens_details": {"reasoning_tokens": 3},
+                }
+            ),
+            {
+                "prompt_tokens": 20,
+                "completion_tokens": 7,
+                "total_tokens": 27,
+                "cache_hit_tokens": 5,
+                "cache_miss_tokens": 15,
+                "reasoning_tokens": 3,
+            },
+        )
+        self.assertTrue(has_response_usage({"input_tokens": 0}))
         self.assertTrue(has_response_usage({"total_tokens": 0}))
         self.assertFalse(has_response_usage({"prompt_tokens_details": {"cached_tokens": 1}}))
 
