@@ -15,6 +15,7 @@
 - 新增自动评审报告：输出候选严重度、错误类型、每万词加权错误、逐书胜负、证据明细、生产系统状态和基于冻结价格快照的 API 成本。
 - 新增第九阶段的隐藏 `EPUB` 集成测试框架：严格校验输入和哈希，执行三角色金丝雀测试；支持在批次完整提交后安全中断，续跑时为每个候选分别新建 `Application`，确保彼此独立；同时提供单语、双语结构门禁、资源链接校验，以及与第八阶段兼容的清单。
 - EPUB source runs now persist schema-3 lxml text-slot contracts and write translations back to reopened source XHTML while preserving inline structure, resources, and vertical layout.
+- EPUB 导出统一经过独立磁盘重开验证、确定性 `epub_verification.json` 报告和原子发布门禁；失败时保留既有文件并记录稳定事件。
 
 ### Changed
 

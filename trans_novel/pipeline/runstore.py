@@ -238,6 +238,11 @@ class RunStore:
         return os.path.join(self.run_dir, "report.json")
 
     @property
+    def epub_verification_path(self) -> str:
+        """Latest deterministic post-export EPUB verification report."""
+        return os.path.join(self.run_dir, "epub_verification.json")
+
+    @property
     def usage_path(self) -> str:
         return os.path.join(self.run_dir, "usage.json")
 
@@ -676,6 +681,20 @@ class RunStore:
 
     def save_report(self, data: dict) -> None:
         self._write_json(self.report_path, data)
+
+    def save_epub_verification(self, data: dict) -> None:
+        """Atomically persist the latest EPUB verification attempt.
+
+        This deliberately has a dedicated path so export verification can never
+        replace the pipeline's QA ``report.json``.
+        """
+        self._write_json(self.epub_verification_path, data)
+
+    def load_epub_verification(self) -> dict | None:
+        if not os.path.isfile(self.epub_verification_path):
+            return None
+        value = self._read_json(self.epub_verification_path)
+        return value if isinstance(value, dict) else None
 
     def save_usage(self, data: dict) -> None:
         self._write_json(self.usage_path, data)

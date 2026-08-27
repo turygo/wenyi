@@ -770,14 +770,23 @@ class TestHeadingNumberInWriter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ep = os.path.join(d, "novel.epub")
             write_sample_epub(ep)
-            with zipfile.ZipFile(ep, "a", zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr(
-                    "OEBPS/nav.xhtml",
-                    '<html xmlns:epub="http://www.idpf.org/2007/ops">'
-                    '<body><nav epub:type="toc"><ol>'
-                    '<li><a href="ch2.xhtml">old</a></li>'
-                    "</ol></nav></body></html>",
+            with zipfile.ZipFile(ep, "r") as source_zip:
+                entries = {
+                    info.filename: source_zip.read(info.filename) for info in source_zip.infolist()
+                }
+                entries["OEBPS/nav.xhtml"] = (
+                    b'<html xmlns:epub="http://www.idpf.org/2007/ops">'
+                    b'<body><nav epub:type="toc"><ol>'
+                    b'<li><a href="ch2.xhtml">old</a></li>'
+                    b"</ol></nav></body></html>"
                 )
+            with zipfile.ZipFile(ep, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name, data in entries.items():
+                    zf.writestr(
+                        name,
+                        data,
+                        zipfile.ZIP_STORED if name == "mimetype" else zipfile.ZIP_DEFLATED,
+                    )
             store, _ = _run(ep, os.path.join(d, "state"))
             m = store.load_manifest()
             meta = m.setdefault("meta", {})

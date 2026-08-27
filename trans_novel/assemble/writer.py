@@ -63,6 +63,13 @@ _IMAGE_EXTENSION_BY_TYPE = {
     "image/svg+xml": ".svg",
     "image/webp": ".webp",
 }
+_BILINGUAL_CONTAINER_TAGS = frozenset({"li", "blockquote", "td", "th"})
+
+
+def _is_bilingual_container_tag(tag: str) -> bool:
+    return tag.rsplit("}", 1)[-1].lower() in _BILINGUAL_CONTAINER_TAGS
+
+
 _XML_ENCODING = re.compile(
     r"(<\?xml[^>]*\bencoding\s*=\s*)(['\"])[^'\"]+\2",
     re.IGNORECASE,
@@ -530,8 +537,9 @@ def _rewrite_html_document(
     lang: str,
     force_horizontal: bool,
     bilingual: bool = False,
+    rewrite_language: bool = True,
 ) -> bytes:
-    """给 XHTML/HTML 写入译后语言；必要时注入横排覆盖样式/双语原文样式。"""
+    """Rewrite HTML language/layout and optionally inject the bilingual style."""
     try:
         if isinstance(data, bytes):
             text = UnicodeDammit(data).unicode_markup
@@ -543,10 +551,11 @@ def _rewrite_html_document(
         html = soup.find("html")
         if html is None:
             return text.encode("utf-8")
-        html["lang"] = lang
-        html["xml:lang"] = lang
+        if rewrite_language:
+            html["lang"] = lang
+            html["xml:lang"] = lang
         classes = html.get("class")
-        if isinstance(classes, list) and "vrtl" in classes:
+        if force_horizontal and isinstance(classes, list) and "vrtl" in classes:
             html["class"] = [c for c in classes if c != "vrtl"]
         if force_horizontal and soup.find(id=_HORIZONTAL_OVERRIDE_ID) is None:
             head = soup.find("head")
@@ -938,11 +947,57 @@ def _sanitized_source_copy(original: etree._Element, block: etree._Element) -> e
     return clone(original, root=True)
 
 
+def _japanese_ruby_source_copy(
+    original: etree._Element,
+    source_lang: str,
+    source_tag: str,
+) -> etree._Element | None:
+    """Build the schema3 source subtree using the canonical ruby sanitizer."""
+    original_tag = original.tag.rsplit("}", 1)[-1] if isinstance(original.tag, str) else ""
+    if not original_tag:
+        return None
+    source_markup = etree.tostring(original, encoding="unicode", with_tail=False)
+    parsed = BeautifulSoup(source_markup, "html.parser")
+    parsed_root = parsed.find(original_tag)
+    if not isinstance(parsed_root, Tag):
+        return None
+    markup = _japanese_ruby_source(parsed_root, source_lang)
+    if not markup:
+        return None
+
+    if source_tag.startswith("{") and "}" in source_tag:
+        namespace, local_tag = source_tag[1:].split("}", 1)
+    else:
+        namespace = original.nsmap.get(None) if isinstance(original.nsmap, dict) else None
+        local_tag = source_tag.rsplit("}", 1)[-1]
+    namespace_attr = f' xmlns="{namespace}"' if namespace else ""
+    try:
+        return etree.fromstring(f"<{local_tag}{namespace_attr}>{markup}</{local_tag}>".encode())
+    except (etree.XMLSyntaxError, ValueError):
+        return None
+
+
+def _bilingual_source_copy(
+    original: etree._Element,
+    block: etree._Element,
+    *,
+    source_lang: str,
+    source_tag: str,
+) -> etree._Element:
+    ruby_copy = _japanese_ruby_source_copy(original, source_lang, source_tag)
+    if ruby_copy is not None:
+        return ruby_copy
+    copied = _sanitized_source_copy(original, block)
+    copied.tag = source_tag
+    return copied
+
+
 def _add_bilingual_sources(
     root: etree._Element,
     segments: list[Segment],
     *,
     order: str = "target_first",
+    source_lang: str = "",
     source_blocks: dict[tuple[int, ...], etree._Element] | None = None,
     block_refs: dict[tuple[int, ...], etree._Element] | None = None,
 ) -> None:
@@ -964,8 +1019,8 @@ def _add_bilingual_sources(
         if block is None:
             block = _resolve_element_path(root, block_path)
         original = source_blocks.get(block_path) if source_blocks else None
-        tag = block.tag.rsplit("}", 1)[-1].lower() if isinstance(block.tag, str) else "p"
-        container = tag in {"li", "blockquote", "td", "th"}
+        tag = block.tag if isinstance(block.tag, str) else "p"
+        container = _is_bilingual_container_tag(tag)
 
         # A direct ``<br>`` creates one segment per text/tail slot in the
         # same block.  Wrap each translated slot so every source node has an
@@ -1012,16 +1067,16 @@ def _add_bilingual_sources(
         sources: list[etree._Element] = []
         source_tag = "div" if container else "p"
         for segment in block_segments:
+            namespace = block.nsmap.get(None)
+            source_name = f"{{{namespace}}}{source_tag}" if namespace else source_tag
             if original is not None and len(block_segments) == 1 and not container:
-                source = _sanitized_source_copy(original, block)
-                source.tag = (
-                    f"{{{block.nsmap.get(None)}}}{source_tag}"
-                    if block.nsmap.get(None)
-                    else source_tag
+                source = _bilingual_source_copy(
+                    original,
+                    block,
+                    source_lang=source_lang,
+                    source_tag=source_name,
                 )
             else:
-                namespace = block.nsmap.get(None)
-                source_name = f"{{{namespace}}}{source_tag}" if namespace else source_tag
                 source = etree.Element(source_name)
                 source.text = segment.source
             source.set("class", "tn-source ibooks-dark-theme-use-custom-text-color")
@@ -1061,6 +1116,7 @@ def _render_source_resource(
     target_lang: str,
     bilingual: bool = False,
     order: str = "target_first",
+    source_lang: str = "",
 ) -> bytes:
     actual_digest = hashlib.sha256(data).hexdigest()
     if actual_digest != expected_digest:
@@ -1118,6 +1174,7 @@ def _render_source_resource(
             root,
             segments,
             order=order,
+            source_lang=source_lang,
             source_blocks=source_blocks,
             block_refs=block_refs,
         )
@@ -1136,6 +1193,8 @@ def _assemble_source_epub(
 ) -> str:
     manifest = store.load_manifest()
     raw_meta = manifest.get("meta")
+    raw_source_lang = manifest.get("source_lang", "")
+    source_lang = raw_source_lang if isinstance(raw_source_lang, str) else ""
     meta = raw_meta if isinstance(raw_meta, dict) else {}
     schema = meta.get("epub_schema")
     if not isinstance(schema, int) or schema < 3:
@@ -1178,6 +1237,7 @@ def _assemble_source_epub(
             grouped.setdefault(segment.resource_href, []).append(segment)
     toc_entries = [entry for entry in meta.get("toc_entries", []) if isinstance(entry, dict)]
     with zipfile.ZipFile(source_path, "r") as zin, zipfile.ZipFile(out_path, "w") as zout:
+        zout.comment = zin.comment
         for info in zin.infolist():
             name = info.filename
             data = zin.read(name)
@@ -1206,6 +1266,7 @@ def _assemble_source_epub(
                     target_lang=target_lang,
                     bilingual=bilingual,
                     order=order,
+                    source_lang=source_lang,
                 )
                 toc_kind = _toc_kind_at(toc_entries, name)
                 if toc_kind in {"nav", "ncx"}:
@@ -1252,6 +1313,7 @@ def _rewrite_opf_language_lxml(tree: etree._ElementTree, target_lang: str) -> No
     for node in tree.getroot().iter():
         if node.tag == dc_language:
             node.text = target_lang
+            break
 
 
 def _assemble_epub(
@@ -1369,10 +1431,12 @@ def _assemble_epub(
                     # 优先按 toc_entries 中的 toc_path + kind 路由（OPF 可把 NCX 命名为
                     # 任意扩展名，如 toc.xml）；没有精确匹配的目录项时，才改用 .ncx 后缀判断。
                     exact = _indexed_toc_entries(toc_entries, name)
-                    toc_source: list[dict[str, object]] | dict[str, str] = (
-                        toc_entries if exact else legacy_titles
-                    )
-                    zout.writestr(info, _rewrite_toc(data, toc_source, is_ncx=True, toc_path=name))
+                    if exact:
+                        zout.writestr(
+                            info, _rewrite_toc(data, toc_entries, is_ncx=True, toc_path=name)
+                        )
+                    else:
+                        zout.writestr(info, data)
                 elif toc_kind == "nav" or (toc_kind is None and low.endswith(_HTML_EXTS)):
                     html_data = rendered[name].encode("utf-8") if name in rendered else data
                     exact = _indexed_toc_entries(toc_entries, name)
@@ -1422,6 +1486,7 @@ def _inject_bilingual_style(out_path: str, chapter_filenames: set[str], lang: st
                         lang=lang,
                         force_horizontal=False,
                         bilingual=True,
+                        rewrite_language=False,
                     )
                 zout.writestr(info, data)
         os.replace(tmp_path, out_path)
@@ -1574,14 +1639,38 @@ def assemble(
         out_path = out_path or _default_out(source_path, "txt", "", bilingual=bilingual)
         return _assemble_text(store, out_path, bilingual=bilingual, order=order)
     # epub
+    from trans_novel.assemble.epub_verifier import publish_epub
+
     out_path = out_path or _default_out(source_path, "epub", "", bilingual=bilingual)
     if m["fmt"] == "epub":
-        return _assemble_epub(store, source_path, out_path, bilingual=bilingual, order=order)
-    # fb2 / text → 从章节数据生成规范的 EPUB
-    return _build_epub_from_chapters(
+        mode = "bilingual" if bilingual else "monolingual"
+        return publish_epub(
+            store,
+            source_path,
+            out_path,
+            mode=mode,
+            bilingual=bilingual,
+            bilingual_order=order,
+            writer=lambda temp_path: _assemble_epub(
+                store,
+                source_path,
+                temp_path,
+                bilingual=bilingual,
+                order=order,
+            ),
+        )
+    return publish_epub(
         store,
-        source_path,
+        None,
         out_path,
+        mode="generated",
         bilingual=bilingual,
-        order=order,
+        bilingual_order=order,
+        writer=lambda temp_path: _build_epub_from_chapters(
+            store,
+            source_path,
+            temp_path,
+            bilingual=bilingual,
+            order=order,
+        ),
     )
