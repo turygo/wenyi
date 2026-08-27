@@ -26,8 +26,26 @@ from urllib.parse import unquote, urlsplit
 from bs4 import BeautifulSoup, Tag
 from lxml import etree
 
+from trans_novel.assemble.bilingual_dom import (
+    BILINGUAL_CSS as _BILINGUAL_CSS,
+)
+from trans_novel.assemble.bilingual_dom import (
+    BILINGUAL_DIRECT_TARGET_ATTRS,
+    BILINGUAL_SOURCE_CLASS,
+    BILINGUAL_STYLE_ID,
+    dedupe_segment_mappings,
+    direct_run_boundary,
+    direct_run_has_active_ancestor,
+    direct_run_is_active,
+    direct_run_source_copy,
+    is_bilingual_container_tag,
+    japanese_ruby_source_copy,
+    sanitized_source_copy,
+    segment_needs_source,
+    source_node_is_valid,
+    style_shape_is_valid,
+)
 from trans_novel.assemble.writer import (
-    _BILINGUAL_CSS,
     _HORIZONTAL_OVERRIDE_CSS,
     _HORIZONTAL_OVERRIDE_ID,
     _epub_looks_vertical,
@@ -1321,7 +1339,7 @@ def _validate_one(
             styles = soup.find_all("style")
             for style in styles:
                 style_id = str(style.get("id") or "")
-                if style_id == "tn-bilingual-style":
+                if style_id == BILINGUAL_STYLE_ID:
                     if bilingual is False or style.get_text() != _BILINGUAL_CSS:
                         failures.append(
                             _item(
@@ -1351,19 +1369,6 @@ def _validate_one(
                         result["generated_resources"].append(
                             f"{content_path}#{_HORIZONTAL_OVERRIDE_ID}"
                         )
-            if (
-                bilingual
-                and item in content_items
-                and not soup.find("style", id="tn-bilingual-style")
-            ):
-                failures.append(
-                    _item(
-                        "resources",
-                        "generated_resource_missing",
-                        content_path,
-                        "tn-bilingual-style",
-                    )
-                )
         if not model["nav_items"] and not model["ncx_items"]:
             checked["nav"] += 1
             failures.append(_item("nav", "missing_toc", opf_path, "toc"))
@@ -1991,22 +1996,36 @@ def _bilingual_proof(
         if isinstance(node.tag, str) and "tn-source" in str(node.get("class", "")).split()
     ]
     expected: list[tuple[str, tuple[int, ...]]] = []
+    expected_total = 0
+    container_paths: set[tuple[int, ...]] = set()
     for segment in segments:
-        if segment.kind == "heading" or not segment.source.strip():
+        if not segment_needs_source(segment):
             continue
-        target = (
-            segment.target
-            if isinstance(segment.target, str) and segment.target.strip()
-            else segment.source
+        state = segment.epub_state
+        assert state is not None
+        block_path = tuple(state.block_path)
+        source_block = _resolve_path_lxml(root_source, block_path)
+        if source_block is not None and is_bilingual_container_tag(source_block.tag):
+            if block_path not in container_paths:
+                container_paths.add(block_path)
+                expected_source = japanese_ruby_source_copy(source_block, source_lang, "div")
+                if expected_source is None:
+                    expected_source = sanitized_source_copy(source_block, "div")
+                expected.append((_source_node_visible_text(expected_source), block_path))
+                expected_total += 1
+            continue
+        direct_segment = source_block is not None and any(
+            isinstance(child.tag, str) and _local_name(child.tag).lower() == "br"
+            for child in source_block
         )
-        if segment.source != target:
-            state = segment.epub_state
-            if state is not None:
-                expected.append((segment.source, tuple(state.block_path)))
-
+        if direct_segment:
+            expected_total += len(state.slots)
+        else:
+            expected.append((segment.source, block_path))
+            expected_total += 1
     for node in source_nodes:
         attrs = dict(node.attrib)
-        if attrs != {"class": "tn-source ibooks-dark-theme-use-custom-text-color"}:
+        if not source_node_is_valid(node) or attrs != {"class": BILINGUAL_SOURCE_CLASS}:
             failures.append(
                 _item("bilingual_source", "source_node_attributes", resource, "invalid")
             )
@@ -2051,34 +2070,34 @@ def _bilingual_proof(
         id(node): ((node.getparent().text if node.getparent() is not None else None), node.tail)
         for node in source_nodes
     }
+    node_mixed_context: dict[
+        int, tuple[str | None, list[tuple[etree._Element, str | None, str | None]]]
+    ] = {}
+    for parent in node_parents.values():
+        if parent is None or id(parent) in node_mixed_context:
+            continue
+        node_mixed_context[id(parent)] = (
+            parent.text,
+            [(child, child.text, child.tail) for child in _element_children_lxml(parent)],
+        )
     style_nodes = [
         node
         for node in root_output.iter()
         if isinstance(node.tag, str)
         and _local_name(node.tag).lower() == "style"
-        and node.get("id") == "tn-bilingual-style"
+        and node.get("id") == BILINGUAL_STYLE_ID
     ]
-    if len(style_nodes) != 1:
+    if (expected_total and len(style_nodes) != 1) or (not expected_total and style_nodes):
         failures.append(
             _item("bilingual_source", "bilingual_style_count", resource, "count_mismatch")
         )
-    wrapper_nodes: set[int] = set()
-    for node in source_nodes:
-        parent = node.getparent()
-        if parent is None:
-            continue
-        siblings = _element_children_lxml(parent)
-        try:
-            index = siblings.index(node)
-        except ValueError:
-            continue
-        for sibling in siblings[max(0, index - 2) : index + 3]:
-            if (
-                sibling is not node
-                and _local_name(sibling.tag).lower() == "span"
-                and not sibling.attrib
-            ):
-                wrapper_nodes.add(id(sibling))
+
+    direct_target_total = sum(
+        1
+        for node in root_output.iter()
+        if isinstance(node.tag, str) and dict(node.attrib) == BILINGUAL_DIRECT_TARGET_ATTRS
+    )
+    direct_target_used = 0
 
     def remove_preserving_tail(node: etree._Element) -> None:
         parent = node.getparent()
@@ -2109,27 +2128,17 @@ def _bilingual_proof(
     # paragraph.  Prove those pairs from the pre-removal sibling snapshot:
     # the block path alone resolves to the paragraph, not its generated
     # target spans, so the generic parent-order branch cannot validate them.
-    from trans_novel.assemble.writer import _is_bilingual_container_tag
 
     direct_groups: dict[tuple[int, ...], list[Any]] = defaultdict(list)
     for segment in segments:
-        if segment.kind == "heading" or not segment.source.strip():
-            continue
-        target_text = (
-            segment.target
-            if isinstance(segment.target, str) and segment.target.strip()
-            else segment.source
-        )
-        if segment.source == target_text or segment.epub_state is None:
+        if not segment_needs_source(segment):
             continue
         state = segment.epub_state
-        slots = getattr(state, "slots", None)
-        if not isinstance(slots, list | tuple) or len(slots) != 1:
-            continue
+        assert state is not None
         source_block = _resolve_path_lxml(root_source, tuple(state.block_path))
         if (
             source_block is None
-            or _is_bilingual_container_tag(source_block.tag)
+            or is_bilingual_container_tag(source_block.tag)
             or not any(
                 isinstance(child.tag, str) and _local_name(child.tag).lower() == "br"
                 for child in source_block
@@ -2138,51 +2147,260 @@ def _bilingual_proof(
             continue
         direct_groups[tuple(state.block_path)].append(segment)
 
+    direct_source_paths: set[tuple[int, ...]] = set()
+    direct_source_object_ids: set[int] = set()
     for block_path, direct_segments in direct_groups.items():
-        if len(direct_segments) < 2:
-            continue
         target_block = _resolve_path_lxml(root_output, block_path)
         if target_block is None:
             failures.append(
                 _item("bilingual_source", "source_target_pair_mismatch", resource, "pair_mismatch")
             )
             continue
-        siblings = node_siblings.get(id(target_block), _element_children_lxml(target_block))
-        direct_sources = [
-            node for node in source_nodes if node_parents.get(id(node)) is target_block
+
+        def structural_children(parent: etree._Element) -> list[etree._Element]:
+            return [
+                child
+                for child in _element_children_lxml(parent)
+                if (
+                    "tn-source" not in str(child.get("class", "")).split()
+                    and dict(child.attrib) != BILINGUAL_DIRECT_TARGET_ATTRS
+                )
+            ]
+
+        def resolve_owner(
+            path: tuple[int, ...], target_block: etree._Element = target_block
+        ) -> etree._Element | None:
+            current = target_block
+            for index in path:
+                children = structural_children(current)
+                if index < 0 or index >= len(children):
+                    return None
+                current = children[index]
+            return current
+
+        def source_boundary(
+            original_owner: etree._Element,
+            source_block: etree._Element = source_block,
+            block_path: tuple[int, ...] = block_path,
+            target_block: etree._Element = target_block,
+            resolve_owner: Callable[[tuple[int, ...]], etree._Element | None] = resolve_owner,
+        ) -> etree._Element:
+            original_boundary = direct_run_boundary(source_block, original_owner)
+            boundary_path = _element_path_lxml(root_source, original_boundary)
+            if boundary_path is None or boundary_path[: len(block_path)] != block_path:
+                return target_block
+            boundary = resolve_owner(tuple(boundary_path[len(block_path) :]))
+            return boundary if boundary is not None else target_block
+
+        block_direct_sources = [
+            node
+            for node in source_nodes
+            if any(ancestor is target_block for ancestor in node.iterancestors())
         ]
-        if len(direct_sources) != len(direct_segments):
+        assigned: set[tuple[int, ...]] = set()
+        last_source_index: dict[int, int] = {}
+        for segment in direct_segments:
+            state = segment.epub_state
+            assert state is not None
+            for slot in state.slots:
+                owner = resolve_owner(tuple(slot.element_path))
+                original_owner = _resolve_path_lxml(root_source, (*block_path, *slot.element_path))
+                if owner is None or original_owner is None:
+                    failures.append(
+                        _item(
+                            "bilingual_source",
+                            "source_target_pair_mismatch",
+                            resource,
+                            "pair_mismatch",
+                        )
+                    )
+                    continue
+                boundary = source_boundary(original_owner)
+                leading = getattr(slot, "leading_whitespace", "")
+                trailing = getattr(slot, "trailing_whitespace", "")
+                target_core = getattr(slot, "target_core", None)
+                source_core = getattr(slot, "source_core", slot.source_value)
+                expected_target = (
+                    leading + (target_core if target_core is not None else source_core) + trailing
+                )
+
+                if slot.field == "text":
+                    target_candidates = [
+                        child
+                        for child in _element_children_lxml(owner)
+                        if dict(child.attrib) == BILINGUAL_DIRECT_TARGET_ATTRS
+                    ]
+                    target_node = next(
+                        (
+                            child
+                            for child in target_candidates
+                            if _source_node_visible_text(child) == _norm_text(expected_target)
+                        ),
+                        None,
+                    )
+                    source_parent = (
+                        owner
+                        if boundary is owner and not direct_run_is_active(owner)
+                        else boundary.getparent()
+                    )
+                else:
+                    source_parent = boundary if boundary is target_block else boundary.getparent()
+                    target_parent = owner.getparent()
+                    target_node = None
+                    if target_parent is not None:
+                        siblings = _element_children_lxml(target_parent)
+                        try:
+                            owner_index = siblings.index(owner)
+                        except ValueError:
+                            owner_index = -1
+                        if owner_index >= 0:
+                            target_node = next(
+                                (
+                                    child
+                                    for child in siblings[owner_index + 1 :]
+                                    if dict(child.attrib) == BILINGUAL_DIRECT_TARGET_ATTRS
+                                    and _source_node_visible_text(child)
+                                    == _norm_text(expected_target)
+                                ),
+                                None,
+                            )
+                if target_node is None or dict(target_node.attrib) != BILINGUAL_DIRECT_TARGET_ATTRS:
+                    failures.append(
+                        _item(
+                            "bilingual_source",
+                            "source_target_pair_mismatch",
+                            resource,
+                            "pair_mismatch",
+                        )
+                    )
+                else:
+                    direct_target_used += 1
+
+                if source_parent is None:
+                    failures.append(
+                        _item(
+                            "bilingual_source",
+                            "source_target_pair_mismatch",
+                            resource,
+                            "pair_mismatch",
+                        )
+                    )
+                    continue
+                candidates = [
+                    node
+                    for node in _element_children_lxml(source_parent)
+                    if "tn-source" in str(node.get("class", "")).split()
+                    and _element_path_lxml(root_output, node) not in assigned
+                    and _source_node_visible_text(node) == _norm_text(slot.source_value)
+                ]
+                source_node = None
+                if (
+                    boundary is owner and slot.field == "text" and not direct_run_is_active(owner)
+                ) or (
+                    slot.field == "tail"
+                    and boundary is owner
+                    and not direct_run_is_active(owner)
+                    and target_node is not None
+                ):
+                    siblings = _element_children_lxml(source_parent)
+                    target_index = siblings.index(target_node)
+                    source_node = next(
+                        (
+                            node
+                            for node in candidates
+                            if (siblings.index(node) < target_index) == (order == "source_first")
+                        ),
+                        None,
+                    )
+                elif (
+                    slot.field == "tail"
+                    and boundary is owner
+                    and target_node is not None
+                    and target_node.getparent() is source_parent
+                ):
+                    siblings = _element_children_lxml(source_parent)
+                    target_index = siblings.index(target_node)
+                    boundary_index = siblings.index(boundary) if boundary in siblings else -1
+                    source_node = next(
+                        (
+                            node
+                            for node in candidates
+                            if boundary_index >= 0
+                            and ((siblings.index(node) < target_index) == (order == "source_first"))
+                            and (
+                                (siblings.index(node) < boundary_index) == (order == "source_first")
+                            )
+                        ),
+                        None,
+                    )
+                elif boundary is not target_block:
+                    siblings = _element_children_lxml(source_parent)
+                    boundary_index = siblings.index(boundary) if boundary in siblings else -1
+                    source_node = next(
+                        (
+                            node
+                            for node in candidates
+                            if boundary_index >= 0
+                            and (
+                                (siblings.index(node) < boundary_index) == (order == "source_first")
+                            )
+                        ),
+                        None,
+                    )
+                else:
+                    source_node = candidates[0] if candidates else None
+                if source_node is None:
+                    failures.append(
+                        _item("bilingual_source", "source_node_order", resource, "pair_mismatch")
+                    )
+                    continue
+                source_path = _element_path_lxml(root_output, source_node)
+                if source_path is None:
+                    failures.append(
+                        _item("bilingual_source", "source_node_order", resource, "pair_mismatch")
+                    )
+                    continue
+                siblings = _element_children_lxml(source_parent)
+                source_index = siblings.index(source_node)
+                parent_key = id(source_parent)
+                prior_index = last_source_index.get(parent_key)
+                if prior_index is not None and source_index <= prior_index:
+                    failures.append(
+                        _item("bilingual_source", "source_node_order", resource, "pair_mismatch")
+                    )
+                last_source_index[parent_key] = source_index
+                direct_source_object_ids.add(id(source_node))
+                assigned.add(source_path)
+                direct_source_paths.add(source_path)
+                if direct_run_has_active_ancestor(target_block, source_node):
+                    failures.append(
+                        _item("bilingual_source", "source_node_active_ancestor", resource, "active")
+                    )
+                expected_source = direct_run_source_copy(
+                    source_block,
+                    original_owner,
+                    source_lang=source_lang,
+                    source_tag=source_node.tag,
+                    source_value=slot.source_value,
+                    ruby_source=slot.field == "text",
+                )
+                if _source_subtree_signature(expected_source) != _source_subtree_signature(
+                    source_node
+                ):
+                    failures.append(
+                        _item(
+                            "bilingual_source", "source_node_subtree_mismatch", resource, "invalid"
+                        )
+                    )
+        if len(block_direct_sources) != len(assigned):
             failures.append(
                 _item("bilingual_source", "source_node_order", resource, "pair_mismatch")
             )
-            continue
-        for source_node, segment in zip(direct_sources, direct_segments, strict=True):
-            source_index = siblings.index(source_node) if source_node in siblings else -1
-            target_index = source_index + (-1 if order == "target_first" else 1)
-            if source_index < 0 or target_index < 0 or target_index >= len(siblings):
-                failures.append(
-                    _item("bilingual_source", "source_node_order", resource, "pair_mismatch")
-                )
-                continue
-            paired_target = siblings[target_index]
-            expected_target = (
-                segment.target
-                if isinstance(segment.target, str) and segment.target.strip()
-                else segment.source
-            )
-            if (
-                _local_name(source_node.tag).lower() != "span"
-                or _local_name(paired_target.tag).lower() != "span"
-                or dict(paired_target.attrib)
-                or _source_node_visible_text(source_node) != _norm_text(segment.source)
-                or _source_node_visible_text(paired_target) != _norm_text(expected_target)
-            ):
-                failures.append(
-                    _item("bilingual_source", "source_node_order", resource, "pair_mismatch")
-                )
 
+    if direct_target_used != direct_target_total:
+        failures.append(_item("bilingual_source", "source_node_order", resource, "pair_mismatch"))
     for style in style_nodes:
-        if dict(style.attrib) != {"id": "tn-bilingual-style"} or style.text != _BILINGUAL_CSS:
+        if not style_shape_is_valid(style):
             failures.append(
                 _item("bilingual_source", "bilingual_style_mismatch", resource, "invalid")
             )
@@ -2190,14 +2408,16 @@ def _bilingual_proof(
     for node in list(source_nodes):
         remove_preserving_tail(node)
     for node in list(root_output.iter()):
-        if id(node) in wrapper_nodes and not len(node):
+        if dict(node.attrib) == BILINGUAL_DIRECT_TARGET_ATTRS and not len(node):
             unwrap_preserving_text(node)
 
-    if len(source_nodes) != len(expected):
+    if len(source_nodes) != expected_total:
         failures.append(_item("bilingual_source", "source_node_count", resource, "count_mismatch"))
 
     matched: set[int] = set()
     for node in source_nodes:
+        if id(node) in direct_source_object_ids:
+            continue
         text = _source_node_visible_text(node)
         candidates = [
             (index, source_text, block_path)
@@ -2225,14 +2445,13 @@ def _bilingual_proof(
                 _local_name(descendant.tag).lower() == "br" for descendant in source_block.iter()
             )
         ):
-            from trans_novel.assemble.writer import _bilingual_source_copy
-
-            expected_source = _bilingual_source_copy(
+            expected_source = japanese_ruby_source_copy(
                 source_block,
-                source_block,
-                source_lang=source_lang,
-                source_tag=node.tag,
+                source_lang,
+                node.tag,
             )
+            if expected_source is None:
+                expected_source = sanitized_source_copy(source_block, node.tag)
             if _source_subtree_signature(expected_source) != _source_subtree_signature(node):
                 failures.append(
                     _item(
@@ -2253,18 +2472,28 @@ def _bilingual_proof(
         ):
             continue
         node_index = original_children.index(node)
-        original_parent_text, original_node_tail = node_text_context.get(id(node), (None, None))
-        if parent is target and _local_name(target.tag).lower() in {"li", "blockquote", "td", "th"}:
-            if order == "source_first" and not (original_node_tail or "").strip():
-                failures.append(
-                    _item("bilingual_source", "source_node_order", resource, "pair_mismatch")
-                )
-            if order == "target_first" and not (original_parent_text or "").strip():
-                failures.append(
-                    _item("bilingual_source", "source_node_order", resource, "pair_mismatch")
-                )
-            expected_index = 0 if order == "source_first" else len(original_children) - 1
-            if node_index != expected_index:
+        _original_parent_text, _original_node_tail = node_text_context.get(id(node), (None, None))
+        if parent is target and is_bilingual_container_tag(target.tag):
+            mixed = node_mixed_context.get(id(parent))
+            before_parts: list[str] = []
+            after_parts: list[str] = []
+            seen_source = False
+            if mixed is not None:
+                parent_text, entries = mixed
+                before_parts.append(parent_text or "")
+                for child, _child_text, child_tail in entries:
+                    if child is node:
+                        seen_source = True
+                        after_parts.append(child_tail or "")
+                        continue
+                    visible = _source_node_visible_text(child)
+                    if seen_source:
+                        after_parts.extend((visible, child_tail or ""))
+                    else:
+                        before_parts.extend((visible, child_tail or ""))
+            if (order == "target_first" and _norm_text("".join(after_parts))) or (
+                order == "source_first" and _norm_text("".join(before_parts))
+            ):
                 failures.append(
                     _item("bilingual_source", "source_node_order", resource, "pair_mismatch")
                 )
@@ -2348,12 +2577,22 @@ def _slot_proof(
 ) -> dict[str, int]:
     from trans_novel.ingest.epub_reader import _resource_parser
 
+    all_segments = [
+        segment
+        for chapter in chapters
+        for segment in chapter.segments
+        if segment.epub_state is not None and segment.epub_state.resource_href
+    ]
+    try:
+        deduped_segments = dedupe_segment_mappings(all_segments)
+    except ValueError:
+        failures.append(_item("state", "slot_mapping_ambiguous", "<state>", "schema3"))
+        deduped_segments = all_segments
     by_resource: dict[str, list[Any]] = defaultdict(list)
-    for chapter in chapters:
-        for segment in chapter.segments:
-            state = segment.epub_state
-            if state is not None and state.resource_href:
-                by_resource[state.resource_href].append(segment)
+    for segment in deduped_segments:
+        state = segment.epub_state
+        assert state is not None
+        by_resource[state.resource_href].append(segment)
     differences = {"text_slots": 0, "toc_labels": 0, "language_fields": 0, "bilingual_nodes": 0}
     try:
         source_zip = zipfile.ZipFile(source_path, "r")
@@ -2439,6 +2678,7 @@ def _slot_proof(
 
             root_source, root_output = source_tree.getroot(), output_tree.getroot()
             slot_map: dict[tuple[tuple[int, ...], str], Any] = {}
+            direct_cleared: set[tuple[tuple[int, ...], str]] = set()
             if target_lang:
                 source_lang_attrs = {
                     key: value for key, value in root_source.attrib.items() if _lang_attr(key)
@@ -2462,6 +2702,18 @@ def _slot_proof(
                 if block_source is None:
                     failures.append(_item("dom", "block_locator_missing", resource, "state"))
                     continue
+                if (
+                    bilingual
+                    and segment_needs_source(segment)
+                    and any(
+                        isinstance(child.tag, str) and _local_name(child.tag).lower() == "br"
+                        for child in block_source
+                    )
+                ):
+                    direct_cleared.update(
+                        (tuple(state.block_path) + tuple(slot.element_path), slot.field)
+                        for slot in state.slots
+                    )
                 fingerprint = hashlib.sha256(
                     etree.tostring(block_source, encoding="utf-8", with_tail=False)
                 ).hexdigest()
@@ -2592,9 +2844,10 @@ def _slot_proof(
 
                     expected_value = normalize_heading_numbering(expected_value)
                 actual_value = getattr(owner, field)
-                if actual_value != expected_value:
+                cleared = actual_value is None and (location, field) in direct_cleared
+                if actual_value != expected_value and not cleared:
                     failures.append(_item("dom", "slot_value_mismatch", resource, "target"))
-                if actual_value != slot.source_value:
+                if cleared or actual_value != slot.source_value:
                     differences["text_slots"] += 1
     return differences
 

@@ -19,12 +19,27 @@ from copy import deepcopy
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
 from lxml import etree
 
+from trans_novel.assemble.bilingual_dom import (
+    BILINGUAL_CSS,
+    BILINGUAL_DIRECT_TARGET_ATTRS,
+    BILINGUAL_SOURCE_CLASS,
+    BILINGUAL_STYLE_ID,
+    append_bilingual_style,
+    dedupe_segment_mappings,
+    direct_run_boundary,
+    direct_run_is_active,
+    direct_run_source_copy,
+    has_reserved_source_collision,
+    is_bilingual_container_tag,
+    japanese_ruby_source_copy,
+    sanitized_source_copy,
+    segment_needs_source,
+)
 from trans_novel.ingest.epub_toc import nav_root_list, nav_toc_scopes
 from trans_novel.ingest.fb2_reader import read_fb2_binaries
 from trans_novel.ingest.models import (
     KIND_HEADING,
     Chapter,
-    EpubTextSlot,
     Segment,
     _normalized_slot_text,
     _slot_contract_digest,
@@ -40,7 +55,6 @@ _VERTICAL_MARKERS = (
     re.compile(rb"\bclass\s*=\s*['\"][^'\"]*\bvrtl\b", re.I),
 )
 _HORIZONTAL_OVERRIDE_ID = "trans-novel-horizontal-override"
-_BILINGUAL_STYLE_ID = "tn-bilingual-style"
 _HORIZONTAL_OVERRIDE_CSS = (
     "html, body { "
     "writing-mode: horizontal-tb !important; "
@@ -63,35 +77,18 @@ _IMAGE_EXTENSION_BY_TYPE = {
     "image/svg+xml": ".svg",
     "image/webp": ".webp",
 }
-_BILINGUAL_CONTAINER_TAGS = frozenset({"li", "blockquote", "td", "th"})
+_BILINGUAL_STYLE_ID = BILINGUAL_STYLE_ID
+_BILINGUAL_CSS = BILINGUAL_CSS
 
 
 def _is_bilingual_container_tag(tag: str) -> bool:
-    return tag.rsplit("}", 1)[-1].lower() in _BILINGUAL_CONTAINER_TAGS
+    return is_bilingual_container_tag(tag)
 
 
 _XML_ENCODING = re.compile(
     r"(<\?xml[^>]*\bencoding\s*=\s*)(['\"])[^'\"]+\2",
     re.IGNORECASE,
 )
-_BILINGUAL_CSS = """\
-.tn-source {
-  font-size: 0.88em;
-  line-height: 1.55;
-  color: #6b6b6b;
-  background-color: #f4f3f0;
-  padding: 0.5em 0.8em;
-  border-radius: 5px;
-  margin: 0.2em 0 1em;
-}
-@media (prefers-color-scheme: dark) {
-  .tn-source {
-    color: #a8a8a8;
-    background-color: #2a2a2a;
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14);
-  }
-}
-"""
 
 
 def _sanitize_filename(name: str, fallback: str = "translated") -> str:
@@ -923,28 +920,8 @@ def _attr_local_lxml(element: etree._Element, name: str) -> str:
 
 
 def _sanitized_source_copy(original: etree._Element, block: etree._Element) -> etree._Element:
-    """Copy visible source structure without duplicating active EPUB nodes."""
-    atomic = {"audio", "canvas", "embed", "img", "math", "object", "svg", "video"}
-
-    def clone(node: etree._Element, *, root: bool = False):
-        local = node.tag.rsplit("}", 1)[-1].lower() if isinstance(node.tag, str) else ""
-        if not root and local in atomic:
-            return None
-        copied = etree.Element(node.tag)
-        copied.text = node.text
-        for child in node:
-            if not isinstance(child.tag, str):
-                continue
-            child_copy = clone(child)
-            if child_copy is not None:
-                copied.append(child_copy)
-                if child.tail:
-                    child_copy.tail = child.tail
-            elif child.tail:
-                copied.text = (copied.text or "") + child.tail
-        return copied
-
-    return clone(original, root=True)
+    """Copy only safe source text/inline markup from the original block."""
+    return sanitized_source_copy(original)
 
 
 def _japanese_ruby_source_copy(
@@ -952,29 +929,8 @@ def _japanese_ruby_source_copy(
     source_lang: str,
     source_tag: str,
 ) -> etree._Element | None:
-    """Build the schema3 source subtree using the canonical ruby sanitizer."""
-    original_tag = original.tag.rsplit("}", 1)[-1] if isinstance(original.tag, str) else ""
-    if not original_tag:
-        return None
-    source_markup = etree.tostring(original, encoding="unicode", with_tail=False)
-    parsed = BeautifulSoup(source_markup, "html.parser")
-    parsed_root = parsed.find(original_tag)
-    if not isinstance(parsed_root, Tag):
-        return None
-    markup = _japanese_ruby_source(parsed_root, source_lang)
-    if not markup:
-        return None
-
-    if source_tag.startswith("{") and "}" in source_tag:
-        namespace, local_tag = source_tag[1:].split("}", 1)
-    else:
-        namespace = original.nsmap.get(None) if isinstance(original.nsmap, dict) else None
-        local_tag = source_tag.rsplit("}", 1)[-1]
-    namespace_attr = f' xmlns="{namespace}"' if namespace else ""
-    try:
-        return etree.fromstring(f"<{local_tag}{namespace_attr}>{markup}</{local_tag}>".encode())
-    except (etree.XMLSyntaxError, ValueError):
-        return None
+    """Build the shared canonical Japanese ruby source subtree."""
+    return japanese_ruby_source_copy(original, source_lang, source_tag)
 
 
 def _bilingual_source_copy(
@@ -984,12 +940,14 @@ def _bilingual_source_copy(
     source_lang: str,
     source_tag: str,
 ) -> etree._Element:
-    ruby_copy = _japanese_ruby_source_copy(original, source_lang, source_tag)
-    if ruby_copy is not None:
-        return ruby_copy
-    copied = _sanitized_source_copy(original, block)
-    copied.tag = source_tag
+    copied = _japanese_ruby_source_copy(original, source_lang, source_tag)
+    if copied is None:
+        copied = sanitized_source_copy(original, source_tag)
     return copied
+
+
+def _eligible_bilingual_segment(segment: Segment) -> bool:
+    return segment_needs_source(segment)
 
 
 def _add_bilingual_sources(
@@ -1000,19 +958,16 @@ def _add_bilingual_sources(
     source_lang: str = "",
     source_blocks: dict[tuple[int, ...], etree._Element] | None = None,
     block_refs: dict[tuple[int, ...], etree._Element] | None = None,
-) -> None:
+) -> int:
     """Add source copies while preserving ruby/inline structure and ordering."""
     grouped: dict[tuple[int, ...], list[Segment]] = {}
     for segment in segments:
-        state = segment.epub_state
-        if (
-            state is None
-            or segment.kind == KIND_HEADING
-            or not segment.target
-            or segment.target.strip() == segment.source.strip()
-        ):
+        if not _eligible_bilingual_segment(segment):
             continue
+        state = segment.epub_state
+        assert state is not None
         grouped.setdefault(state.block_path, []).append(segment)
+    added = 0
 
     for block_path, block_segments in grouped.items():
         block = block_refs.get(block_path) if block_refs else None
@@ -1021,55 +976,165 @@ def _add_bilingual_sources(
         original = source_blocks.get(block_path) if source_blocks else None
         tag = block.tag if isinstance(block.tag, str) else "p"
         container = _is_bilingual_container_tag(tag)
+        direct_br = any(
+            isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1].lower() == "br"
+            for child in (original if original is not None else block)
+        )
 
-        # A direct ``<br>`` creates one segment per text/tail slot in the
-        # same block.  Wrap each translated slot so every source node has an
-        # unambiguous adjacent target without flattening or re-splitting text.
-        if len(block_segments) > 1 and not container:
+        # Container entries have one legal nested source block.  This is also
+        # the direct-br representation: preserving the original ``br`` and
+        # inline descendants in one sanitized copy avoids invalid siblings
+        # under ``tr``/``ul``/``ol``/``dl``.
+        if container:
+            namespace = block.nsmap.get(None)
+            source_tag = "div"
+            source_name = f"{{{namespace}}}{source_tag}" if namespace else source_tag
+            source = (
+                _bilingual_source_copy(
+                    original,
+                    block,
+                    source_lang=source_lang,
+                    source_tag=source_name,
+                )
+                if original is not None
+                else etree.Element(source_name)
+            )
+            if original is None:
+                source.text = block_segments[0].source
+            source.set("class", BILINGUAL_SOURCE_CLASS)
+            source.tail = None
+            if order == "source_first":
+                source.tail = block.text
+                block.text = None
+                block.insert(0, source)
+            else:
+                block.append(source)
+            added += 1
+            continue
+
+        # Direct-br runs preserve the original inline owners.  Target wrappers
+        # stay at the slot owner (so an original link/ruby still renders the
+        # translated text), while source wrappers are lifted outside the
+        # outermost active owner.  All owner/boundary references are captured
+        # before the first insertion; persisted slot paths remain authoritative.
+        if direct_br:
             namespace = block.nsmap.get(None)
             span_name = f"{{{namespace}}}span" if namespace else "span"
-            if all(
-                segment.epub_state is not None and len(segment.epub_state.slots) == 1
-                for segment in block_segments
-            ):
-                owners: list[tuple[Segment, EpubTextSlot, etree._Element]] = []
-                for segment in block_segments:
-                    state = segment.epub_state
-                    assert state is not None
-                    slot = state.slots[0]
-                    owners.append((segment, slot, _resolve_element_path(block, slot.element_path)))
-                for segment, slot, owner in owners:
-                    state = segment.epub_state
-                    assert state is not None
-                    source = etree.Element(span_name)
-                    source.text = segment.source
-                    source.set("class", "tn-source ibooks-dark-theme-use-custom-text-color")
-                    target = etree.Element(span_name)
-                    target.text = owner.text if slot.field == "text" else owner.tail
+            owner_map: dict[int, list[tuple[object, etree._Element, etree._Element]]] = {}
+            for segment in block_segments:
+                state = segment.epub_state
+                assert state is not None
+                entries: list[tuple[object, etree._Element, etree._Element]] = []
+                for slot in state.slots:
+                    owner = _resolve_element_path(block, slot.element_path)
+                    boundary = direct_run_boundary(block, owner)
+                    entries.append((slot, owner, boundary))
+                owner_map[id(segment)] = entries
+
+            pending_sources: list[
+                tuple[
+                    object,
+                    etree._Element,
+                    etree._Element,
+                    etree._Element,
+                    etree._Element,
+                ]
+            ] = []
+            for segment in block_segments:
+                state = segment.epub_state
+                assert state is not None
+                for slot, owner, boundary in owner_map[id(segment)]:
+                    original_owner = (
+                        _resolve_element_path(original, slot.element_path)
+                        if original is not None
+                        else owner
+                    )
+                    source = direct_run_source_copy(
+                        original if original is not None else block,
+                        original_owner,
+                        source_lang=source_lang,
+                        source_tag=span_name,
+                        source_value=slot.source_value,
+                        ruby_source=slot.field == "text",
+                    )
+                    target = etree.Element(span_name, **BILINGUAL_DIRECT_TARGET_ATTRS)
+                    target_core = (
+                        slot.target_core if slot.target_core is not None else slot.source_core
+                    )
+                    target.text = slot.leading_whitespace + target_core + slot.trailing_whitespace
                     if slot.field == "text":
                         owner.text = None
-                        if order == "source_first":
-                            owner.insert(0, source)
-                            owner.insert(1, target)
-                        else:
-                            owner.insert(0, target)
-                            owner.insert(1, source)
+                        owner.insert(0, target)
                     else:
                         owner.tail = None
-                        if order == "source_first":
-                            owner.addnext(source)
-                            source.addnext(target)
-                        else:
-                            owner.addnext(target)
-                            target.addnext(source)
-                continue
+                        parent = owner.getparent()
+                        if parent is None:
+                            raise ValueError("EPUB direct-br tail slot has no parent")
+                        parent.insert(parent.index(owner) + 1, target)
+                    pending_sources.append((slot, owner, boundary, source, target))
+
+            # Source wrappers around active boundaries are siblings of those
+            # boundaries.  Safe text owners keep both wrappers local, while a
+            # safe tail owner uses its ordinary sibling boundary.
+            grouped_sources: dict[
+                int, list[tuple[object, etree._Element, etree._Element, etree._Element]]
+            ] = {}
+            for slot, owner, boundary, source, target in pending_sources:
+                if (
+                    slot.field == "text"
+                    and boundary is owner
+                    and boundary is not block
+                    and not direct_run_is_active(boundary)
+                ):
+                    if order == "source_first":
+                        owner.insert(0, source)
+                    else:
+                        owner.insert(owner.index(target) + 1, source)
+                    continue
+                if (
+                    slot.field == "tail"
+                    and boundary is owner
+                    and boundary is not block
+                    and not direct_run_is_active(boundary)
+                ):
+                    parent = owner.getparent()
+                    if parent is None:
+                        raise ValueError("EPUB direct-br tail source has no parent")
+                    index = parent.index(target)
+                    parent.insert(index if order == "source_first" else index + 1, source)
+                    continue
+                grouped_sources.setdefault(id(boundary), []).append(
+                    (slot, boundary, source, target)
+                )
+            for entries in grouped_sources.values():
+                boundary = entries[0][1]
+                parent = boundary if boundary is block else boundary.getparent()
+                if parent is None:
+                    raise ValueError("EPUB direct-br source boundary has no parent")
+                ordered = list(reversed(entries)) if order == "target_first" else entries
+                for _slot, _boundary, source, target in ordered:
+                    if boundary is block:
+                        target_index = parent.index(target)
+                        parent.insert(
+                            target_index if order == "source_first" else target_index + 1,
+                            source,
+                        )
+                    elif order == "source_first":
+                        boundary.addprevious(source)
+                    elif target.getparent() is parent:
+                        target.addnext(source)
+                    else:
+                        boundary.addnext(source)
+            added += len(pending_sources)
+            continue
 
         sources: list[etree._Element] = []
-        source_tag = "div" if container else "p"
+        block_name = tag.rsplit("}", 1)[-1].lower()
+        source_tag = block_name if block_name in {"p", "div"} else "p"
         for segment in block_segments:
             namespace = block.nsmap.get(None)
             source_name = f"{{{namespace}}}{source_tag}" if namespace else source_tag
-            if original is not None and len(block_segments) == 1 and not container:
+            if original is not None and len(block_segments) == 1:
                 source = _bilingual_source_copy(
                     original,
                     block,
@@ -1079,20 +1144,12 @@ def _add_bilingual_sources(
             else:
                 source = etree.Element(source_name)
                 source.text = segment.source
-            source.set("class", "tn-source ibooks-dark-theme-use-custom-text-color")
+            source.set("class", BILINGUAL_SOURCE_CLASS)
             source.tail = None
             sources.append(source)
 
-        if container:
-            if order == "source_first":
-                for source in reversed(sources):
-                    source.tail = block.text
-                    block.text = None
-                    block.insert(0, source)
-            else:
-                for source in sources:
-                    block.append(source)
-        elif order == "source_first":
+        added += len(sources)
+        if order == "source_first":
             for source in reversed(sources):
                 block.addprevious(source)
         else:
@@ -1104,6 +1161,7 @@ def _add_bilingual_sources(
                     source.tail = old_tail
                 anchor.addnext(source)
                 anchor = source
+    return added
 
 
 def _render_source_resource(
@@ -1118,11 +1176,15 @@ def _render_source_resource(
     order: str = "target_first",
     source_lang: str = "",
 ) -> bytes:
+    if order not in {"target_first", "source_first"}:
+        raise ValueError(f"invalid bilingual order: {order!r}")
     actual_digest = hashlib.sha256(data).hexdigest()
     if actual_digest != expected_digest:
         raise ValueError(f"EPUB resource digest mismatch: {href}")
     tree, mode = _parse_source_markup(data, expected_mode)
     root = tree.getroot()
+    if bilingual and has_reserved_source_collision(root):
+        raise ValueError(f"EPUB reserved bilingual marker collision: {href}")
     writes: list[tuple[etree._Element, str, str]] = []
     source_blocks: dict[tuple[int, ...], etree._Element] = {}
     block_refs: dict[tuple[int, ...], etree._Element] = {}
@@ -1170,7 +1232,7 @@ def _render_source_resource(
         else:
             owner.tail = replacement
     if bilingual:
-        _add_bilingual_sources(
+        added = _add_bilingual_sources(
             root,
             segments,
             order=order,
@@ -1178,6 +1240,8 @@ def _render_source_resource(
             source_blocks=source_blocks,
             block_refs=block_refs,
         )
+        if added:
+            append_bilingual_style(root)
     _rewrite_markup_languages(root, target_lang)
     return _serialize_source_tree(tree, data, mode)
 
@@ -1201,6 +1265,8 @@ def _assemble_source_epub(
         raise ValueError(
             f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
         )
+    if order not in {"target_first", "source_first"}:
+        raise ValueError(f"invalid bilingual order: {order!r}")
     expected_archive = meta.get("epub_sha256")
     with open(source_path, "rb") as source_file:
         digest = hashlib.sha256()
@@ -1215,26 +1281,16 @@ def _assemble_source_epub(
         if isinstance(item, dict) and isinstance(item.get("href"), str)
     }
     chapters = [store.load_chapter(c["index"]) for c in manifest["chapters"]]
+    all_segments = [segment for chapter in chapters for segment in chapter.segments]
+    deduped_segments = dedupe_segment_mappings(all_segments)
     grouped: dict[str, list[Segment]] = {}
-    seen_slots: set[tuple[str, tuple[int, ...], tuple[int, ...], str]] = set()
-    for chapter in chapters:
-        for segment in chapter.segments:
-            if segment.epub_state is None or not segment.resource_href:
-                raise ValueError("EPUB state contains a segment without schema-3 slot metadata")
-            state = segment.epub_state
-            if state.slot_contract_sha256 != _slot_contract_digest(state.slots):
-                raise ValueError(f"EPUB slot contract digest mismatch: {segment.resource_href}")
-            for slot in state.slots:
-                key = (
-                    segment.resource_href,
-                    state.block_path,
-                    slot.element_path,
-                    slot.field,
-                )
-                if key in seen_slots:
-                    raise ValueError(f"EPUB slot contract overlap: {segment.resource_href}")
-                seen_slots.add(key)
-            grouped.setdefault(segment.resource_href, []).append(segment)
+    for segment in deduped_segments:
+        if segment.epub_state is None or not segment.resource_href:
+            raise ValueError("EPUB state contains a segment without schema-3 slot metadata")
+        state = segment.epub_state
+        if state.slot_contract_sha256 != _slot_contract_digest(state.slots):
+            raise ValueError(f"EPUB slot contract digest mismatch: {segment.resource_href}")
+        grouped.setdefault(segment.resource_href, []).append(segment)
     toc_entries = [entry for entry in meta.get("toc_entries", []) if isinstance(entry, dict)]
     with zipfile.ZipFile(source_path, "r") as zin, zipfile.ZipFile(out_path, "w") as zout:
         zout.comment = zin.comment
@@ -1300,11 +1356,6 @@ def _assemble_source_epub(
                 zout.writestr(info, _serialize_source_tree(tree, data, mode))
             else:
                 zout.writestr(info, data)
-    if bilingual:
-        chapter_filenames = {
-            os.path.basename(href) for href in resources_meta if href.lower().endswith(_HTML_EXTS)
-        }
-        _inject_bilingual_style(out_path, chapter_filenames, target_lang)
     return out_path
 
 
@@ -1635,6 +1686,8 @@ def assemble(
     from trans_novel.pipeline.readiness import ensure_assemble_ready
 
     ensure_assemble_ready(store, source_path)
+    if order not in {"target_first", "source_first"}:
+        raise ValueError(f"invalid bilingual order: {order!r}")
     if out_format == "txt":
         out_path = out_path or _default_out(source_path, "txt", "", bilingual=bilingual)
         return _assemble_text(store, out_path, bilingual=bilingual, order=order)

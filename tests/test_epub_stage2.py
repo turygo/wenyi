@@ -12,6 +12,10 @@ from unittest.mock import patch
 from lxml import etree
 
 from tests.sample_data import write_phase9_epub
+from trans_novel.assemble.bilingual_dom import (
+    BILINGUAL_DIRECT_TARGET_CLASS,
+    BILINGUAL_SOURCE_CLASS,
+)
 from trans_novel.assemble.epub_verifier import (
     EpubPublishError,
     EpubVerificationError,
@@ -21,7 +25,11 @@ from trans_novel.assemble.epub_verifier import (
     publish_epub,
     verify_epub,
 )
-from trans_novel.assemble.writer import _BILINGUAL_CSS, _rewrite_html_document
+from trans_novel.assemble.writer import (
+    _BILINGUAL_CSS,
+    _add_bilingual_sources,
+    _rewrite_html_document,
+)
 from trans_novel.pipeline.runstore import RunStore
 
 
@@ -187,19 +195,19 @@ class TestEpubStage2(unittest.TestCase):
             block_tag: str = "p",
         ) -> list[dict[str, str]]:
             target_first = (
-                '<span>Uno</span><span class="tn-source '
+                '<span class="tn-bilingual-target">Uno</span><span class="tn-source '
                 'ibooks-dark-theme-use-custom-text-color">One</span>'
             )
             source_first = (
                 '<span class="tn-source ibooks-dark-theme-use-custom-text-color">'
-                "One</span><span>Uno</span>"
+                'One</span><span class="tn-bilingual-target">Uno</span>'
             )
             second = (
-                '<span>Dos</span><span class="tn-source '
+                '<span class="tn-bilingual-target">Dos</span><span class="tn-source '
                 'ibooks-dark-theme-use-custom-text-color">Two</span>'
                 if order == "target_first"
                 else '<span class="tn-source ibooks-dark-theme-use-custom-text-color">'
-                "Two</span><span>Dos</span>"
+                'Two</span><span class="tn-bilingual-target">Dos</span>'
             )
             first = (
                 source_first if (order == "target_first" and invert_first_pair) else target_first
@@ -247,7 +255,7 @@ class TestEpubStage2(unittest.TestCase):
         output = etree.fromstring(
             f"<html><head><style id='tn-bilingual-style'>{_BILINGUAL_CSS}</style></head>"
             '<body><p>译文</p><p class="tn-source ibooks-dark-theme-use-custom-text-color">'
-            "前<ruby class='keep'><rb data-note='keep'>漢</rb><rt>かん</rt><rp>（</rp></ruby>後"
+            "前<ruby class='keep'><rb>漢</rb><rt>かん</rt><rp>（</rp></ruby>後"
             "</p></body></html>".encode()
         )
         segment = SimpleNamespace(
@@ -332,6 +340,709 @@ class TestEpubStage2(unittest.TestCase):
         )
         self.assertIn("source_node_order", {item["code"] for item in failures})
 
+    def test_container_mixed_content_accepts_both_orders_and_rejects_inversion(self) -> None:
+        source = etree.fromstring(
+            b"<html><head></head><body><li><em>Original</em> tail</li></body></html>"
+        )
+        segment = SimpleNamespace(
+            kind="text",
+            source="Original tail",
+            target="Translated tail",
+            epub_state=SimpleNamespace(block_path=(1, 0)),
+        )
+        source_markup = (
+            '<div class="tn-source ibooks-dark-theme-use-custom-text-color">'
+            "<em>Original</em> tail</div>"
+        )
+        for order, body in (
+            (
+                "target_first",
+                f"<li><em>Translated</em> tail{source_markup}</li>",
+            ),
+            (
+                "source_first",
+                f"<li>{source_markup}<em>Translated</em> tail</li>",
+            ),
+        ):
+            output = etree.fromstring(
+                (
+                    f"<html><head><style id='tn-bilingual-style'>{_BILINGUAL_CSS}</style>"
+                    f"</head><body>{body}</body></html>"
+                ).encode()
+            )
+            failures: list[dict[str, str]] = []
+            _bilingual_proof(
+                source,
+                output,
+                [segment],
+                source_lang="en",
+                order=order,
+                resource="chapter.xhtml",
+                failures=failures,
+            )
+            self.assertNotIn("source_node_order", {item["code"] for item in failures})
+
+        inverted = etree.fromstring(
+            (
+                f"<html><head><style id='tn-bilingual-style'>{_BILINGUAL_CSS}</style>"
+                f"</head><body><li>{source_markup}<em>Translated</em> tail</li></body></html>"
+            ).encode()
+        )
+        failures = []
+        _bilingual_proof(
+            source,
+            inverted,
+            [segment],
+            source_lang="en",
+            order="target_first",
+            resource="chapter.xhtml",
+            failures=failures,
+        )
+        self.assertIn("source_node_order", {item["code"] for item in failures})
+
+    def test_container_direct_br_uses_one_nested_source_div_in_both_orders(self) -> None:
+        source = etree.fromstring(b"<html><head></head><body><li>One<br/>Two</li></body></html>")
+        block = source.xpath(".//li")[0]
+        state = SimpleNamespace(block_path=(1, 0), slots=[])
+        segments = [
+            SimpleNamespace(kind="text", source="One", target="Uno", epub_state=state),
+            SimpleNamespace(kind="text", source="Two", target="Dos", epub_state=state),
+        ]
+        for order in ("target_first", "source_first"):
+            output = etree.fromstring(etree.tostring(source))
+            output_block = output.xpath(".//li")[0]
+            added = _add_bilingual_sources(
+                output,
+                segments,
+                order=order,
+                source_blocks={(1, 0): etree.fromstring(etree.tostring(block))},
+                block_refs={(1, 0): output_block},
+            )
+            self.assertEqual(added, 1)
+            source_nodes = output.xpath(".//*[contains(@class, 'tn-source')]")
+            self.assertEqual(len(source_nodes), 1)
+            self.assertEqual(source_nodes[0].tag.rsplit("}", 1)[-1], "div")
+            style = etree.Element("style", id="tn-bilingual-style")
+            style.text = _BILINGUAL_CSS
+            output.find("head").append(style)
+            failures: list[dict[str, str]] = []
+            _bilingual_proof(
+                source,
+                output,
+                segments,
+                source_lang="en",
+                order=order,
+                resource="chapter.xhtml",
+                failures=failures,
+            )
+            self.assertNotIn("source_node_order", {item["code"] for item in failures})
+            if order == "target_first":
+                corrupt = etree.fromstring(etree.tostring(source))
+                corrupt_block = corrupt.xpath(".//li")[0]
+                _add_bilingual_sources(
+                    corrupt,
+                    segments,
+                    order=order,
+                    source_blocks={(1, 0): etree.fromstring(etree.tostring(block))},
+                    block_refs={(1, 0): corrupt_block},
+                )
+                corrupt_source = corrupt_block[-1]
+                corrupt_block.remove(corrupt_source)
+                corrupt_block.insert(0, corrupt_source)
+                corrupt_style = etree.Element("style", id="tn-bilingual-style")
+                corrupt_style.text = _BILINGUAL_CSS
+                corrupt.find("head").append(corrupt_style)
+                corrupt_failures: list[dict[str, str]] = []
+                _bilingual_proof(
+                    source,
+                    corrupt,
+                    segments,
+                    source_lang="en",
+                    order=order,
+                    resource="chapter.xhtml",
+                    failures=corrupt_failures,
+                )
+                self.assertIn("source_node_order", {item["code"] for item in corrupt_failures})
+
+    def test_direct_br_nested_inline_slots_pair_at_each_actual_owner(self) -> None:
+        source = etree.fromstring(
+            b"<html><head></head><body><p>One <em>two</em> tail<br/>Next</p></body></html>"
+        )
+        slots = [
+            SimpleNamespace(
+                element_path=(),
+                field="text",
+                source_value="One ",
+                source_core="One",
+                target_core="Uno",
+                leading_whitespace="",
+                trailing_whitespace=" ",
+            ),
+            SimpleNamespace(
+                element_path=(0,),
+                field="text",
+                source_value="two",
+                source_core="two",
+                target_core="dos",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+            SimpleNamespace(
+                element_path=(0,),
+                field="tail",
+                source_value=" tail",
+                source_core="tail",
+                target_core="cola",
+                leading_whitespace=" ",
+                trailing_whitespace="",
+            ),
+            SimpleNamespace(
+                element_path=(1,),
+                field="tail",
+                source_value="Next",
+                source_core="Next",
+                target_core="Siguiente",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+        ]
+        state = SimpleNamespace(block_path=(1, 0), slots=slots)
+        segment = SimpleNamespace(
+            kind="text",
+            source="One two tail Next",
+            target="Uno dos cola Siguiente",
+            epub_state=state,
+        )
+        for order in ("target_first", "source_first"):
+            output = etree.fromstring(etree.tostring(source))
+            output_block = output.xpath(".//p")[0]
+            self.assertEqual(
+                _add_bilingual_sources(
+                    output,
+                    [segment],
+                    order=order,
+                    source_blocks={(1, 0): etree.fromstring(etree.tostring(output_block))},
+                    block_refs={(1, 0): output_block},
+                ),
+                4,
+            )
+            self.assertEqual(len(output.xpath(".//p//br")), 1)
+            self.assertEqual(len(output.xpath(".//p//span[contains(@class, 'tn-source')]")), 4)
+            style = etree.Element("style", id="tn-bilingual-style")
+            style.text = _BILINGUAL_CSS
+            output.find("head").append(style)
+            failures: list[dict[str, str]] = []
+            count = _bilingual_proof(
+                source,
+                output,
+                [segment],
+                source_lang="en",
+                order=order,
+                resource="chapter.xhtml",
+                failures=failures,
+            )
+            self.assertEqual(count, 4)
+            self.assertNotIn("source_node_order", {item["code"] for item in failures})
+        corrupt = etree.fromstring(etree.tostring(source))
+        corrupt_block = corrupt.xpath(".//p")[0]
+        _add_bilingual_sources(
+            corrupt,
+            [segment],
+            order="target_first",
+            source_blocks={(1, 0): etree.fromstring(etree.tostring(corrupt_block))},
+            block_refs={(1, 0): corrupt_block},
+        )
+        first_target, first_source = corrupt_block[0], corrupt_block[1]
+        corrupt_block.remove(first_target)
+        corrupt_block.remove(first_source)
+        corrupt_block.insert(0, first_source)
+        corrupt_block.insert(1, first_target)
+        corrupt_style = etree.Element("style", id="tn-bilingual-style")
+        corrupt_style.text = _BILINGUAL_CSS
+        corrupt.find("head").append(corrupt_style)
+        corrupt_failures: list[dict[str, str]] = []
+        _bilingual_proof(
+            source,
+            corrupt,
+            [segment],
+            source_lang="en",
+            order="target_first",
+            resource="chapter.xhtml",
+            failures=corrupt_failures,
+        )
+        self.assertIn("source_node_order", {item["code"] for item in corrupt_failures})
+
+    def test_direct_run_active_link_and_original_span_both_orders(self) -> None:
+        source = etree.fromstring(
+            b"<html><head></head><body><p><a href='next.xhtml'>One</a>"
+            b"<span>keep</span><br/>Two</p></body></html>"
+        )
+        block = source.xpath(".//p")[0]
+        slots = [
+            SimpleNamespace(
+                element_path=(0,),
+                field="text",
+                source_value="One",
+                source_core="One",
+                target_core="Uno",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+            SimpleNamespace(
+                element_path=(2,),
+                field="tail",
+                source_value="Two",
+                source_core="Two",
+                target_core="Dos",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+        ]
+        segment = SimpleNamespace(
+            kind="text",
+            source="One Two",
+            target="Uno Dos",
+            epub_state=SimpleNamespace(block_path=(1, 0), slots=slots),
+        )
+        for order in ("target_first", "source_first"):
+            output = etree.fromstring(etree.tostring(source))
+            output_block = output.xpath(".//p")[0]
+            self.assertEqual(
+                _add_bilingual_sources(
+                    output,
+                    [segment],
+                    order=order,
+                    source_blocks={(1, 0): etree.fromstring(etree.tostring(block))},
+                    block_refs={(1, 0): output_block},
+                ),
+                2,
+            )
+            original_span = next(
+                node for node in output_block.xpath("./span") if node.text == "keep"
+            )
+            self.assertEqual(dict(original_span.attrib), {})
+            self.assertEqual(original_span.text, "keep")
+            for node in output.xpath(
+                ".//*[contains(concat(' ', normalize-space(@class), ' '), ' tn-source ')]"
+            ):
+                self.assertFalse(
+                    any(
+                        ancestor.tag.rsplit("}", 1)[-1] in {"a", "ruby"}
+                        for ancestor in node.iterancestors()
+                    )
+                )
+            self.assertEqual(
+                len(output.xpath(f".//span[@class='{BILINGUAL_DIRECT_TARGET_CLASS}']")),
+                2,
+            )
+            style = etree.Element("style", id="tn-bilingual-style")
+            style.text = _BILINGUAL_CSS
+            output.find("head").append(style)
+            failures: list[dict[str, str]] = []
+            _bilingual_proof(
+                source,
+                output,
+                [segment],
+                source_lang="en",
+                order=order,
+                resource="chapter.xhtml",
+                failures=failures,
+            )
+            self.assertNotIn("source_target_pair_mismatch", {item["code"] for item in failures})
+
+    def test_container_atomic_media_source_is_sanitized_both_orders(self) -> None:
+        source = etree.fromstring(
+            b"<html><head></head><body><li>Before<svg><text>DROP</text></svg>After</li></body></html>"
+        )
+        block = source.xpath(".//li")[0]
+        segment = SimpleNamespace(
+            kind="text",
+            source="BeforeAfter",
+            target="Translated",
+            epub_state=SimpleNamespace(block_path=(1, 0), slots=[]),
+        )
+        for order in ("target_first", "source_first"):
+            output = etree.fromstring(etree.tostring(source))
+            output_block = output.xpath(".//li")[0]
+            output_block.text = "Translated"
+            self.assertEqual(
+                _add_bilingual_sources(
+                    output,
+                    [segment],
+                    order=order,
+                    source_blocks={(1, 0): etree.fromstring(etree.tostring(block))},
+                    block_refs={(1, 0): output_block},
+                ),
+                1,
+            )
+            source_node = output.xpath(
+                ".//*[contains(concat(' ', normalize-space(@class), ' '), ' tn-source ')]"
+            )[0]
+            self.assertEqual("".join(source_node.itertext()), "BeforeAfter")
+            self.assertFalse(source_node.xpath(".//*[local-name()='svg' or local-name()='text']"))
+            style = etree.Element("style", id="tn-bilingual-style")
+            style.text = _BILINGUAL_CSS
+            output.find("head").append(style)
+            failures: list[dict[str, str]] = []
+            _bilingual_proof(
+                source,
+                output,
+                [segment],
+                source_lang="en",
+                order=order,
+                resource="chapter.xhtml",
+                failures=failures,
+            )
+            self.assertNotIn("source_target_pair_mismatch", {item["code"] for item in failures})
+
+    def test_direct_run_active_button_onclick_and_ruby_tail_both_orders(self) -> None:
+        cases = (
+            (
+                "<html><head></head><body><p><button onclick='go()'>One</button>"
+                "<br/>Two</p></body></html>",
+                "en",
+                [
+                    SimpleNamespace(
+                        element_path=(0,),
+                        field="text",
+                        source_value="One",
+                        source_core="One",
+                        target_core="Uno",
+                        leading_whitespace="",
+                        trailing_whitespace="",
+                    ),
+                    SimpleNamespace(
+                        element_path=(1,),
+                        field="tail",
+                        source_value="Two",
+                        source_core="Two",
+                        target_core="Dos",
+                        leading_whitespace="",
+                        trailing_whitespace="",
+                    ),
+                ],
+            ),
+            (
+                "<html><head></head><body><p><span onclick='go()'>One</span>"
+                "<br/>Two</p></body></html>",
+                "en",
+                [
+                    SimpleNamespace(
+                        element_path=(0,),
+                        field="text",
+                        source_value="One",
+                        source_core="One",
+                        target_core="Uno",
+                        leading_whitespace="",
+                        trailing_whitespace="",
+                    ),
+                    SimpleNamespace(
+                        element_path=(1,),
+                        field="tail",
+                        source_value="Two",
+                        source_core="Two",
+                        target_core="Dos",
+                        leading_whitespace="",
+                        trailing_whitespace="",
+                    ),
+                ],
+            ),
+            (
+                "<html><head></head><body><p><ruby>漢<rt>かん</rt></ruby>"
+                " tail<br/>Next</p></body></html>",
+                "ja",
+                [
+                    SimpleNamespace(
+                        element_path=(0,),
+                        field="tail",
+                        source_value=" tail",
+                        source_core="tail",
+                        target_core=" 尾",
+                        leading_whitespace="",
+                        trailing_whitespace="",
+                    ),
+                    SimpleNamespace(
+                        element_path=(1,),
+                        field="tail",
+                        source_value="Next",
+                        source_core="Next",
+                        target_core="下",
+                        leading_whitespace="",
+                        trailing_whitespace="",
+                    ),
+                ],
+            ),
+        )
+        for markup, source_lang, slots in cases:
+            source = etree.fromstring(markup.encode())
+            segment = SimpleNamespace(
+                kind="text",
+                source="source",
+                target="target",
+                epub_state=SimpleNamespace(block_path=(1, 0), slots=slots),
+            )
+            for order in ("target_first", "source_first"):
+                output = etree.fromstring(markup.encode())
+                block = output.xpath(".//p")[0]
+                _add_bilingual_sources(
+                    output,
+                    [segment],
+                    order=order,
+                    source_blocks={(1, 0): etree.fromstring(markup.encode()).xpath(".//p")[0]},
+                    block_refs={(1, 0): block},
+                )
+                source_nodes = output.xpath(
+                    ".//*[contains(concat(' ', normalize-space(@class), ' '), ' tn-source ')]"
+                )
+                self.assertEqual(len(source_nodes), len(slots))
+                for node in source_nodes:
+                    self.assertFalse(
+                        any(
+                            ancestor.tag.rsplit("}", 1)[-1] in {"a", "ruby", "button"}
+                            or any(key.lower().startswith("on") for key in ancestor.attrib)
+                            for ancestor in node.iterancestors()
+                        )
+                    )
+                if source_lang == "ja":
+                    source_tail = next(node for node in source_nodes if node.text == " tail")
+                    target_tail = next(
+                        node
+                        for node in output.xpath(".//span")
+                        if node.get("class") == BILINGUAL_DIRECT_TARGET_CLASS and node.text == " 尾"
+                    )
+                    ruby = output.xpath(".//ruby")[0]
+                    if order == "target_first":
+                        self.assertGreater(block.index(source_tail), block.index(target_tail))
+                        self.assertGreater(block.index(source_tail), block.index(ruby))
+                    else:
+                        self.assertLess(block.index(source_tail), block.index(ruby))
+                        self.assertLess(block.index(source_tail), block.index(target_tail))
+                    self.assertFalse(source_tail.xpath(".//*[local-name()='ruby']"))
+                    corrupt = etree.fromstring(etree.tostring(output))
+                    corrupt_block = corrupt.xpath(".//p")[0]
+                    corrupt_source = next(
+                        node
+                        for node in corrupt_block
+                        if node.get("class") == BILINGUAL_SOURCE_CLASS and node.text == " tail"
+                    )
+                    corrupt_target = next(
+                        node
+                        for node in corrupt_block
+                        if node.get("class") == BILINGUAL_DIRECT_TARGET_CLASS and node.text == " 尾"
+                    )
+                    corrupt_block.remove(corrupt_source)
+                    corrupt_block.remove(corrupt_target)
+                    ruby_index = corrupt_block.index(corrupt_block.xpath("./ruby")[0])
+                    corrupt_block.insert(
+                        ruby_index + 1,
+                        corrupt_source if order == "target_first" else corrupt_target,
+                    )
+                    corrupt_block.insert(
+                        ruby_index + 2,
+                        corrupt_target if order == "target_first" else corrupt_source,
+                    )
+                    corrupt_style = etree.Element("style", id="tn-bilingual-style")
+                    corrupt_style.text = _BILINGUAL_CSS
+                    corrupt.find("head").append(corrupt_style)
+                    corrupt_failures: list[dict[str, str]] = []
+                    _bilingual_proof(
+                        source,
+                        corrupt,
+                        [segment],
+                        source_lang=source_lang,
+                        order=order,
+                        resource="chapter.xhtml",
+                        failures=corrupt_failures,
+                    )
+                    self.assertIn("source_node_order", {item["code"] for item in corrupt_failures})
+                style = etree.Element("style", id="tn-bilingual-style")
+                style.text = _BILINGUAL_CSS
+                output.find("head").append(style)
+                failures: list[dict[str, str]] = []
+                _bilingual_proof(
+                    source,
+                    output,
+                    [segment],
+                    source_lang=source_lang,
+                    order=order,
+                    resource="chapter.xhtml",
+                    failures=failures,
+                )
+                self.assertNotIn("source_node_active_ancestor", {item["code"] for item in failures})
+                self.assertNotIn("source_target_pair_mismatch", {item["code"] for item in failures})
+
+            # Moving a verified source wrapper back under the active button is
+            # deliberately rejected rather than being silently normalized.
+            if "button" in markup:
+                corrupt = etree.fromstring(markup.encode())
+                corrupt_block = corrupt.xpath(".//p")[0]
+                _add_bilingual_sources(
+                    corrupt,
+                    [segment],
+                    order="target_first",
+                    source_blocks={(1, 0): etree.fromstring(markup.encode()).xpath(".//p")[0]},
+                    block_refs={(1, 0): corrupt_block},
+                )
+                source_node = corrupt.xpath(
+                    ".//*[contains(concat(' ', normalize-space(@class), ' '), ' tn-source ')]"
+                )[0]
+                corrupt_block.remove(source_node)
+                corrupt.xpath(".//button")[0].append(source_node)
+                style = etree.Element("style", id="tn-bilingual-style")
+                style.text = _BILINGUAL_CSS
+                corrupt.find("head").append(style)
+                failures = []
+                _bilingual_proof(
+                    etree.fromstring(markup.encode()),
+                    corrupt,
+                    [segment],
+                    source_lang="en",
+                    order="target_first",
+                    resource="chapter.xhtml",
+                    failures=failures,
+                )
+                self.assertTrue(failures)
+
+    def test_direct_run_sources_keep_two_slots_in_same_active_boundary_order(self) -> None:
+        markup = b"<html><head></head><body><p><a href='x'><em>One</em><em>Two</em></a><br/>Tail</p></body></html>"
+        source = etree.fromstring(markup)
+        slots = [
+            SimpleNamespace(
+                element_path=(0, 0),
+                field="text",
+                source_value="One",
+                source_core="One",
+                target_core="Uno",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+            SimpleNamespace(
+                element_path=(0, 1),
+                field="text",
+                source_value="Two",
+                source_core="Two",
+                target_core="Dos",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+            SimpleNamespace(
+                element_path=(1,),
+                field="tail",
+                source_value="Tail",
+                source_core="Tail",
+                target_core="尾",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+        ]
+        segment = SimpleNamespace(
+            kind="text",
+            source="One Two Tail",
+            target="Uno Dos 尾",
+            epub_state=SimpleNamespace(block_path=(1, 0), slots=slots),
+        )
+        for order in ("target_first", "source_first"):
+            output = etree.fromstring(markup)
+            output_block = output.xpath(".//p")[0]
+            _add_bilingual_sources(
+                output,
+                [segment],
+                order=order,
+                source_blocks={(1, 0): etree.fromstring(markup).xpath(".//p")[0]},
+                block_refs={(1, 0): output_block},
+            )
+            source_texts = [
+                node.text
+                for node in output.xpath(
+                    ".//*[contains(concat(' ', normalize-space(@class), ' '), ' tn-source ')]"
+                )
+            ]
+            self.assertEqual(source_texts, ["One", "Two", "Tail"])
+            style = etree.Element("style", id="tn-bilingual-style")
+            style.text = _BILINGUAL_CSS
+            output.find("head").append(style)
+            failures: list[dict[str, str]] = []
+            _bilingual_proof(
+                source,
+                output,
+                [segment],
+                source_lang="en",
+                order=order,
+                resource="chapter.xhtml",
+                failures=failures,
+            )
+            self.assertNotIn("source_node_order", {item["code"] for item in failures})
+
+        corrupt = etree.fromstring(markup)
+        corrupt_block = corrupt.xpath(".//p")[0]
+        _add_bilingual_sources(
+            corrupt,
+            [segment],
+            order="target_first",
+            source_blocks={(1, 0): etree.fromstring(markup).xpath(".//p")[0]},
+            block_refs={(1, 0): corrupt_block},
+        )
+        first = next(
+            node
+            for node in corrupt_block
+            if node.get("class") == BILINGUAL_SOURCE_CLASS and node.text == "One"
+        )
+        second = next(
+            node
+            for node in corrupt_block
+            if node.get("class") == BILINGUAL_SOURCE_CLASS and node.text == "Two"
+        )
+        corrupt_block.remove(first)
+        corrupt_block.remove(second)
+        anchor = corrupt_block.index(corrupt_block.xpath("./a")[0])
+        corrupt_block.insert(anchor + 1, second)
+        corrupt_block.insert(anchor + 2, first)
+        style = etree.Element("style", id="tn-bilingual-style")
+        style.text = _BILINGUAL_CSS
+        corrupt.find("head").append(style)
+        failures = []
+        _bilingual_proof(
+            source,
+            corrupt,
+            [segment],
+            source_lang="en",
+            order="target_first",
+            resource="chapter.xhtml",
+            failures=failures,
+        )
+        self.assertIn("source_node_order", {item["code"] for item in failures})
+
+    def test_unknown_namespace_source_wrapper_preserves_visible_pairing_text(self) -> None:
+        source = etree.fromstring(
+            b"<html xmlns:u='urn:unknown'><head></head><body><p>Before"
+            b"<u:wrapper>Visible<em>Inner</em></u:wrapper>After</p></body></html>"
+        )
+        segment = SimpleNamespace(
+            kind="text",
+            source="BeforeVisibleInnerAfter",
+            target="Translated",
+            epub_state=SimpleNamespace(block_path=(1, 0)),
+        )
+        output = etree.fromstring(
+            (
+                f"<html><head><style id='tn-bilingual-style'>{_BILINGUAL_CSS}</style></head>"
+                '<body><p>Translated</p><p class="tn-source '
+                'ibooks-dark-theme-use-custom-text-color">BeforeVisible<em>Inner</em>After</p>'
+                "</body></html>"
+            ).encode()
+        )
+        failures: list[dict[str, str]] = []
+        _bilingual_proof(
+            source,
+            output,
+            [segment],
+            source_lang="en",
+            order="target_first",
+            resource="chapter.xhtml",
+            failures=failures,
+        )
+        self.assertNotIn("source_node_subtree_mismatch", {item["code"] for item in failures})
+
     def test_nested_nav_label_locator_matches_writer_clear_contract(self) -> None:
         root = etree.fromstring(
             b'<html xmlns:epub="http://www.idpf.org/2007/ops"><body>'
@@ -361,6 +1072,7 @@ class TestEpubStage2(unittest.TestCase):
             b'<html><body><p>\xe8\xaf\x91</p><p class="tn-source ibooks-dark-theme-use-custom-text-color">'
             b"<ruby><rb>\xe6\xbc\xa2</rb><rt>\xe3\x81\x8b\xe3\x82\x93</rt></ruby></p></body></html>",
         )
+
         for data in outputs:
             failures: list[dict[str, str]] = []
             _bilingual_proof(
@@ -379,6 +1091,33 @@ class TestEpubStage2(unittest.TestCase):
                 }
                 & {item["code"] for item in failures}
             )
+
+    def test_reserved_style_outside_head_is_rejected(self) -> None:
+        source = etree.fromstring(b"<html><head></head><body><p>Original</p></body></html>")
+        output = etree.fromstring(
+            (
+                '<html><head></head><body><p>Translated</p><p class="tn-source '
+                'ibooks-dark-theme-use-custom-text-color">Original</p>'
+                f"<style id='tn-bilingual-style'>{_BILINGUAL_CSS}</style></body></html>"
+            ).encode()
+        )
+        segment = SimpleNamespace(
+            kind="text",
+            source="Original",
+            target="Translated",
+            epub_state=SimpleNamespace(block_path=(1, 0)),
+        )
+        failures: list[dict[str, str]] = []
+        _bilingual_proof(
+            source,
+            output,
+            [segment],
+            source_lang="en",
+            order="target_first",
+            resource="chapter.xhtml",
+            failures=failures,
+        )
+        self.assertIn("bilingual_style_mismatch", {item["code"] for item in failures})
 
     def test_source_dom_slot_tag_attr_and_nav_mutations_fail_exactly(self) -> None:
         from tests.test_assemble import _run
