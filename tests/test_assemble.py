@@ -7,7 +7,6 @@ import os
 import tempfile
 import unittest
 import zipfile
-from unittest.mock import patch
 
 from bs4 import BeautifulSoup, Tag
 
@@ -23,15 +22,11 @@ from tests.sample_data import (
 )
 from trans_novel.assemble.report import build_report
 from trans_novel.assemble.writer import (
-    _inject_bilingual_style,
-    _render_chapter_html,
-    _rewrite_html_document,
     assemble,
 )
 from trans_novel.benchmark.epub_check import validate_epub_triplet
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
-from trans_novel.ingest.epub_reader import annotate_epub_resource
 from trans_novel.ingest.models import Chapter, assign_segment_translation
 from trans_novel.ingest.segmenter import load_document
 from trans_novel.llm import FakeClient
@@ -161,26 +156,6 @@ class TestAssembleText(unittest.TestCase):
                 content = f.read()
             self.assertIn("润0", content)  # 译文已写入
 
-    def test_bilingual_rewrite_removes_temporary_file_on_failure(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "book.epub")
-            with zipfile.ZipFile(path, "w") as archive:
-                archive.writestr(
-                    "ch0.xhtml",
-                    "<html><head></head><body><p>text</p></body></html>",
-                )
-
-            with (
-                patch(
-                    "trans_novel.assemble.writer.os.replace",
-                    side_effect=OSError("replace failed"),
-                ),
-                self.assertRaisesRegex(OSError, "replace failed"),
-            ):
-                _inject_bilingual_style(path, {"ch0.xhtml"}, "zh-Hans")
-
-            self.assertFalse(os.path.exists(path + ".tmp"))
-
     def test_txt_input_to_epub(self):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")
@@ -198,23 +173,7 @@ class TestAssembleText(unittest.TestCase):
 
 
 class TestAssembleEpub(unittest.TestCase):
-    def test_rewrite_html_honors_declared_encoding_and_emits_utf8(self):
-        source = (
-            '<?xml version="1.0" encoding="Shift_JIS"?><html><body><p>日本語</p></body></html>'
-        ).encode("shift_jis")
-
-        output = _rewrite_html_document(
-            source,
-            lang="zh-Hans",
-            force_horizontal=False,
-        )
-        decoded = output.decode("utf-8")
-
-        self.assertIn("日本語", decoded)
-        self.assertIn('encoding="utf-8"', decoded)
-        self.assertIn('lang="zh-Hans"', decoded)
-
-    def test_epub_export_restores_inline_image_from_persisted_meta(self):
+    def test_schema3_epub_export_preserves_inline_image(self):
         with tempfile.TemporaryDirectory() as d:
             epub = os.path.join(d, "inline.epub")
             write_inline_sample_epub(epub)
@@ -242,235 +201,7 @@ class TestAssembleEpub(unittest.TestCase):
             self.assertEqual(image_data, b"inline-image")
             self.assertIsNone(rendered.find(attrs={"data-tn-inline-id": True}))
 
-    def test_epub_render_restores_inline_images_and_breaks(self):
-        html = """<html><body>
-<p class="Textbody"><img src="before.jpg"/>Avant<br/>Après<img src="after.jpg"/></p>
-<p class="illustration"><img src="standalone.jpg"/></p>
-</body></html>"""
-        title, segments, template = annotate_epub_resource(
-            html,
-            0,
-            "chapter.xhtml",
-        )
-        segments[0].target = "甲乙"
-        segments[1].target = "丙丁"
-        chapter = Chapter(
-            index=0,
-            title=title,
-            segments=segments,
-            href="chapter.xhtml",
-            template=template,
-        )
-
-        rendered = BeautifulSoup(_render_chapter_html(chapter), "html.parser")
-
-        paragraph = rendered.find("p", class_="Textbody")
-        self.assertIsInstance(paragraph, Tag)
-        assert isinstance(paragraph, Tag)
-        self.assertEqual(paragraph.get_text(), "甲乙丙丁")
-        self.assertEqual(
-            [image.get("src") for image in paragraph.find_all("img")],
-            ["before.jpg", "after.jpg"],
-        )
-        self.assertIsNotNone(paragraph.find("br"))
-        self.assertEqual(
-            [
-                child.name if getattr(child, "name", None) else str(child)
-                for child in paragraph.children
-            ],
-            ["img", "甲乙", "br", "丙丁", "img"],
-        )
-        self.assertIsNone(rendered.find(attrs={"data-tn-inline-id": True}))
-        standalone = rendered.find("p", class_="illustration")
-        self.assertIsInstance(standalone, Tag)
-        assert isinstance(standalone, Tag)
-        standalone_image = standalone.find("img")
-        self.assertIsInstance(standalone_image, Tag)
-        assert isinstance(standalone_image, Tag)
-        self.assertEqual(standalone_image.get("src"), "standalone.jpg")
-
-    def test_epub_render_restores_footnote_markers_at_scaled_offsets(self):
-        html = """<html><body><p class="Textbody"><sup id="note-wrapper-1" class="native"><a href="../notes.xhtml?edition=1#note-1" id="note-link-1" name="n1"><i>1</i></a></sup>Source <span class="xref superscript" title="footnote two"><a href="#footnote-2" id="note-link-2"><em>2</em></a></span>text<span style="vertical-align: sub; color: red" aria-label="endnote 3"><a href="#endnote-3" name="n3"><b>3</b></a></span></p></body></html>"""
-        title, segments, template = annotate_epub_resource(html, 0, "chapter.xhtml")
-        segments[0].target = "甲乙丙丁"
-        chapter = Chapter(
-            index=0,
-            title=title,
-            segments=segments,
-            href="chapter.xhtml",
-            template=template,
-        )
-
-        rendered = BeautifulSoup(_render_chapter_html(chapter), "html.parser")
-
-        paragraph = rendered.find("p", class_="Textbody")
-        self.assertIsInstance(paragraph, Tag)
-        assert isinstance(paragraph, Tag)
-        self.assertEqual(paragraph.get_text(), "1甲乙丙2丁3")
-        self.assertEqual(
-            [child.name if isinstance(child, Tag) else str(child) for child in paragraph.children],
-            ["sup", "甲乙丙", "span", "丁", "span"],
-        )
-        native = paragraph.find("sup", id="note-wrapper-1")
-        self.assertIsInstance(native, Tag)
-        assert isinstance(native, Tag)
-        self.assertEqual(native.a.get("href"), "../notes.xhtml?edition=1#note-1")
-        self.assertEqual(native.a.get("id"), "note-link-1")
-        self.assertEqual(native.a.get("name"), "n1")
-        self.assertIsNotNone(native.a.find("i"))
-        inline = paragraph.find("span", class_="superscript")
-        self.assertIsInstance(inline, Tag)
-        assert isinstance(inline, Tag)
-        self.assertEqual(inline.get("title"), "footnote two")
-        self.assertEqual(inline.a.get("href"), "#footnote-2")
-        self.assertEqual(inline.a.get("id"), "note-link-2")
-        self.assertIsNotNone(inline.a.find("em"))
-        ending = paragraph.find("span", attrs={"aria-label": "endnote 3"})
-        self.assertIsInstance(ending, Tag)
-        assert isinstance(ending, Tag)
-        self.assertEqual(ending.get("style"), "vertical-align: sub; color: red")
-        self.assertEqual(ending.a.get("href"), "#endnote-3")
-        self.assertEqual(ending.a.get("name"), "n3")
-        self.assertIsNotNone(ending.a.find("b"))
-        self.assertIsNone(rendered.find(attrs={"data-tn-inline-id": True}))
-
-    def test_epub_render_preserves_nested_list_links_and_blockquote_lines(self):
-        html = """<html><body>
-<ul><li><a href="#author">Author</a><ul>
-<li><a href="chapter.xhtml#one">Chapter One</a></li>
-<li><a href="chapter.xhtml#two">Chapter Two</a></li>
-</ul></li></ul>
-<blockquote><div>Dedication One</div><div>Dedication Two</div></blockquote>
-</body></html>"""
-        title, segments, template = annotate_epub_resource(html, 0, "contents.xhtml")
-        for segment, target in zip(
-            segments,
-            ["作者", "第一章", "第二章", "献词一", "献词二"],
-            strict=False,
-        ):
-            segment.target = target
-        chapter = Chapter(
-            index=0,
-            title=title,
-            segments=segments,
-            href="contents.xhtml",
-            template=template,
-        )
-
-        rendered = BeautifulSoup(_render_chapter_html(chapter), "html.parser")
-
-        links = rendered.find_all("a")
-        self.assertEqual(
-            [link.get_text() for link in links],
-            ["作者", "第一章", "第二章"],
-        )
-        self.assertEqual(
-            [link.get("href") for link in links],
-            ["#author", "chapter.xhtml#one", "chapter.xhtml#two"],
-        )
-        self.assertEqual(len(rendered.find_all("li")), 3)
-        quote = rendered.find("blockquote")
-        self.assertIsInstance(quote, Tag)
-        assert isinstance(quote, Tag)
-        self.assertEqual(
-            [line.get_text() for line in quote.find_all("div", recursive=False)],
-            ["献词一", "献词二"],
-        )
-
-    def test_epub_render_rebuilds_heading_breaks_from_translated_lines(self):
-        html = """<html><body><h1>
-Isaac Asimov<br/><br/>Tales of the Black Widowers<br/>
-</h1></body></html>"""
-        title, segments, template = annotate_epub_resource(html, 0, "title.xhtml")
-        self.assertEqual(
-            [segment.source for segment in segments],
-            ["Isaac Asimov", "Tales of the Black Widowers"],
-        )
-        segments[0].target = "艾萨克·阿西莫夫"
-        segments[1].target = "《黑鳏夫俱乐部故事》"
-        chapter = Chapter(
-            index=0,
-            title=title,
-            segments=segments,
-            href="title.xhtml",
-            template=template,
-        )
-
-        rendered = BeautifulSoup(_render_chapter_html(chapter), "html.parser")
-        heading = rendered.find("h1")
-        self.assertIsInstance(heading, Tag)
-        assert isinstance(heading, Tag)
-        self.assertEqual(len(heading.find_all("br")), 3)
-        self.assertIsNone(rendered.select_one("[data-tn-line]"))
-        self.assertEqual(
-            [
-                child.name if isinstance(child, Tag) else str(child)
-                for child in heading.children
-                if isinstance(child, Tag) or str(child).strip()
-            ],
-            ["艾萨克·阿西莫夫", "br", "br", "《黑鳏夫俱乐部故事》", "br"],
-        )
-
-    def test_bilingual_break_lines_keep_valid_paragraph_structure(self):
-        html = "<html><body><p>First<br/>Second</p></body></html>"
-        title, segments, template = annotate_epub_resource(html, 0, "lines.xhtml")
-        segments[0].target = "第一"
-        segments[1].target = "第二"
-        chapter = Chapter(
-            index=0,
-            title=title,
-            segments=segments,
-            href="lines.xhtml",
-            template=template,
-        )
-
-        rendered = BeautifulSoup(
-            _render_chapter_html(chapter, bilingual=True),
-            "html.parser",
-        )
-        paragraph = rendered.find("p")
-        self.assertIsInstance(paragraph, Tag)
-        assert isinstance(paragraph, Tag)
-        self.assertIsNone(paragraph.find("p"))
-        self.assertEqual(
-            [source.get_text() for source in paragraph.select("span.tn-source")],
-            ["First", "Second"],
-        )
-        self.assertEqual(
-            [child.name if isinstance(child, Tag) else str(child) for child in paragraph.children],
-            ["第一", "br", "span", "br", "第二", "br", "span"],
-        )
-
-    def test_bilingual_render_does_not_duplicate_inline_images(self):
-        html = """<html><body>
-<p><img src="illustration.jpg"/>Texte original.</p>
-</body></html>"""
-        title, segments, template = annotate_epub_resource(
-            html,
-            0,
-            "chapter.xhtml",
-        )
-        segments[0].target = "译文。"
-        chapter = Chapter(
-            index=0,
-            title=title,
-            segments=segments,
-            href="chapter.xhtml",
-            template=template,
-        )
-
-        rendered = BeautifulSoup(
-            _render_chapter_html(chapter, bilingual=True),
-            "html.parser",
-        )
-
-        self.assertEqual(len(rendered.find_all("img")), 1)
-        source = rendered.find(class_="tn-source")
-        self.assertIsInstance(source, Tag)
-        assert isinstance(source, Tag)
-        self.assertIsNone(source.find("img"))
-
-    def test_epub_template_rebuild(self):
+    def test_schema3_source_epub_rebuild(self):
         with tempfile.TemporaryDirectory() as d:
             ep = os.path.join(d, "novel.epub")
             write_sample_epub(ep)
@@ -511,7 +242,9 @@ Isaac Asimov<br/><br/>Tales of the Black Widowers<br/>
             manifest = store.load_manifest()
             chapters = [store.load_chapter(entry["index"]) for entry in manifest["chapters"]]
             self.assertEqual(manifest["meta"]["epub_schema"], 3)
-            self.assertEqual(store.load_resource_templates(), {})
+            self.assertFalse(
+                os.path.exists(os.path.join(directory, "state", "resource_templates.json"))
+            )
             all_segments = [segment for chapter in chapters for segment in chapter.segments]
             self.assertTrue(all(segment.epub_state is not None for segment in all_segments))
             self.assertTrue(
@@ -698,28 +431,6 @@ class TestTitleTranslation(unittest.TestCase):
             self.assertNotIn("title_translated", m2)  # 书名译名字段被清理
             self.assertEqual(m2["chapters"][0]["title_translated"], "佳穗登场")  # 章名已规范
 
-    def test_rewrite_nav_and_ncx_labels(self):
-        from trans_novel.assemble.writer import _rewrite_toc
-
-        nav = (
-            b'<html xmlns:epub="http://www.idpf.org/2007/ops"><body>'
-            b'<nav epub:type="toc"><ol>'
-            b'<li><a href="ch1.xhtml">\xe7\xac\xac\xe4\xb8\x80\xe7\xab\xa0</a></li>'
-            b"</ol></nav></body></html>"
-        )
-        out = _rewrite_toc(nav, {"ch1.xhtml": "第一章译名"}, is_ncx=False)
-        self.assertIn("第一章译名", out.decode("utf-8"))
-
-        ncx = (
-            b'<?xml version="1.0"?><ncx><navMap><navPoint>'
-            b"<navLabel><text>old</text></navLabel>"
-            b'<content src="text/ch1.xhtml#x"/></navPoint></navMap></ncx>'
-        )
-        out2 = _rewrite_toc(ncx, {"ch1.xhtml": "第一章译名"}, is_ncx=True)
-        dec = out2.decode("utf-8")
-        self.assertIn("第一章译名", dec)
-        self.assertNotIn(">old<", dec)
-
 
 class TestHeadingNumberInWriter(unittest.TestCase):
     """章节标题编号数字风格（阿拉伯 → 汉字）在回填输出侧统一。"""
@@ -905,77 +616,6 @@ class TestAssembleEpubPhysicalResourceGrouping(unittest.TestCase):
             self.assertNotIn("Two.", two_html)
 
 
-class TestRewriteTocExactMode(unittest.TestCase):
-    """`_rewrite_toc` 精确模式：按 toc_path + node_index 定位，同一文件中的多个 fragment 分别使用对应译名。"""
-
-    def test_ncx_multi_fragment_nodes_get_distinct_titles(self):
-        from trans_novel.assemble.writer import _rewrite_toc
-
-        ncx = (
-            b'<?xml version="1.0"?><ncx><navMap>'
-            b"<navPoint><navLabel><text>old-a</text></navLabel>"
-            b'<content src="chapter.xhtml#a"/></navPoint>'
-            b"<navPoint><navLabel><text>old-b</text></navLabel>"
-            b'<content src="chapter.xhtml#b"/></navPoint>'
-            b"</navMap></ncx>"
-        )
-        entries = [
-            {
-                "toc_path": "OEBPS/toc.ncx",
-                "node_index": 0,
-                "raw_href": "chapter.xhtml#a",
-                "title": "old-a",
-                "title_translated": "译名甲",
-            },
-            {
-                "toc_path": "OEBPS/toc.ncx",
-                "node_index": 1,
-                "raw_href": "chapter.xhtml#b",
-                "title": "old-b",
-                "title_translated": "译名乙",
-            },
-        ]
-        out = _rewrite_toc(ncx, entries, is_ncx=True, toc_path="OEBPS/toc.ncx")
-        soup = BeautifulSoup(out, "xml")
-        nav_points = soup.find_all("navPoint")
-        labels = [np.find("text").get_text() for np in nav_points]
-        self.assertEqual(labels, ["译名甲", "译名乙"])
-        # src 属性原样保留
-        srcs = [np.find("content").get("src") for np in nav_points]
-        self.assertEqual(srcs, ["chapter.xhtml#a", "chapter.xhtml#b"])
-
-    def test_nav_multi_fragment_nodes_get_distinct_titles_and_href_mismatch_is_skipped(self):
-        from trans_novel.assemble.writer import _rewrite_toc
-
-        nav = (
-            b'<html xmlns:epub="http://www.idpf.org/2007/ops"><body>'
-            b'<nav epub:type="toc"><ol>'
-            b'<li><a href="chapter.xhtml#a">old-a</a></li>'
-            b'<li><a href="chapter.xhtml#b">old-b</a></li>'
-            b"</ol></nav></body></html>"
-        )
-        entries = [
-            {
-                "toc_path": "OEBPS/nav.xhtml",
-                "node_index": 0,
-                "raw_href": "chapter.xhtml#a",
-                "title_translated": "译名甲",
-            },
-            {
-                # raw_href 与源文件实际 href 不一致，回填时须跳过，不能改错节点
-                "toc_path": "OEBPS/nav.xhtml",
-                "node_index": 1,
-                "raw_href": "other.xhtml#b",
-                "title_translated": "译名乙",
-            },
-        ]
-        out = _rewrite_toc(nav, entries, is_ncx=False, toc_path="OEBPS/nav.xhtml")
-        html = out.decode("utf-8")
-        self.assertIn("译名甲", html)
-        self.assertIn("old-b", html)
-        self.assertNotIn("译名乙", html)
-
-
 class TestAssembleEpubLegacySchema(unittest.TestCase):
     """旧 EPUB 状态必须在导出边界拒绝；请重新开始 schema 3 翻译。"""
 
@@ -1010,7 +650,7 @@ class TestAssembleEpubLegacySchema(unittest.TestCase):
 class TestTocRoutingAndSchemaFindings(unittest.TestCase):
     """目录回填须按 toc_entries 路由，旧 EPUB schema 须立即拒绝。"""
 
-    def test_schema2_without_resource_templates_is_rejected(self):
+    def test_schema2_state_is_rejected_before_resource_access(self):
         with tempfile.TemporaryDirectory() as d:
             ep = os.path.join(d, "novel.epub")
             write_sample_epub(ep)
@@ -1020,7 +660,7 @@ class TestTocRoutingAndSchemaFindings(unittest.TestCase):
             with open(os.path.join(run_dir, "chapters", "ch0.json"), "w", encoding="utf-8") as f:
                 json.dump(chapter.to_dict(), f, ensure_ascii=False)
             manifest = {
-                "title": "Schema2NoTemplates",
+                "title": "Schema2Legacy",
                 "fmt": "epub",
                 "source_path": ep,
                 "source_lang": "ja",
@@ -1030,6 +670,8 @@ class TestTocRoutingAndSchemaFindings(unittest.TestCase):
             }
             with open(os.path.join(run_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 json.dump(manifest, f, ensure_ascii=False)
+            with open(os.path.join(run_dir, "resource_templates.json"), "w", encoding="utf-8") as f:
+                json.dump({"OEBPS/ch1.xhtml": "<html/>"}, f)
 
             store = RunStore(run_dir)
             with self.assertRaisesRegex(ValueError, "Unsupported EPUB state schema"):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 import struct
 import tempfile
 import unittest
@@ -10,11 +11,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 
 from tests.sample_data import write_phase9_epub
-from trans_novel.assemble.writer import (
-    _BILINGUAL_CSS,
-    _HORIZONTAL_OVERRIDE_CSS,
-    _HORIZONTAL_OVERRIDE_ID,
-)
+from trans_novel.assemble.bilingual_dom import BILINGUAL_CSS as _BILINGUAL_CSS
 from trans_novel.benchmark.epub_check import validate_epub, validate_epub_triplet
 
 
@@ -162,12 +159,29 @@ class Phase9EpubFixtureTests(unittest.TestCase):
             result = validate_epub(broken)
             codes = {item["code"] for item in result["failures"]}
             self.assertIn("internal_attribute", codes)
-            self.assertIn("marker", codes)
+            self.assertNotIn("marker", codes)
             self.assertIn("illegal_nesting", codes)
             self.assertTrue(
                 all("example.test" not in item["detail"] for item in result["warnings"])
             )
             self.assertTrue(any(item["code"] == "external_skipped" for item in result["warnings"]))
+
+    def test_marker_words_in_prose_and_attributes_are_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.epub"
+            prose = Path(directory) / "prose.epub"
+            write_phase9_epub(str(source))
+            with zipfile.ZipFile(source) as zin:
+                chapter = zin.read("OEBPS/text/chapter-1.xhtml").replace(
+                    b"First item", b"open journal.json and spine-fallback"
+                )
+                chapter = chapter.replace(
+                    b'class="chapter"', b'class="chapter" title="journal.json"'
+                )
+            _copy_epub(source, prose, {"OEBPS/text/chapter-1.xhtml": chapter})
+            result = validate_epub(prose)
+            self.assertTrue(result["structural_pass"])
+            self.assertNotIn("marker", {item["code"] for item in result["failures"]})
 
     def test_malformed_zip_and_malformed_xml_fail_deterministically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -421,9 +435,7 @@ class Phase9EpubFixtureTests(unittest.TestCase):
             self.assertNotEqual(original_nav, nav)
             _copy_epub(source, broken, {"OEBPS/nav.xhtml": nav})
             codes = {item["code"] for item in validate_epub(broken)["failures"]}
-            self.assertTrue(
-                {"internal_attribute", "marker", "duplicate_anchor", "illegal_nesting"} <= codes
-            )
+            self.assertTrue({"internal_attribute", "duplicate_anchor", "illegal_nesting"} <= codes)
 
     def test_unmanifested_and_manifested_output_extras_fail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -737,82 +749,6 @@ class Phase9EpubFixtureTests(unittest.TestCase):
                 )
                 self.assertTrue(validate_epub_triplet(source, mono, bilingual)["structural_pass"])
 
-    def test_vertical_override_round_trip_validates_exact_style(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            raw_source = Path(directory) / "raw-source.epub"
-            source = Path(directory) / "source-vertical.epub"
-            mono = Path(directory) / "mono-vertical.epub"
-            bilingual = Path(directory) / "bilingual-vertical.epub"
-            write_phase9_epub(str(raw_source))
-            with zipfile.ZipFile(raw_source) as zin:
-                source_chapter = zin.read("OEBPS/text/chapter-2.xhtml").replace(
-                    b"<html xmlns=", b'<html class="vrtl" xmlns=', 1
-                )
-                mono_soup = BeautifulSoup(source_chapter, "xml")
-                chapter_one_soup = BeautifulSoup(zin.read("OEBPS/text/chapter-1.xhtml"), "xml")
-                chapter_one_style = chapter_one_soup.new_tag("style", id="tn-bilingual-style")
-                chapter_one_style.string = _BILINGUAL_CSS
-                chapter_one_soup.head.append(chapter_one_style)
-                chapter_one_data = str(chapter_one_soup).encode("utf-8")
-                target = mono_soup.find(id="body-two")
-                assert target is not None
-                target.string = "Translated"
-                horizontal = mono_soup.new_tag("style", id=_HORIZONTAL_OVERRIDE_ID)
-                horizontal.string = _HORIZONTAL_OVERRIDE_CSS
-                mono_soup.head.append(horizontal)
-                mono_data = str(mono_soup).encode("utf-8")
-                bi_soup = BeautifulSoup(mono_data, "xml")
-                target = bi_soup.find(id="body-two")
-                assert target is not None
-                source_node = bi_soup.new_tag("p", attrs={"class": "tn-source"})
-                source_node.string = "Second chapter."
-                target.insert_after(source_node)
-                bilingual_style = bi_soup.new_tag("style", id="tn-bilingual-style")
-                bilingual_style.string = _BILINGUAL_CSS
-                bi_soup.head.append(bilingual_style)
-                bi_data = str(bi_soup).encode("utf-8")
-            _copy_epub(raw_source, source, {"OEBPS/text/chapter-2.xhtml": source_chapter})
-            _copy_epub(source, mono, {"OEBPS/text/chapter-2.xhtml": mono_data})
-            _copy_epub(
-                source,
-                bilingual,
-                {
-                    "OEBPS/text/chapter-1.xhtml": chapter_one_data,
-                    "OEBPS/text/chapter-2.xhtml": bi_data,
-                },
-            )
-            result = validate_epub_triplet(source, mono, bilingual)
-            self.assertTrue(result["structural_pass"], result)
-            altered = mono_data.replace(_HORIZONTAL_OVERRIDE_CSS.encode("utf-8"), b"altered")
-            altered_path = Path(directory) / "altered.epub"
-            _copy_epub(source, altered_path, {"OEBPS/text/chapter-2.xhtml": altered})
-            self.assertIn(
-                "generated_resource_mismatch",
-                {
-                    item["code"]
-                    for item in validate_epub(altered_path, source_path=source, bilingual=False)[
-                        "failures"
-                    ]
-                },
-            )
-            nonvertical_path = Path(directory) / "nonvertical-with-override.epub"
-            _copy_epub(
-                raw_source,
-                nonvertical_path,
-                {"OEBPS/text/chapter-2.xhtml": mono_data},
-            )
-            self.assertIn(
-                "generated_resource_mismatch",
-                {
-                    item["code"]
-                    for item in validate_epub(
-                        nonvertical_path,
-                        source_path=raw_source,
-                        bilingual=False,
-                    )["failures"]
-                },
-            )
-
     def test_inline_style_script_attribute_tamper_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.epub"
@@ -1005,6 +941,47 @@ class Phase9EpubFixtureTests(unittest.TestCase):
             with patch("trans_novel.benchmark.epub_check._MAX_MEMBER_BYTES", 1):
                 result = validate_epub(source)
             self.assertIn("member_too_large", {item["code"] for item in result["failures"]})
+
+    def test_zip_preflight_rejects_duplicate_unsafe_symlink_and_special_members(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.epub"
+            write_phase9_epub(str(source))
+            with zipfile.ZipFile(source) as zin:
+                members = [(info.filename, zin.read(info.filename)) for info in zin.infolist()]
+            cases = (
+                ("duplicate", [*members, members[-1]], "duplicate_entry"),
+                ("unsafe", [*members, ("../escape", b"x")], "unsafe_entry"),
+            )
+            for label, extra_members, expected in cases:
+                output = Path(directory) / f"{label}.epub"
+                with zipfile.ZipFile(output, "w") as zout:
+                    for name, data in extra_members:
+                        zout.writestr(
+                            name,
+                            data,
+                            zipfile.ZIP_STORED if name == "mimetype" else zipfile.ZIP_DEFLATED,
+                        )
+                self.assertIn(
+                    expected, {item["code"] for item in validate_epub(output)["failures"]}
+                )
+            for label, mode in (
+                ("symlink", stat.S_IFLNK | 0o777),
+                ("special", stat.S_IFIFO | 0o600),
+            ):
+                output = Path(directory) / f"{label}.epub"
+                with zipfile.ZipFile(output, "w") as zout:
+                    for name, data in members:
+                        zout.writestr(
+                            name,
+                            data,
+                            zipfile.ZIP_STORED if name == "mimetype" else zipfile.ZIP_DEFLATED,
+                        )
+                    info = zipfile.ZipInfo("payload")
+                    info.external_attr = mode << 16
+                    zout.writestr(info, b"x")
+                self.assertIn(
+                    "special_entry", {item["code"] for item in validate_epub(output)["failures"]}
+                )
 
     def test_relocated_identical_bytes_have_identical_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:

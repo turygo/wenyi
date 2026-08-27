@@ -164,11 +164,16 @@ class TestEpubResumeSchemaGate(unittest.TestCase):
                         stream,
                         ensure_ascii=False,
                     )
-
+                manifest_path = os.path.join(run_dir, "manifest.json")
+                with open(manifest_path, "rb") as stream:
+                    before = stream.read()
                 client = FakeClient(handler=routing_handler)
                 with self.assertRaisesRegex(ValueError, "fresh translation"):
                     Application(_config(state_dir), client=client).run(epub)
                 self.assertEqual(client.calls, [])
+                with open(manifest_path, "rb") as stream:
+                    after = stream.read()
+                self.assertEqual(after, before)
 
 
 class TestApplication(unittest.TestCase):

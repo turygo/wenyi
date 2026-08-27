@@ -8,136 +8,15 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from bs4 import BeautifulSoup
 from typer.testing import CliRunner
 
 from tests.fake_llm import fake_llm_dict, routing_handler
 from tests.sample_data import write_sample_epub, write_sample_txt
-from trans_novel.assemble.writer import (
-    _default_out,
-    _render_chapter_html,
-    assemble,
-)
+from trans_novel.assemble.writer import _default_out, assemble
 from trans_novel.cli import app
 from trans_novel.config import Config
-from trans_novel.ingest.epub_reader import annotate_epub_resource
-from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Chapter, Segment
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.bootstrap import Application
-
-
-def _chapter_with_template() -> Chapter:
-    """构造一个带模板锚点的章节：标题 + 三个正文段（正常/译文缺失/译文等于原文）。"""
-    template = (
-        "<html><body>"
-        '<h1 data-tn-id="h0">原标题</h1>'
-        '<p data-tn-id="p1">原文一</p>'
-        '<p data-tn-id="p2">原文二</p>'
-        '<p data-tn-id="p3">原文三</p>'
-        "</body></html>"
-    )
-    segments = [
-        Segment(index=0, source="原标题", kind=KIND_HEADING, target="译标题", anchor="h0"),
-        Segment(index=1, source="原文一", kind=KIND_TEXT, target="译文一", anchor="p1"),
-        Segment(index=2, source="原文二", kind=KIND_TEXT, target=None, anchor="p2"),
-        Segment(index=3, source="原文三", kind=KIND_TEXT, target="原文三", anchor="p3"),
-    ]
-    return Chapter(index=0, title="标题", segments=segments, template=template, href="ch1.xhtml")
-
-
-class TestRenderChapterHtmlBilingual(unittest.TestCase):
-    def test_bilingual_target_first_inserts_source_and_skips_dedup_cases(self):
-        ch = _chapter_with_template()
-        html = _render_chapter_html(ch, bilingual=True, order="target_first")
-
-        self.assertNotIn("data-tn-id", html)  # 占位标记已清
-
-        soup = BeautifulSoup(html, "html.parser")
-        h1 = soup.find("h1")
-        self.assertEqual(h1.get_text(), "译标题")
-        # 标题不应带 tn-source（紧邻的下一个兄弟是 p1 的译文，不是 tn-source 段）
-        nxt = h1.find_next_sibling()
-        self.assertEqual(nxt.name, "p")
-        self.assertNotIn("tn-source", nxt.get("class", []))
-
-        ps = soup.find_all("p")
-        self.assertEqual([p.get_text() for p in ps], ["译文一", "原文一", "原文二", "原文三"])
-        self.assertEqual(ps[0].get("class"), None)
-        self.assertEqual(ps[1]["class"], ["tn-source", "ibooks-dark-theme-use-custom-text-color"])
-        # p2（译文缺失回退原文）、p3（译文等于原文）都不应插入 tn-source 段
-        self.assertEqual(ps[2].get("class"), None)
-        self.assertEqual(ps[3].get("class"), None)
-
-    def test_order_source_first_places_source_before_target(self):
-        ch = _chapter_with_template()
-        html = _render_chapter_html(ch, bilingual=True, order="source_first")
-        soup = BeautifulSoup(html, "html.parser")
-        ps = soup.find_all("p")
-        self.assertEqual([p.get_text() for p in ps], ["原文一", "译文一", "原文二", "原文三"])
-        self.assertEqual(ps[0]["class"], ["tn-source", "ibooks-dark-theme-use-custom-text-color"])
-        self.assertEqual(ps[1].get("class"), None)
-
-    def test_mono_render_has_no_source_paragraphs(self):
-        ch = _chapter_with_template()
-        html = _render_chapter_html(ch)  # 默认单语，不应引入 tn-source
-        self.assertNotIn("tn-source", html)
-        self.assertNotIn("data-tn-id", html)
-
-    def test_japanese_source_keeps_ruby_in_bilingual_output(self):
-        title, segments, template = annotate_epub_resource(
-            "<html><body><p><ruby>漢字<rt>かんじ</rt></ruby>です</p></body></html>",
-            0,
-            "chapter.xhtml",
-        )
-        segments[0].target = "是汉字"
-        chapter = Chapter(
-            index=0,
-            title=title,
-            segments=segments,
-            href="chapter.xhtml",
-            template=template,
-        )
-
-        soup = BeautifulSoup(
-            _render_chapter_html(chapter, bilingual=True, source_lang="ja"),
-            "html.parser",
-        )
-        source = soup.find("p", class_="tn-source")
-        self.assertIsNotNone(source)
-        assert source is not None
-        ruby = source.find("ruby")
-        self.assertIsNotNone(ruby)
-        assert ruby is not None
-        reading = ruby.find("rt")
-        self.assertIsNotNone(reading)
-        assert reading is not None
-        self.assertEqual(reading.get_text(), "かんじ")
-        self.assertIn("です", source.get_text())
-
-    def test_non_japanese_source_still_flattens_ruby(self):
-        title, segments, template = annotate_epub_resource(
-            "<html><body><p><ruby>漢字<rt>かんじ</rt></ruby>です</p></body></html>",
-            0,
-            "chapter.xhtml",
-        )
-        segments[0].target = "Chinese characters"
-        chapter = Chapter(
-            index=0,
-            title=title,
-            segments=segments,
-            href="chapter.xhtml",
-            template=template,
-        )
-
-        soup = BeautifulSoup(
-            _render_chapter_html(chapter, bilingual=True, source_lang="en"),
-            "html.parser",
-        )
-        source = soup.find("p", class_="tn-source")
-        self.assertIsNotNone(source)
-        assert source is not None
-        self.assertEqual(source.get_text(), "漢字です")
-        self.assertIsNone(source.find("ruby"))
 
 
 def _config(state_dir: str, output: dict | None = None):
@@ -282,8 +161,8 @@ class TestMultiOutput(unittest.TestCase):
             self.assertEqual(os.path.basename(outputs[0]), "novel.zh.epub")
 
 
-class TestAssembleEpubTemplateBilingual(unittest.TestCase):
-    def test_epub_template_rebuild_bilingual(self):
+class TestAssembleEpubSchema3Bilingual(unittest.TestCase):
+    def test_schema3_epub_rebuild_bilingual(self):
         with tempfile.TemporaryDirectory() as d:
             ep = os.path.join(d, "novel.epub")
             write_sample_epub(ep)

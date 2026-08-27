@@ -13,7 +13,7 @@ AnalysisFlags 所有。
   chapters_v2/ch{n}.json V2 章节文件（meta 不含流水线字段）
   chapters/              迁移前的 V1 章节文件（切换后仅作恢复备份，不再读取）
   analysis.json / context.json / glossary.db / report.json / usage.json /
-  events.jsonl / resource_templates.json   共享文件，路径不变
+  events.jsonl            共享文件，路径不变
 
 ``run_state_schema`` 是运行状态文件的 schema 版本，与 EPUB 文档格式 schema
 （meta.epub_schema）无关：EPUB schema 描述书稿的物理组织方式，本常量描述

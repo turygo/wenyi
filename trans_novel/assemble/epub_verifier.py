@@ -40,15 +40,21 @@ from trans_novel.assemble.bilingual_dom import (
     direct_run_source_copy,
     is_bilingual_container_tag,
     japanese_ruby_source_copy,
+    ruby_base_count,
     sanitized_source_copy,
     segment_needs_source,
     source_node_is_valid,
     style_shape_is_valid,
 )
-from trans_novel.assemble.writer import (
-    _HORIZONTAL_OVERRIDE_CSS,
-    _HORIZONTAL_OVERRIDE_ID,
-    _epub_looks_vertical,
+from trans_novel.assemble.zip_safety import (
+    MAX_ARCHIVE_BYTES,
+    MAX_ARCHIVE_MEMBERS,
+    MAX_MEMBER_BYTES,
+    ZipSafetyError,
+    preflight_zip,
+)
+from trans_novel.assemble.zip_safety import (
+    read_member as _safe_read_member,
 )
 from trans_novel.ingest.epub_toc import nav_toc_scopes
 
@@ -66,11 +72,11 @@ _CATEGORIES = (
     "parse",
     "bilingual_source",
 )
-_MAX_MEMBER_BYTES = 512 * 1024 * 1024
-_MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024
-_EXACT_MARKERS = {"spine-fallback", "journal.json"}
-_EXTERNAL_SCHEMES = {"http", "https", "mailto", "data"}
+_MAX_MEMBER_BYTES = MAX_MEMBER_BYTES
+_MAX_ARCHIVE_BYTES = MAX_ARCHIVE_BYTES
+_MAX_ARCHIVE_MEMBERS = MAX_ARCHIVE_MEMBERS
 _INTERNAL_ATTRIBUTES = {"data-tn-id", "data-tn-inline-id", "data-tn-line"}
+_EXTERNAL_SCHEMES = {"http", "https", "mailto", "data"}
 _HTML_MEDIA = {"application/xhtml+xml", "text/html"}
 _NCX_MEDIA = "application/x-dtbncx+xml"
 _BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "td", "th", "dt", "dd"}
@@ -116,38 +122,12 @@ def _sha256(path: Path) -> str:
 
 
 def _read_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, *, as_bytes: bool = True) -> bytes:
-    """Read one member with declared, streamed, and CRC/decompression guards."""
-    if info.file_size > _MAX_MEMBER_BYTES:
-        raise _MemberError("member_too_large")
-    chunks: list[bytes] = []
-    total = 0
+    """Read a member through the shared bounded CRC/decompression guard."""
     try:
-        with zf.open(info, "r") as stream:
-            while True:
-                chunk = stream.read(min(1024 * 1024, _MAX_MEMBER_BYTES - total + 1))
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > _MAX_MEMBER_BYTES:
-                    raise _MemberError("member_too_large")
-                if as_bytes:
-                    chunks.append(chunk)
-    except (
-        OSError,
-        RuntimeError,
-        NotImplementedError,
-        EOFError,
-        zipfile.BadZipFile,
-        zipfile.LargeZipFile,
-        ValueError,
-        zlib.error,
-        lzma.LZMAError,
-    ) as exc:
-        name = type(exc).__name__
-        raise _MemberError(
-            "crc_error" if name in {"BadZipFile", "BadCRC"} else "member_read"
-        ) from None
-    return b"".join(chunks) if as_bytes else b""
+        data = _safe_read_member(zf, info, max_member_bytes=_MAX_MEMBER_BYTES)
+    except ZipSafetyError as exc:
+        raise _MemberError(exc.code) from None
+    return data if as_bytes else b""
 
 
 def _member_hash(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> tuple[str, int]:
@@ -198,10 +178,9 @@ def _local_name(tag: str) -> str:
 
 
 def _safe_archive_name(name: str) -> bool:
-    if not name or "\x00" in name or "\\" in name or name.startswith("/"):
-        return False
-    normalized = posixpath.normpath(name)
-    return normalized not in {"", "."} and normalized != ".." and not normalized.startswith("../")
+    from trans_novel.assemble.zip_safety import safe_name
+
+    return safe_name(name)
 
 
 def _resolve(base: str, reference: str) -> tuple[str | None, str | None, str | None]:
@@ -465,18 +444,10 @@ def _check_document_features(
             if count > 1:
                 failures.append(_item("anchors", "duplicate_anchor", path, value))
     _check_nesting(soup, failures, path)
-    found_markers: set[str] = set()
     for tag in soup.find_all(True):
         checked["placeholders"] += 1
         if any(attribute in tag.attrs for attribute in _INTERNAL_ATTRIBUTES):
             failures.append(_item("placeholders", "internal_attribute", path, tag.name))
-        for value in tag.attrs.values():
-            if isinstance(value, str):
-                found_markers.update(marker for marker in _EXACT_MARKERS if marker in value)
-    for text_node in soup.find_all(string=True):
-        found_markers.update(marker for marker in _EXACT_MARKERS if marker in str(text_node))
-    for marker in sorted(found_markers):
-        failures.append(_item("placeholders", "marker", path, marker))
     if content:
         body = soup.body
         meaningful = bool(body and body.get_text(" ", strip=True))
@@ -1098,7 +1069,6 @@ def _validate_one(
     *,
     source_path: Path | None,
     bilingual: bool | None,
-    reject_horizontal_override: bool = False,
 ) -> dict[str, Any]:
     failures: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
@@ -1125,7 +1095,16 @@ def _validate_one(
         checked["zip"] += 1
         return _finish(result, failures, warnings, checked)
     with zf:
-        infos = zf.infolist()
+        try:
+            infos = preflight_zip(
+                zf,
+                max_member_bytes=_MAX_MEMBER_BYTES,
+                max_archive_bytes=_MAX_ARCHIVE_BYTES,
+                max_archive_members=_MAX_ARCHIVE_MEMBERS,
+            )
+        except ZipSafetyError as exc:
+            failures.append(_item("zip", exc.code, exc.name or "<archive>", "archive"))
+            return _finish(result, failures, warnings, checked)
         names = [info.filename for info in infos]
         archive = set(names)
         checked["zip"] += len(infos) + 1
@@ -1304,13 +1283,6 @@ def _validate_one(
             if item["media"] in _HTML_MEDIA and "nav" not in item["properties"].split()
         ]
         toc_items = model["nav_items"] + model["ncx_items"]
-        source_vertical = False
-        if source_path is not None and source_path.is_file():
-            try:
-                with zipfile.ZipFile(source_path, "r") as source_zip:
-                    source_vertical = _epub_looks_vertical(source_zip)
-            except (OSError, zipfile.BadZipFile):
-                source_vertical = False
         soups: dict[str, BeautifulSoup] = {}
         ids_by_path: dict[str, set[str]] = {}
         for item in content_items + toc_items:
@@ -1351,24 +1323,6 @@ def _validate_one(
                         )
                     else:
                         result["generated_resources"].append(f"{content_path}#tn-bilingual-style")
-                elif style_id == _HORIZONTAL_OVERRIDE_ID:
-                    if (
-                        reject_horizontal_override
-                        or style.get_text() != _HORIZONTAL_OVERRIDE_CSS
-                        or (source_path is not None and not source_vertical)
-                    ):
-                        failures.append(
-                            _item(
-                                "resources",
-                                "generated_resource_mismatch",
-                                content_path,
-                                _HORIZONTAL_OVERRIDE_ID,
-                            )
-                        )
-                    else:
-                        result["generated_resources"].append(
-                            f"{content_path}#{_HORIZONTAL_OVERRIDE_ID}"
-                        )
         if not model["nav_items"] and not model["ncx_items"]:
             checked["nav"] += 1
             failures.append(_item("nav", "missing_toc", opf_path, "toc"))
@@ -1503,33 +1457,16 @@ def _validate_one(
                                     entry
                                     for entry in actual_inline
                                     if not (
-                                        (
-                                            entry[0] == "style"
-                                            and entry[1] == "tn-bilingual-style"
-                                            and entry[2]
-                                            == hashlib.sha256(
-                                                _BILINGUAL_CSS.encode("utf-8")
-                                            ).hexdigest()
-                                            and entry[3]
-                                            == hashlib.sha256(
-                                                repr([("id", "tn-bilingual-style")]).encode("utf-8")
-                                            ).hexdigest()
-                                        )
-                                        or (
-                                            source_vertical
-                                            and entry[0] == "style"
-                                            and entry[1] == _HORIZONTAL_OVERRIDE_ID
-                                            and entry[2]
-                                            == hashlib.sha256(
-                                                _HORIZONTAL_OVERRIDE_CSS.encode("utf-8")
-                                            ).hexdigest()
-                                            and entry[3]
-                                            == hashlib.sha256(
-                                                repr([("id", _HORIZONTAL_OVERRIDE_ID)]).encode(
-                                                    "utf-8"
-                                                )
-                                            ).hexdigest()
-                                        )
+                                        entry[0] == "style"
+                                        and entry[1] == "tn-bilingual-style"
+                                        and entry[2]
+                                        == hashlib.sha256(
+                                            _BILINGUAL_CSS.encode("utf-8")
+                                        ).hexdigest()
+                                        and entry[3]
+                                        == hashlib.sha256(
+                                            repr([("id", "tn-bilingual-style")]).encode("utf-8")
+                                        ).hexdigest()
                                     )
                                 ]
                             if actual_inline != expected_inline:
@@ -1998,6 +1935,7 @@ def _bilingual_proof(
     expected: list[tuple[str, tuple[int, ...]]] = []
     expected_total = 0
     container_paths: set[tuple[int, ...]] = set()
+    direct_source_keys: set[tuple[tuple[int, ...], tuple[int, ...] | str]] = set()
     for segment in segments:
         if not segment_needs_source(segment):
             continue
@@ -2019,7 +1957,34 @@ def _bilingual_proof(
             for child in source_block
         )
         if direct_segment:
-            expected_total += len(state.slots)
+            for slot_index, slot in enumerate(state.slots):
+                owner = _resolve_path_lxml(source_block, tuple(slot.element_path))
+                ruby = (
+                    next(
+                        (
+                            node
+                            for node in (owner, *owner.iterancestors())
+                            if node is not source_block
+                            and isinstance(node.tag, str)
+                            and _local_name(node.tag) == "ruby"
+                        ),
+                        None,
+                    )
+                    if owner is not None
+                    else None
+                )
+                if ruby is not None and slot.field == "tail" and owner is ruby:
+                    ruby = None
+                if ruby is not None and ruby_base_count(ruby) <= 1:
+                    ruby = None
+                ruby_path = _element_path_lxml(root_source, ruby) if ruby is not None else None
+                key = (
+                    block_path,
+                    ruby_path or ("slot", getattr(slot, "id", f"{id(segment)}:{slot_index}")),
+                )
+                if key not in direct_source_keys:
+                    direct_source_keys.add(key)
+                    expected_total += 1
         else:
             expected.append((segment.source, block_path))
             expected_total += 1
@@ -2199,6 +2164,7 @@ def _bilingual_proof(
         ]
         assigned: set[tuple[int, ...]] = set()
         last_source_index: dict[int, int] = {}
+        processed_rubies: set[tuple[int, ...]] = set()
         for segment in direct_segments:
             state = segment.epub_state
             assert state is not None
@@ -2215,6 +2181,22 @@ def _bilingual_proof(
                         )
                     )
                     continue
+                ruby = next(
+                    (
+                        node
+                        for node in (original_owner, *original_owner.iterancestors())
+                        if node is not source_block
+                        and isinstance(node.tag, str)
+                        and _local_name(node.tag) == "ruby"
+                    ),
+                    None,
+                )
+                if ruby is not None and slot.field == "tail" and original_owner is ruby:
+                    ruby = None
+                if ruby is not None and ruby_base_count(ruby) <= 1:
+                    ruby = None
+                ruby_path = _element_path_lxml(root_source, ruby) if ruby is not None else None
+                grouped_ruby = ruby_path is not None
                 boundary = source_boundary(original_owner)
                 leading = getattr(slot, "leading_whitespace", "")
                 trailing = getattr(slot, "trailing_whitespace", "")
@@ -2275,6 +2257,10 @@ def _bilingual_proof(
                     )
                 else:
                     direct_target_used += 1
+                if grouped_ruby and ruby_path in processed_rubies:
+                    continue
+                if grouped_ruby and ruby_path is not None:
+                    processed_rubies.add(ruby_path)
 
                 if source_parent is None:
                     failures.append(
@@ -2286,12 +2272,29 @@ def _bilingual_proof(
                         )
                     )
                     continue
+                expected_source_node = (
+                    direct_run_source_copy(
+                        source_block,
+                        original_owner,
+                        source_lang=source_lang,
+                        source_tag="span",
+                        source_value=slot.source_value,
+                        ruby_source=True,
+                    )
+                    if grouped_ruby
+                    else None
+                )
+                source_match_value = (
+                    _source_node_visible_text(expected_source_node)
+                    if expected_source_node is not None
+                    else _norm_text(slot.source_value)
+                )
                 candidates = [
                     node
                     for node in _element_children_lxml(source_parent)
                     if "tn-source" in str(node.get("class", "")).split()
                     and _element_path_lxml(root_output, node) not in assigned
-                    and _source_node_visible_text(node) == _norm_text(slot.source_value)
+                    and _source_node_visible_text(node) == source_match_value
                 ]
                 source_node = None
                 if (
@@ -2525,14 +2528,21 @@ def _compare_dom(
     output: etree._Element,
     slots: dict[tuple[tuple[int, ...], str], Any],
     path: tuple[int, ...] = (),
+    *,
+    toc_label_paths: set[tuple[int, ...]] | None = None,
+    allow_root_language: bool = True,
 ) -> bool:
     if source.tag != output.tag:
         return False
     source_attrs = {
-        key: value for key, value in source.attrib.items() if not (_lang_attr(key) and path == ())
+        key: value
+        for key, value in source.attrib.items()
+        if not (allow_root_language and _lang_attr(key) and path == ())
     }
     output_attrs = {
-        key: value for key, value in output.attrib.items() if not (_lang_attr(key) and path == ())
+        key: value
+        for key, value in output.attrib.items()
+        if not (allow_root_language and _lang_attr(key) and path == ())
     }
     if source_attrs != output_attrs:
         return False
@@ -2542,19 +2552,30 @@ def _compare_dom(
     output_children = list(output)
     if len(source_children) != len(output_children):
         return False
+    allow_toc_tail = bool(
+        toc_label_paths
+        and any(path[: len(label_path)] == label_path for label_path in toc_label_paths)
+    )
     element_index = 0
     for source_child, output_child in zip(source_children, output_children, strict=True):
         if not isinstance(source_child.tag, str) or not isinstance(output_child.tag, str):
-            if (
-                source_child.tag != output_child.tag
-                or source_child.text != output_child.text
-                or source_child.tail != output_child.tail
+            if source_child.tag != output_child.tag or source_child.text != output_child.text:
+                return False
+            if (not allow_toc_tail and source_child.tail != output_child.tail) or (
+                allow_toc_tail and output_child.tail is not None
             ):
                 return False
             continue
         child_path = (*path, element_index)
         element_index += 1
-        if not _compare_dom(source_child, output_child, slots, child_path):
+        if not _compare_dom(
+            source_child,
+            output_child,
+            slots,
+            child_path,
+            toc_label_paths=toc_label_paths,
+            allow_root_language=allow_root_language,
+        ):
             return False
         if (child_path, "tail") not in slots and source_child.tail != output_child.tail:
             return False
@@ -2678,8 +2699,13 @@ def _slot_proof(
 
             root_source, root_output = source_tree.getroot(), output_tree.getroot()
             slot_map: dict[tuple[tuple[int, ...], str], Any] = {}
+            toc_label_paths: set[tuple[int, ...]] = set()
             direct_cleared: set[tuple[tuple[int, ...], str]] = set()
-            if target_lang:
+            is_ncx_resource = any(
+                isinstance(node.tag, str) and _local_name(node.tag).lower() == "navmap"
+                for node in root_source.iter()
+            )
+            if target_lang and not is_ncx_resource:
                 source_lang_attrs = {
                     key: value for key, value in root_source.attrib.items() if _lang_attr(key)
                 }
@@ -2779,6 +2805,7 @@ def _slot_proof(
                         failures.append(_item("nav", "label_locator_missing", resource, "toc"))
                         continue
                     label, path = locations[index]
+                    toc_label_paths.add(path)
                     from trans_novel.assemble.writer import _translated_toc_title
 
                     expected_title = _translated_toc_title(entry)
@@ -2817,7 +2844,13 @@ def _slot_proof(
 
                     allow_cleared_descendants(label, path)
 
-            if not _compare_dom(root_source, root_output, slot_map):
+            if not _compare_dom(
+                root_source,
+                root_output,
+                slot_map,
+                toc_label_paths=toc_label_paths,
+                allow_root_language=not is_ncx_resource,
+            ):
                 failures.append(_item("dom", "unauthorized_dom_change", resource, "immutable"))
 
             for (location, field), allowed in slot_map.items():
@@ -2894,8 +2927,7 @@ def verify_epub(
     structural = _validate_one(
         output,
         source_path=source if mode in {"monolingual", "bilingual"} else None,
-        bilingual=bilingual if mode in {"monolingual", "bilingual"} else None,
-        reject_horizontal_override=mode in {"monolingual", "bilingual"},
+        bilingual=bilingual,
     )
     if mode in {"monolingual", "bilingual"} and source is not None:
         # A source EPUB may legitimately omit both navigation formats.  Keep
@@ -2923,8 +2955,6 @@ def verify_epub(
                 output_infos = output_zip.infolist()
                 source_names = [info.filename for info in source_infos]
                 output_names = [info.filename for info in output_infos]
-                # Source and output must preserve the complete member multiset,
-                # including duplicate detection and order.
                 if source_names != output_names:
                     failures.append(_item("zip", "member_set_mismatch", "<archive>", "source"))
                 elif len(source_names) != len(set(source_names)):
@@ -2936,13 +2966,16 @@ def verify_epub(
                             "date_time",
                             "external_attr",
                             "internal_attr",
-                            "flag_bits",
                             "extra",
                             "comment",
                         )
-                        if any(
-                            getattr(source_info, key) != getattr(output_info, key)
-                            for key in metadata
+                        flags_match = source_info.flag_bits == output_info.flag_bits
+                        if (
+                            any(
+                                getattr(source_info, key) != getattr(output_info, key)
+                                for key in metadata
+                            )
+                            or not flags_match
                         ):
                             failures.append(
                                 _item(
@@ -2967,16 +3000,36 @@ def verify_epub(
                     for item in source_archive_info.get("model", {}).get("nav_items", [])
                     + source_archive_info.get("model", {}).get("ncx_items", [])
                 }
-                authorized_suffixes = (".xhtml", ".html", ".htm", ".opf", ".ncx")
+                if store is not None:
+                    try:
+                        persisted_toc = store.load_manifest().get("meta", {}).get("toc_entries", [])
+                    except Exception:
+                        persisted_toc = []
+                    toc_paths.update(
+                        entry.get("toc_path")
+                        for entry in persisted_toc
+                        if isinstance(entry, dict) and isinstance(entry.get("toc_path"), str)
+                    )
+                authorized_names = set(toc_paths)
+                source_opf = source_archive_info.get("opf_path")
+                if isinstance(source_opf, str):
+                    authorized_names.add(source_opf)
+                authorized_names.update(
+                    item["path"]
+                    for item in source_archive_info.get("model", {}).get("resolved", [])
+                    if item.get("media") in _HTML_MEDIA
+                    or item.get("media") == _NCX_MEDIA
+                    or "nav" in item.get("properties", "").split()
+                )
                 if source_zip.comment != output_zip.comment:
                     failures.append(_item("zip", "archive_comment_mismatch", "<archive>", "source"))
                 for info in source_zip.infolist():
                     name = info.filename
-                    if name not in output_info or name == "mimetype":
+                    if name not in output_info or name == "mimetype" or name in authorized_names:
                         continue
-                    if name in toc_paths or name.lower().endswith(authorized_suffixes):
-                        continue
-                    if source_zip.read(name) != output_zip.read(name):
+                    if _read_member(source_zip, info) != _read_member(
+                        output_zip, output_info[name]
+                    ):
                         failures.append(_item("assets", "changed_asset", name, "changed"))
         except (OSError, zipfile.BadZipFile):
             failures.append(_item("assets", "source_unreadable", "<source>", "archive"))
@@ -2990,8 +3043,12 @@ def verify_epub(
                 source_opf = source_info.get("opf_path")
                 output_opf = output_info.get("opf_path")
                 if source_opf and output_opf and source_opf == output_opf:
-                    source_root = etree.fromstring(source_zip.read(source_opf))
-                    output_root = etree.fromstring(output_zip.read(output_opf))
+                    source_root = etree.fromstring(
+                        _read_member(source_zip, source_zip.getinfo(source_opf))
+                    )
+                    output_root = etree.fromstring(
+                        _read_member(output_zip, output_zip.getinfo(output_opf))
+                    )
                     language_seen = False
                     opf_language_changed = 0
 
@@ -3148,9 +3205,21 @@ def publish_epub(
     bilingual: bool = False,
     bilingual_order: str = "target_first",
     writer: Callable[[str], object],
+    source_identity_path: str | os.PathLike[str] | None = None,
 ) -> str:
     """Run the only EPUB publication path: owned temp, reopen, verify, replace."""
     final = os.fspath(final_path)
+    identity = source_identity_path if source_identity_path is not None else source_path
+    if identity is not None:
+        source = os.fspath(identity)
+        try:
+            aliases = os.path.realpath(source) == os.path.realpath(final)
+            if os.path.exists(source) and os.path.exists(final):
+                aliases = aliases or os.path.samefile(source, final)
+        except OSError:
+            aliases = False
+        if aliases:
+            _raise_preflight(store, final, source_path, mode, "input_output_alias", "rejected")
     parent = os.path.dirname(os.path.abspath(final)) or "."
     if not os.path.isdir(parent) or not os.access(parent, os.W_OK):
         _raise_preflight(store, final, source_path, mode, "parent_unwritable", "parent")

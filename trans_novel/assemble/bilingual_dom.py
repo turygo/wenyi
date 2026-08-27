@@ -133,7 +133,11 @@ def direct_run_source_copy(
         ),
         None,
     )
-    if ruby is not None:
+    if ruby is not None and (
+        owner is ruby
+        or (owner.text or "").strip() == (ruby.text or "").strip()
+        or local_name(owner.tag) == "rb"
+    ):
         canonical = japanese_ruby_source_copy(ruby, source_lang, "ruby")
         if canonical is None:
             canonical = sanitized_source_copy(ruby, "ruby")
@@ -142,6 +146,20 @@ def direct_run_source_copy(
         source.text = source_value
     source.set("class", BILINGUAL_SOURCE_CLASS)
     return source
+
+
+def ruby_base_count(ruby: etree._Element) -> int:
+    """Count visible ruby base cores in implicit and explicit rb forms."""
+    count = int(bool((ruby.text or "").strip()))
+    for child in ruby:
+        if not isinstance(child.tag, str):
+            continue
+        name = local_name(child.tag)
+        if name == "rb":
+            count += int(bool((child.text or "").strip()))
+        elif name in {"rt", "rp"}:
+            count += int(bool((child.tail or "").strip()))
+    return count
 
 
 def direct_run_is_active(node: etree._Element) -> bool:
@@ -528,11 +546,11 @@ __all__ = [
     "dedupe_segment_mappings",
     "direct_run_boundary",
     "direct_run_has_active_ancestor",
-    "direct_run_is_active",
     "direct_run_source_copy",
     "is_bilingual_container_tag",
     "japanese_ruby_source_copy",
     "local_name",
+    "ruby_base_count",
     "ruby_shape_is_valid",
     "sanitized_source_copy",
     "style_shape_is_valid",

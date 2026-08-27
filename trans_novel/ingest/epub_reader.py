@@ -1,17 +1,13 @@
-"""EPUB 读取器（纯标准库 + BeautifulSoup）。
+"""EPUB 读取器：提取 schema-3 lxml 文本槽位状态。
 
 EPUB 即一个 zip：
   META-INF/container.xml → 指向 OPF
   OPF → manifest（资源清单）+ spine（阅读顺序）
 
-读取时先按 spine 逐个物理 XHTML 标注 Segment（锚点按物理资源序号生成，
-与逻辑章号无关），再根据切片粒度自动选择 NCX/NAV 的目录层级（见
-``select_boundaries``），将整书的 Segment 流切分为逻辑 Chapter。因此 Chapter 与
-XHTML 不再是一对一：切章之后，每个
-Segment 的 ``resource_href`` 仍记录它所属的物理资源，写回时据此按
-物理文件聚合。标注模板不再随 Chapter 持久化，而是统一放进
-``Document.meta["epub_resource_templates"]``（键为物理资源 href），
-由 RunStore 写入独立状态文件，与频繁重写的 manifest 解耦。
+读取时先按 spine 逐个物理 XHTML 提取 Segment（锚点按物理资源序号生成，
+与逻辑章号无关），再根据目录层级将整书的 Segment 流切分为逻辑 Chapter。
+Chapter 与 XHTML 不再是一对一：每个 Segment 的 ``resource_href`` 仍记录
+所属物理资源，写回时据此按物理文件聚合。源 XHTML 从不改写或持久化模板。
 """
 
 from __future__ import annotations
@@ -25,16 +21,10 @@ import xml.etree.ElementTree as ET
 import zipfile
 from urllib.parse import urlsplit
 
-from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
 from lxml import etree
 
-from trans_novel.ingest.epub_toc import (
-    nav_root_list,
-    nav_toc_scopes,
-    parse_toc_entries,
-    resolve_epub_href,
-    select_boundaries,
-)
+from trans_novel.assemble.zip_safety import ZipSafetyError, preflight_zip, read_member
+from trans_novel.ingest.epub_toc import parse_toc_entries, resolve_epub_href, select_boundaries
 from trans_novel.ingest.models import (
     KIND_HEADING,
     KIND_TEXT,
@@ -65,21 +55,6 @@ _BLOCK_TAGS = {
 }
 _BLOCK_CANDIDATE_TAGS = _BLOCK_TAGS | {"div"}
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
-_INLINE_META_KEY = "epub_inline"
-_INLINE_ID_ATTR = "data-tn-inline-id"
-_ATOMIC_INLINE_TAGS = {
-    "audio",
-    "canvas",
-    "embed",
-    "hr",
-    "iframe",
-    "img",
-    "math",
-    "object",
-    "svg",
-    "video",
-}
-_LINE_WRAPPER_ATTR = "data-tn-line"
 _STRATEGY_SPINE_FALLBACK = "spine-fallback"
 
 _FOOTNOTE_CLASS_TOKENS = {"sup", "super", "superscript", "sub", "subscript"}
@@ -91,284 +66,34 @@ _FOOTNOTE_HINT_RE = re.compile(
 _SHORT_MARKER_RE = re.compile(r"[A-Za-z]?[-_]?\d+")
 
 
-def _is_internal_footnote_link(link: Tag) -> bool:
-    """仅接受带 fragment 的 EPUB 内部链接，保留原始 href 不做规范化。"""
-    href = link.get("href")
-    if not isinstance(href, str):
-        return False
-    parts = urlsplit(href)
-    return not parts.scheme and not parts.netloc and bool(parts.fragment)
-
-
-def _is_semantic_footnote_wrapper(node: Tag) -> bool:
-    """判断节点是否显式表达上标/下标脚注语义。"""
-    if node.name in {"sup", "sub"}:
-        return True
-    if node.name != "span":
-        return False
-    class_values = node.get("class", [])
-    if isinstance(class_values, str):
-        class_values = class_values.split()
-    if isinstance(class_values, list) and any(
-        token.lower() in _FOOTNOTE_CLASS_TOKENS
-        for value in class_values
-        if isinstance(value, str)
-        for token in value.split()
-    ):
-        return True
-    style = node.get("style")
-    if not isinstance(style, str):
-        return False
-    for declaration in style.split(";"):
-        property_name, separator, value = declaration.partition(":")
-        if (
-            separator
-            and property_name.strip().lower() == "vertical-align"
-            and value.strip().lower() in {"super", "sub"}
-        ):
-            return True
-    return False
-
-
-def _has_footnote_hint(link: Tag, wrapper: Tag) -> bool:
-    """判断内部链接及其语义包装是否带有脚注标识。"""
-    for node in (link, wrapper):
-        for attr in _FOOTNOTE_HINT_ATTRS:
-            value = node.get(attr)
-            values = value if isinstance(value, list) else [value]
-            if any(isinstance(item, str) and _FOOTNOTE_HINT_RE.search(item) for item in values):
-                return True
-
-    href = link.get("href")
-    if isinstance(href, str):
-        parts = urlsplit(href)
-        if _FOOTNOTE_HINT_RE.search(parts.path) or _FOOTNOTE_HINT_RE.search(parts.fragment):
-            return True
-    return any(
-        _SHORT_MARKER_RE.fullmatch(node.get_text(strip=True) or "") is not None
-        for node in (link, wrapper)
-    )
-
-
-def _footnote_marker_roots(block: Tag) -> list[Tag]:
-    """找出块内需要作为原子内联节点保留的脚注标记包装节点。"""
-    roots: list[Tag] = []
-    for link in block.find_all("a", href=True):
-        if not _is_internal_footnote_link(link):
-            continue
-        wrapper: Tag | None = link if _is_semantic_footnote_wrapper(link) else None
-        parent = link.parent
-        while wrapper is None and isinstance(parent, Tag) and parent is not block:
-            if _is_semantic_footnote_wrapper(parent):
-                wrapper = parent
-                break
-            parent = parent.parent
-        if wrapper is not None and _has_footnote_hint(link, wrapper):
-            roots.append(wrapper)
-    return roots
-
-
-def _outermost_nodes(block: Tag, candidates: list[Tag]) -> list[Tag]:
-    """按 DOM 顺序去重，并丢弃已包含在其他候选根中的内层节点。"""
-    candidate_ids = {id(node) for node in candidates}
-    roots: list[Tag] = []
-    for node in block.find_all(True):
-        if id(node) not in candidate_ids:
-            continue
-        if any(id(parent) in candidate_ids for parent in node.parents if isinstance(parent, Tag)):
-            continue
-        roots.append(node)
-    return roots
-
-
-def _inside_roots(node: Tag, roots: list[Tag]) -> bool:
-    """判断节点是否位于任一已识别的原子根内。"""
-    return any(node is root or any(parent is root for parent in node.parents) for root in roots)
-
-
-def _preserved_inline_roots(block: Tag) -> list[Tag]:
-    """返回需要原样回填的非文本节点及带语义的脚注标记。"""
-    candidates = _footnote_marker_roots(block)
-    for candidate in block.find_all(True):
-        is_atomic = candidate.name in _ATOMIC_INLINE_TAGS
-        is_empty_anchor = (
-            candidate.name == "a"
-            and not candidate.get_text(strip=True)
-            and (candidate.has_attr("id") or candidate.has_attr("name"))
-        )
-        if not is_atomic and not is_empty_anchor:
-            continue
-
-        root = candidate
-        parent = root.parent
-        while (
-            isinstance(parent, Tag)
-            and parent is not block
-            and parent.name not in _BLOCK_TAGS
-            and not parent.get_text(strip=True)
-        ):
-            root = parent
-            parent = root.parent
-        candidates.append(root)
-    return _outermost_nodes(block, candidates)
-
-
-def _segment_content(block: Tag, anchor: str) -> tuple[str, dict[str, object]]:
-    """提取可翻译文本，并给内联非文本节点写入稳定 ID 和位置元数据。"""
-    roots = _preserved_inline_roots(block)
-    root_ids = {id(node) for node in roots}
-    text_parts: list[str] = []
-    preserved_nodes: list[tuple[str, Tag]] = []
-
-    def walk(parent: Tag) -> None:
-        for child in parent.children:
-            if isinstance(child, Tag):
-                if child.name in {"rt", "rp"}:
-                    # 振假名与不支持 ruby 时显示的备用括号都不是正文；
-                    # 保留在模板中，但不要把 ``漢字（かんじ）`` 拆成
-                    # 可翻译源文里的 ``漢字（）``。
-                    continue
-                if id(child) in root_ids:
-                    marker = f"\ue000tn-inline-{len(preserved_nodes)}\ue001"
-                    preserved_nodes.append((marker, child))
-                    text_parts.append(marker)
-                else:
-                    walk(child)
-            elif isinstance(child, NavigableString) and not isinstance(child, Comment):
-                text_parts.append(str(child))
-
-    walk(block)
-    raw_text = re.sub(r"[ \t\r\n\f\v]+", " ", "".join(text_parts))
-
-    node_offsets: list[tuple[Tag, int]] = []
-    for marker, node in preserved_nodes:
-        offset = raw_text.find(marker)
-        if offset < 0:  # pragma: no cover - marker 由本函数写入
-            continue
-        raw_text = raw_text[:offset] + raw_text[offset + len(marker) :]
-        node_offsets.append((node, offset))
-
-    text = raw_text.strip()
-    if not text:
-        return "", {}
-
-    leading = len(raw_text) - len(raw_text.lstrip())
-    source_length = len(text)
-    nodes: list[dict[str, object]] = []
-    for index, (node, raw_offset) in enumerate(node_offsets):
-        inline_id = f"{anchor}_inline_{index}"
-        offset = min(max(raw_offset - leading, 0), source_length)
-        placement = "before" if offset == 0 else "after" if offset == source_length else "inline"
-        node[_INLINE_ID_ATTR] = inline_id
-        nodes.append(
-            {
-                "id": inline_id,
-                "tag": node.name,
-                "placement": placement,
-                "offset": offset,
-            }
-        )
-
-    meta: dict[str, object] = {}
-    if nodes:
-        meta[_INLINE_META_KEY] = {
-            "version": 1,
-            "source_length": source_length,
-            "nodes": nodes,
-        }
-    return text, meta
-
-
-def _has_meaningful_descendant_block(element: Tag) -> bool:
-    """块内若已有更细粒度的正文块，则外层只作为布局容器保留。"""
-    return any(
-        descendant.get_text(strip=True) for descendant in element.find_all(_BLOCK_CANDIDATE_TAGS)
-    )
-
-
-def _list_item_link_target(element: Tag) -> Tag | None:
-    """返回列表项自己的直接链接标签，避免回填时清空 ``li`` 和子列表。"""
-    link = element.find("a", recursive=False)
-    return link if isinstance(link, Tag) and link.get_text(strip=True) else None
-
-
-def _split_direct_break_lines(element: Tag, soup: BeautifulSoup) -> list[Tag]:
-    """把直接 ``br`` 分隔的可见行包装为独立翻译目标，原 ``br`` 不动。"""
-    children = list(element.children)
-    if not any(isinstance(child, Tag) and child.name == "br" for child in children):
-        return [element]
-
-    runs: list[list[Tag | NavigableString]] = [[]]
-    for child in children:
-        if isinstance(child, Tag) and child.name == "br":
-            runs.append([])
-        elif isinstance(child, Tag | NavigableString):
-            runs[-1].append(child)
-
-    targets: list[Tag] = []
-    for run in runs:
-        has_text = any(
-            node.get_text(strip=True)
-            if isinstance(node, Tag)
-            else not isinstance(node, Comment) and bool(str(node).strip())
-            for node in run
-        )
-        if not has_text:
-            continue
-        wrapper = soup.new_tag("span")
-        wrapper[_LINE_WRAPPER_ATTR] = "true"
-        run[0].insert_before(wrapper)
-        for node in run:
-            wrapper.append(node.extract())
-        targets.append(wrapper)
-    return targets
-
-
-def _translation_targets(
-    soup: BeautifulSoup,
-    *,
-    skip_navigation: bool,
-    toc_lists: list[Tag] | None = None,
-) -> list[Tag]:
-    """按文档顺序选择可安全替换内容的最细粒度 EPUB 节点。
-
-    含子正文块的 ``div``/``blockquote`` 等仅作为容器保留；``li`` 的
-    直接链接文字单独成为翻译目标，从而同时保留列表层级和 ``href``。
-    """
-    active_toc_lists = toc_lists or (
-        [ol for scope in nav_toc_scopes(soup) if (ol := nav_root_list(scope)) is not None]
-        if skip_navigation
-        else []
-    )
-    targets: list[Tag] = []
-    for element in soup.find_all(_BLOCK_CANDIDATE_TAGS):
-        if skip_navigation and _inside_navigation_list(element, active_toc_lists):
-            continue
-
-        has_descendant_block = _has_meaningful_descendant_block(element)
-        if element.name == "li":
-            link = _list_item_link_target(element)
-            if link is not None and not _has_meaningful_descendant_block(link):
-                targets.extend(_split_direct_break_lines(link, soup))
-            if link is not None or has_descendant_block:
-                continue
-
-        if has_descendant_block:
-            continue
-        targets.extend(_split_direct_break_lines(element, soup))
-    return targets
-
-
 def _find_opf_path(zf: zipfile.ZipFile) -> str:
-    data = zf.read(_CONTAINER)
+    try:
+        data = read_member(zf, zf.getinfo(_CONTAINER))
+    except (KeyError, ZipSafetyError) as exc:
+        raise ValueError("EPUB 损坏：container.xml 不可读取") from exc
     root = ET.fromstring(data)
-    # container.xml 用了默认命名空间，按 localname 匹配
-    for el in root.iter():
-        if el.tag.rsplit("}", 1)[-1] == "rootfile":
-            path = el.attrib.get("full-path", "").strip()
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] == "rootfile":
+            path = element.attrib.get("full-path", "").strip()
             if path:
                 return path
     raise ValueError("EPUB 损坏：container.xml 未找到有效的 rootfile full-path")
+
+
+def _manifest_xhtml_paths(zf: zipfile.ZipFile, opf_path: str) -> list[str]:
+    root = ET.fromstring(read_member(zf, zf.getinfo(opf_path)))
+    paths: list[str] = []
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] != "item":
+            continue
+        href = element.attrib.get("href", "")
+        media = element.attrib.get("media-type", "")
+        if "html" not in media and not href.lower().endswith(_HTML_EXTS):
+            continue
+        resolved = _zip_href(opf_path, href)
+        if resolved and resolved not in paths:
+            paths.append(resolved)
+    return paths
 
 
 def _zip_href(base_path: str, href: str) -> str:
@@ -377,80 +102,66 @@ def _zip_href(base_path: str, href: str) -> str:
 
 
 def _parse_opf(zf: zipfile.ZipFile, opf_path: str) -> tuple[str, list[str], list[str]]:
-    """返回 (书名, spine 顺序的 XHTML zip 路径列表, TOC/NAV 文件路径列表)。
-
-    多份目录时 NAV 排在最前：EPUB3 NAV 是主目录，spine.toc 指定的
-    EPUB2 NCX 次之，其余声明为 NCX 媒体类型的条目殿后。切章阶段按
-    此顺序逐份尝试，取第一份能产出边界的目录。
-    """
-    root = ET.fromstring(zf.read(opf_path))
+    """Return the title, spine XHTML paths, and NAV/NCX paths."""
+    root = ET.fromstring(read_member(zf, zf.getinfo(opf_path)))
 
     def local(tag: str) -> str:
         return tag.rsplit("}", 1)[-1]
 
     title = ""
-    manifest: dict[str, tuple[str, str, str]] = {}  # id -> (href, media-type, properties)
+    manifest: dict[str, tuple[str, str, str]] = {}
     spine_ids: list[str] = []
     toc_ids: list[str] = []
-
-    for el in root.iter():
-        name = local(el.tag)
-        if name == "title" and not title and el.text:
-            title = el.text.strip()
+    for element in root.iter():
+        name = local(element.tag)
+        if name == "title" and not title and element.text:
+            title = element.text.strip()
         elif name == "item":
-            item_id = el.attrib.get("id", "").strip()
-            if not item_id:
-                continue
-            manifest[item_id] = (
-                el.attrib.get("href", ""),
-                el.attrib.get("media-type", ""),
-                el.attrib.get("properties", ""),
-            )
+            item_id = element.attrib.get("id", "").strip()
+            if item_id:
+                manifest[item_id] = (
+                    element.attrib.get("href", ""),
+                    element.attrib.get("media-type", ""),
+                    element.attrib.get("properties", ""),
+                )
         elif name == "itemref":
-            idref = el.attrib.get("idref", "").strip()
+            idref = element.attrib.get("idref", "").strip()
             if idref:
                 spine_ids.append(idref)
         elif name == "spine":
-            toc = el.attrib.get("toc")
+            toc = element.attrib.get("toc")
             if toc:
                 toc_ids.append(toc)
 
     hrefs: list[str] = []
-    for sid in spine_ids:
-        if sid not in manifest:
+    for item_id in spine_ids:
+        if item_id not in manifest:
             continue
-        href, media, _props = manifest[sid]
-        if "html" not in media and not href.endswith((".xhtml", ".html", ".htm")):
+        href, media, _properties = manifest[item_id]
+        if "html" not in media and not href.lower().endswith(_HTML_EXTS):
             continue
-        resolved_href = _zip_href(opf_path, href)
-        if resolved_href and resolved_href not in hrefs:
-            # 同一物理资源可被 spine 重复引用，但 zip 中仍只有一份 XHTML；
-            # 只标注一次，避免生成无法回填的第二套锚点。
-            hrefs.append(resolved_href)
+        resolved = _zip_href(opf_path, href)
+        if resolved and resolved not in hrefs:
+            hrefs.append(resolved)
 
     nav_ids = [
-        item_id for item_id, (_href, _media, props) in manifest.items() if "nav" in props.split()
+        item_id
+        for item_id, (_href, _media, properties) in manifest.items()
+        if "nav" in properties.split()
     ]
     ncx_ids = [
         item_id
-        for item_id, (_href, media, _props) in manifest.items()
+        for item_id, (_href, media, _properties) in manifest.items()
         if media == "application/x-dtbncx+xml"
     ]
-    ordered_toc_ids = nav_ids + toc_ids + ncx_ids
     toc_paths: list[str] = []
-    for item_id in ordered_toc_ids:
+    for item_id in nav_ids + toc_ids + ncx_ids:
         if item_id not in manifest:
             continue
-        href = _zip_href(opf_path, manifest[item_id][0])
-        if href and href not in toc_paths:
-            toc_paths.append(href)
+        resolved = _zip_href(opf_path, manifest[item_id][0])
+        if resolved and resolved not in toc_paths:
+            toc_paths.append(resolved)
     return title, hrefs, toc_paths
-
-
-def _decode_markup(data: bytes) -> str:
-    """按 XML/HTML 声明和字节特征解码 XHTML；都无法识别时，才用 UTF-8 解码并替换无效字节。"""
-    decoded = UnicodeDammit(data).unicode_markup
-    return decoded if decoded is not None else data.decode("utf-8", errors="replace")
 
 
 def _looks_like_internal_title(title: str, href: str, book_title: str = "") -> bool:
@@ -943,131 +654,14 @@ def _annotate_lxml_resource(
     )
 
 
-def annotate_epub_resource(
-    html: str,
-    resource_index: int,
-    href: str,
-    *,
-    book_title: str = "",
-    skip_navigation: bool = False,
-) -> tuple[str, list[Segment], str]:
-    """Legacy marker/template helper retained for bilingual compatibility."""
-    soup = BeautifulSoup(html, "html.parser")
-    segments: list[Segment] = []
-    first_heading: Tag | None = None
-    heading_title_parts: list[str] = []
-    idx = 0
-    toc_lists = (
-        [ol for scope in nav_toc_scopes(soup) if (ol := nav_root_list(scope)) is not None]
-        if skip_navigation
-        else []
-    )
-    for el in _translation_targets(soup, skip_navigation=skip_navigation, toc_lists=toc_lists):
-        footnote_roots = _footnote_marker_roots(el)
-        for descendant in list(el.find_all(True)):
-            if _inside_roots(descendant, footnote_roots) or not descendant.get_text(strip=True):
-                continue
-            anchor_attrs = {
-                key: descendant.attrs.pop(key) for key in ("id", "name") if key in descendant.attrs
-            }
-            if anchor_attrs:
-                marker = soup.new_tag("a")
-                marker.attrs.update(anchor_attrs)
-                descendant.insert_before(marker)
-        anchor = f"tn{resource_index}_{idx}"
-        text, meta = _segment_content(el, anchor)
-        if not text:
-            continue
-        el["data-tn-id"] = anchor
-        kind = (
-            KIND_HEADING
-            if el.name in _HEADING_TAGS or el.find_parent(_HEADING_TAGS) is not None
-            else KIND_TEXT
-        )
-        if kind == KIND_HEADING:
-            heading = el if el.name in _HEADING_TAGS else el.find_parent(_HEADING_TAGS)
-            if isinstance(heading, Tag):
-                if first_heading is None:
-                    first_heading = heading
-                if heading is first_heading:
-                    heading_title_parts.append(text)
-        segments.append(
-            Segment(
-                index=idx,
-                source=text,
-                kind=kind,
-                anchor=anchor,
-                resource_href=href,
-                meta=meta,
-            )
-        )
-        idx += 1
-    title = " ".join(heading_title_parts)
-    if not title and soup.title and soup.title.string:
-        candidate = soup.title.string.strip()
-        if not _looks_like_internal_title(candidate, href, book_title):
-            title = candidate
-    return title, segments, str(soup)
-
-
-def _inside_navigation_list(element: Tag, toc_lists: list[Tag]) -> bool:
-    """判断块元素是否位于目录列表（``ol``）或其目录项（``li``）内。
-
-    不依赖祖先是否为 ``<nav>``：``toc_lists`` 由调用方通过
-    ``epub_toc.nav_toc_scopes``/``nav_root_list`` 定位，与解析端规则一致，
-    因此也兼容 body > ol > li > a 这类没有 ``<nav>`` 包装的非标准 NAV。只保护
-    ``li`` 及其内部块，避免普通回填清空链接和嵌套 ``ol``。
-    """
-    if not toc_lists:
-        return False
-    inside_toc_list = False
-    inside_list_item = element.name == "li"
-    for parent in element.parents:
-        if not isinstance(parent, Tag):
-            continue
-        if parent.name == "li":
-            inside_list_item = True
-        if any(parent is ol for ol in toc_lists):
-            inside_toc_list = True
-    return inside_toc_list and inside_list_item
-
-
-def _fragment_anchor_map(template: str) -> dict[str, str | None]:
-    """把 XHTML 中的 id/name 定位到 Segment 锚点。
-
-    值为 ``None`` 表示该 ID 确实存在，但它位于该资源最后一个可翻译块
-    之后；这与“fragment 根本不存在”（key 缺失）必须区分，否则两种
-    情况在切章阶段都会被误判为同一种损坏。
-    """
-    soup = BeautifulSoup(template, "html.parser")
-    mapping: dict[str, str | None] = {}
-    for node in soup.find_all(True):
-        identifiers = [node.get("id"), node.get("name")]
-        if not any(isinstance(value, str) and value for value in identifiers):
-            continue
-        block = (
-            node if node.has_attr("data-tn-id") else node.find_parent(attrs={"data-tn-id": True})
-        )
-        if not isinstance(block, Tag):
-            block = node.find_next(attrs={"data-tn-id": True})
-        raw_anchor = block.get("data-tn-id") if isinstance(block, Tag) else None
-        anchor = raw_anchor if isinstance(raw_anchor, str) and raw_anchor else None
-        for value in identifiers:
-            if isinstance(value, str) and value:
-                mapping.setdefault(value, anchor)
-    return mapping
-
-
 def _logical_chapters(
     resources: list[dict[str, object]],
     toc_entries: list[dict[str, object]],
 ) -> tuple[list[Chapter], str, str]:
-    """按本地切章规则把物理资源的 Segment 流切成逻辑 Chapter。
+    """按本地切章规则把物理资源的 Segment 流切分为逻辑 Chapter。
 
-    无可用目录边界时回退为每个非空 spine XHTML 一章（与历来行为一
-    致）。首个目录边界前若仍有正文，独立成前置章，不丢内容。无论走
-    哪条策略，Chapter.template 恒为 None：标注模板不随章持久化，统一
-    由 read_epub 写进 ``Document.meta["epub_resource_templates"]``。
+    无可用目录边界时回退为每个非空 spine XHTML 一章。首个目录边界前若仍有正文，
+    独立成前置章，不丢内容。
     """
     all_segments: list[Segment] = []
     anchor_positions: dict[str, int] = {}
@@ -1205,7 +799,6 @@ def _logical_chapters(
                     title=str(resource.get("title") or ""),
                     segments=segments,
                     href=str(resource.get("href") or "") or None,
-                    template=None,
                     meta={"epub_split_strategy": _STRATEGY_SPINE_FALLBACK},
                 )
             )
@@ -1249,7 +842,6 @@ def _logical_chapters(
                 title=title,
                 segments=segments,
                 href=first_href or None,
-                template=None,
                 meta=meta,
             )
         )
@@ -1258,43 +850,47 @@ def _logical_chapters(
 
 def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
     """Read a source EPUB into schema-3 structural text-slot state."""
-    with zipfile.ZipFile(path, "r") as zf:
-        names = set(zf.namelist())
-        opf_path = _find_opf_path(zf)
-        book_title, hrefs, toc_paths = _parse_opf(zf, opf_path)
-        toc_entries = parse_toc_entries(zf, toc_paths)
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            preflight_zip(zf)
+            names = {info.filename for info in zf.infolist()}
+            opf_path = _find_opf_path(zf)
+            book_title, hrefs, toc_paths = _parse_opf(zf, opf_path)
+            manifest_hrefs = _manifest_xhtml_paths(zf, opf_path)
+            toc_entries = parse_toc_entries(zf, toc_paths)
 
-        resources: list[dict[str, object]] = []
-        archive_hash = hashlib.sha256()
-        with open(path, "rb") as source_file:
-            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
-                archive_hash.update(chunk)
-        resource_hrefs = list(dict.fromkeys([*hrefs, *toc_paths]))
-        for resource_index, href in enumerate(resource_hrefs):
-            if href not in names:
-                continue
-            info = zf.getinfo(href)
-            if info.file_size > 512 * 1024 * 1024:
-                raise ValueError(f"EPUB resource exceeds 512 MiB limit: {href}")
-            if not href.lower().endswith(_HTML_EXTS):
-                continue
-            data = zf.read(href)
-            title, segments, resource = _annotate_lxml_resource(
-                data,
-                resource_index,
-                href,
-                book_title=book_title,
-                skip_navigation=href in toc_paths,
+            resources: list[dict[str, object]] = []
+            archive_hash = hashlib.sha256()
+            with open(path, "rb") as source_file:
+                for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                    archive_hash.update(chunk)
+            resource_hrefs = list(dict.fromkeys([*manifest_hrefs, *toc_paths]))
+            for resource_index, href in enumerate(resource_hrefs):
+                if href not in names:
+                    continue
+                if not href.lower().endswith(_HTML_EXTS):
+                    continue
+                data = read_member(zf, zf.getinfo(href))
+                title, segments, resource = _annotate_lxml_resource(
+                    data,
+                    resource_index,
+                    href,
+                    book_title=book_title,
+                    skip_navigation=href in toc_paths,
+                )
+                resources.append(
+                    {
+                        **resource,
+                        "title": title,
+                        "segments": segments,
+                    }
+                )
+            spine_resources = [resource for resource in resources if resource["href"] in hrefs]
+            chapters, split_strategy, split_toc_path = _logical_chapters(
+                spine_resources, toc_entries
             )
-            resources.append(
-                {
-                    **resource,
-                    "title": title,
-                    "segments": segments,
-                }
-            )
-        spine_resources = [resource for resource in resources if resource["href"] in hrefs]
-        chapters, split_strategy, split_toc_path = _logical_chapters(spine_resources, toc_entries)
+    except ZipSafetyError as exc:
+        raise ValueError(f"EPUB archive rejected: {exc.code}") from exc
 
     return Document(
         title=book_title or os.path.splitext(os.path.basename(path))[0],

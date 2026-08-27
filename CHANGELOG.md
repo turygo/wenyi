@@ -25,6 +25,8 @@
 - 正式 benchmark Provider 从百炼切换到 OpenCode Go，比较 `deepseek-v4-flash`、`muse-spark-1.2-contributor` 和 `mimo-v2.5` 三个各自完成初译与润色的候选，并按 OpenCode Go 官方价格逐请求计费。
 - OpenAI Responses API 模型现在复用统一的请求控制、响应解析和 token 用量归一化。
 
+- Removed the legacy template-based source EPUB fallback; source EPUB assembly now accepts only schema 3 slot state.
+
 ### Fixed
 
 - OpenAI SDK 客户端禁用内置重试，避免与集中式 Provider 重试叠加；缺失 `choices` 的畸形聊天响应按空响应重试；严格润色遇到段数协议错误时先携带精确数量约束重试，仍失败则逐段恢复；正式 benchmark 在发出请求前拒绝任何包含多个逻辑章节的 formal EPUB。

@@ -143,8 +143,20 @@ class RunStore:
         self.chapters_dir = os.path.join(run_dir, "chapters")  # V1 遗留（备份）
         self.chapters_v2_dir = os.path.join(run_dir, "chapters_v2")  # V2 活路径
         self._v2_ready = False
-        if create:
+        if create and not self._manifest_has_invalid_epub_meta():
             self.ensure_dirs()
+
+    def _manifest_has_invalid_epub_meta(self) -> bool:
+        if not os.path.isfile(self.manifest_path):
+            return False
+        try:
+            data = self._read_json(self.manifest_path)
+        except (OSError, ValueError, TypeError):
+            return False
+        if not isinstance(data, dict) or data.get("fmt") != "epub" or not data.get("source_path"):
+            return False
+        meta = data.get("meta")
+        return not isinstance(meta, dict) or meta.get("epub_schema") != 3
 
     def ensure_dirs(self) -> None:
         os.makedirs(self.chapters_v2_dir, exist_ok=True)
@@ -156,7 +168,10 @@ class RunStore:
 
         持锁后先做一次性 V1→V2 迁移与中断恢复，再进入临界区。
         """
-        self.ensure_dirs()
+        if self._manifest_has_invalid_epub_meta():
+            os.makedirs(self.run_dir, exist_ok=True)
+        else:
+            self.ensure_dirs()
         lock_path = os.path.join(self.run_dir, ".run.lock")
         with open(lock_path, "a+b") as lock_file:
             if os.name == "nt":  # pragma: no cover - Windows-specific
@@ -194,6 +209,17 @@ class RunStore:
         with self.lock():
             pass
 
+    @staticmethod
+    def _validate_epub_manifest(data: object) -> None:
+        if not isinstance(data, dict) or data.get("fmt") != "epub" or not data.get("source_path"):
+            return
+        meta = data.get("meta")
+        schema = meta.get("epub_schema") if isinstance(meta, dict) else None
+        if schema != 3:
+            raise ValueError(
+                f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
+            )
+
     def _migrate_if_needed(self) -> None:
         """已持锁时调用：V1 迁移 → V2 中断恢复 → 检查点日志恢复。幂等。"""
         if self._v2_ready:
@@ -202,6 +228,7 @@ class RunStore:
             self._v2_ready = True
             return
         data = self._read_json(self.manifest_path)
+        self._validate_epub_manifest(data)
         if isinstance(data, dict) and data.get("run_state_schema") == RUN_STATE_SCHEMA_VERSION:
             self._v2_ready = True
         else:
@@ -245,10 +272,6 @@ class RunStore:
     @property
     def usage_path(self) -> str:
         return os.path.join(self.run_dir, "usage.json")
-
-    @property
-    def resource_templates_path(self) -> str:
-        return os.path.join(self.run_dir, "resource_templates.json")
 
     @property
     def event_log_path(self) -> str:
@@ -310,12 +333,7 @@ class RunStore:
     def load_state(self) -> RunState:
         self._ensure_migrated()
         raw = self._read_json(self.manifest_path)
-        if isinstance(raw, dict) and raw.get("fmt") == "epub" and raw.get("source_path"):
-            schema = (raw.get("meta") or {}).get("epub_schema")
-            if not isinstance(schema, int) or schema < 3:
-                raise ValueError(
-                    f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
-                )
+        self._validate_epub_manifest(raw)
         return RunState.model_validate(raw)
 
     def save_state(self, state: RunState) -> None:
@@ -324,12 +342,7 @@ class RunStore:
 
     def load_manifest(self) -> dict:
         manifest = self.load_state().model_dump(mode="json")
-        if manifest.get("fmt") == "epub" and manifest.get("source_path"):
-            schema = (manifest.get("meta") or {}).get("epub_schema")
-            if not isinstance(schema, int) or schema < 3:
-                raise ValueError(
-                    f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
-                )
+        self._validate_epub_manifest(manifest)
         return manifest
 
     def save_manifest(self, manifest: dict) -> None:
@@ -340,15 +353,7 @@ class RunStore:
 
         manifest 标志着本次运行已完成初始化；调用方应在分析结果、
         术语库和上下文全部落盘后再保存。
-
-        EPUB schema 2 文档把标注模板存在 doc.meta["epub_resource_templates"]
-        （键为物理资源 href）；这里先把它从 doc.meta 中移除，再以原子方式
-        单独写入 resource_templates.json，不写入 manifest。manifest 会频繁
-        重写，而模板体积较大；断点续跑时也不必在每次保存时重复写入。
         """
-        templates = doc.meta.pop("epub_resource_templates", None)
-        if isinstance(templates, dict) and templates:
-            self._write_json(self.resource_templates_path, templates)
         state = RunState(
             run_state_schema=RUN_STATE_SCHEMA_VERSION,
             identity=identity,
@@ -372,12 +377,6 @@ class RunStore:
         for c in doc.chapters:
             self.save_chapter(c)
         return state.model_dump(mode="json")
-
-    def load_resource_templates(self) -> dict[str, str]:
-        """读取 EPUB 物理资源模板；文件缺失（非 EPUB 或旧 schema 1 run）返回空字典。"""
-        if not os.path.isfile(self.resource_templates_path):
-            return {}
-        return self._read_json(self.resource_templates_path)
 
     # ── 章进度（V2 唯一权威来源）──────────────────────────────────────────
     def load_progress(self, ci: int) -> ChapterProgress:

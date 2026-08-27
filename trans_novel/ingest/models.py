@@ -191,7 +191,7 @@ class Segment(BaseModel):
     source: str  # 原文
     kind: str = KIND_TEXT  # text | heading
     target: str | None = None  # 译文（翻译/润色后填入）
-    anchor: str | None = None  # 回填定位标记（EPUB 用占位符 id）
+    anchor: str | None = None  # EPUB 资源内稳定的 Segment 定位键
     resource_href: str | None = None  # EPUB：Segment 所属的物理 XHTML 路径
     cont: bool = False  # 超长段被拆分后的续段：回填时并回上一段，不另起段落
     epub_state: EpubSegmentState | None = None
@@ -212,7 +212,6 @@ class Chapter(BaseModel):
     title: str = ""
     segments: list[Segment] = Field(default_factory=list)
     href: str | None = None  # EPUB spine item 内部路径
-    template: str | None = None  # EPUB: 带占位符的 HTML，用于回填
     meta: dict[str, Any] = Field(default_factory=dict)
 
     @property

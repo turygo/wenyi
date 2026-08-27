@@ -1,11 +1,8 @@
-"""回填：把译文写回原格式。
+"""Write translated output files.
 
-- 纯文本：按章重建，标题 + 段落（空行分隔）。
-- EPUB：重开原始 zip，逐条目原样拷贝；schema 2 状态按物理资源 href 聚合
-  全书 Segment，每个物理 XHTML 用已保存的模板渲染一次；schema 1 旧状态
-  沿用逐章 chapter.template 渲染。两条路径都按 data-tn-id 锚点替换为
-  译文后写回，非正文资源（图片/CSS/字体）不动。
-缺失译文的段回退使用原文，保证不丢内容。
+Source EPUBs are reopened from their original archive and rendered through
+the schema-3 lxml slot contract. TXT/FB2 inputs use the generated EbookLib
+path. Missing translations fall back to source text so output is complete.
 """
 
 from __future__ import annotations
@@ -14,9 +11,8 @@ import hashlib
 import os
 import re
 import zipfile
-from copy import deepcopy
+from copy import copy, deepcopy
 
-from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
 from lxml import etree
 
 from trans_novel.assemble.bilingual_dom import (
@@ -32,10 +28,15 @@ from trans_novel.assemble.bilingual_dom import (
     has_reserved_source_collision,
     is_bilingual_container_tag,
     japanese_ruby_source_copy,
+    ruby_base_count,
     sanitized_source_copy,
     segment_needs_source,
 )
-from trans_novel.ingest.epub_toc import nav_root_list, nav_toc_scopes
+from trans_novel.assemble.zip_safety import (
+    ZipSafetyError,
+    preflight_zip,
+    read_member,
+)
 from trans_novel.ingest.fb2_reader import read_fb2_binaries
 from trans_novel.ingest.models import (
     KIND_HEADING,
@@ -49,27 +50,6 @@ from trans_novel.postprocess.punct import normalize_heading_numbering
 
 _ILLEGAL_FN = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 _HTML_EXTS = (".xhtml", ".html", ".htm")
-_VERTICAL_MARKERS = (
-    re.compile(rb"(?:-epub-|-webkit-)?writing-mode\s*:\s*(?:vertical-rl|vertical-lr|tb-rl)", re.I),
-    re.compile(rb"page-progression-direction\s*=\s*['\"]rtl['\"]", re.I),
-    re.compile(rb"\bclass\s*=\s*['\"][^'\"]*\bvrtl\b", re.I),
-)
-_HORIZONTAL_OVERRIDE_ID = "trans-novel-horizontal-override"
-_HORIZONTAL_OVERRIDE_CSS = (
-    "html, body { "
-    "writing-mode: horizontal-tb !important; "
-    "-epub-writing-mode: horizontal-tb !important; "
-    "-webkit-writing-mode: horizontal-tb !important; "
-    "direction: ltr !important; "
-    "text-orientation: mixed !important; "
-    "} "
-    '.vrtl, .vertical, [class*="vrtl"] { '
-    "writing-mode: horizontal-tb !important; "
-    "-epub-writing-mode: horizontal-tb !important; "
-    "-webkit-writing-mode: horizontal-tb !important; "
-    "direction: ltr !important; "
-    "}"
-)
 _IMAGE_EXTENSION_BY_TYPE = {
     "image/gif": ".gif",
     "image/jpeg": ".jpg",
@@ -77,18 +57,51 @@ _IMAGE_EXTENSION_BY_TYPE = {
     "image/svg+xml": ".svg",
     "image/webp": ".webp",
 }
-_BILINGUAL_STYLE_ID = BILINGUAL_STYLE_ID
-_BILINGUAL_CSS = BILINGUAL_CSS
+
+
+class _MetadataZipFile(zipfile.ZipFile):
+    """Zip writer that retains each source member's complete flag word."""
+
+    def _open_to_write(self, zinfo: zipfile.ZipInfo, force_zip64: bool = False):
+        if force_zip64 and not self._allowZip64:
+            raise zipfile.LargeZipFile("force_zip64 is True, but ZIP64 is disabled")
+        if self._writing:
+            raise ValueError("Can't write to ZIP file while another member is open")
+        source_flags = zinfo.flag_bits
+        zinfo.compress_size = 0
+        zinfo.CRC = 0
+        zinfo.flag_bits = source_flags
+        if zinfo.compress_type == zipfile.ZIP_LZMA:
+            zinfo.flag_bits |= zipfile._MASK_COMPRESS_OPTION_1
+        if not self._seekable:
+            zinfo.flag_bits |= zipfile._MASK_USE_DATA_DESCRIPTOR
+        zip64 = force_zip64 or zinfo.file_size * 1.05 > zipfile.ZIP64_LIMIT
+        if not self._allowZip64 and zip64:
+            raise zipfile.LargeZipFile("Filesize would require ZIP64 extensions")
+        if self._seekable:
+            self.fp.seek(self.start_dir)
+        zinfo.header_offset = self.fp.tell()
+        self._writecheck(zinfo)
+        self.fp.write(zinfo.FileHeader(zip64))
+        self._writing = True
+        return zipfile._ZipWriteFile(self, zinfo, zip64)
+
+
+def _write_source_member(
+    zout: _MetadataZipFile,
+    info: zipfile.ZipInfo,
+    data: bytes,
+    *,
+    compress_type: int | None = None,
+) -> None:
+    preserved = copy(info)
+    if compress_type is not None:
+        preserved.compress_type = compress_type
+    zout.writestr(preserved, data)
 
 
 def _is_bilingual_container_tag(tag: str) -> bool:
     return is_bilingual_container_tag(tag)
-
-
-_XML_ENCODING = re.compile(
-    r"(<\?xml[^>]*\bencoding\s*=\s*)(['\"])[^'\"]+\2",
-    re.IGNORECASE,
-)
 
 
 def _sanitize_filename(name: str, fallback: str = "translated") -> str:
@@ -136,6 +149,21 @@ def _epub_lang(lang: str | None) -> str:
     if normalized in {"", "zh", "zh-cn", "zh-hans", "cn"}:
         return "zh-Hans"
     return lang or "zh-Hans"
+
+
+def _reject_output_alias(source_path: str, out_path: str) -> None:
+    """Reject output paths that resolve to the authoritative input bytes."""
+    source = os.path.abspath(os.fspath(source_path))
+    output = os.path.abspath(os.fspath(out_path))
+    try:
+        if os.path.realpath(source) == os.path.realpath(output):
+            raise ValueError("input and output paths must differ")
+        if os.path.exists(source) and os.path.exists(output) and os.path.samefile(source, output):
+            raise ValueError("input and output paths must differ")
+    except OSError:
+        # A missing output cannot be a hardlink alias; retain the lexical and
+        # resolved-path checks above without turning path probing into a leak.
+        return
 
 
 def _merged_paragraphs(chapter: Chapter) -> list[tuple[str, str, str]]:
@@ -195,439 +223,6 @@ def _assemble_text(
     return out_path
 
 
-# ── EPUB ────────────────────────────────────────────────────────────────────
-_INLINE_META_KEY = "epub_inline"
-_INLINE_ID_ATTR = "data-tn-inline-id"
-_LINE_WRAPPER_ATTR = "data-tn-line"
-
-
-def _japanese_ruby_source(element: Tag, source_lang: str) -> str:
-    """日语双语原文保留 ruby 注音，同时拍平其它文本内联标签。"""
-    normalized_lang = source_lang.strip().replace("_", "-").lower()
-    if not (normalized_lang == "ja" or normalized_lang.startswith("ja-")):
-        return ""
-    if element.find("ruby") is None:
-        return ""
-
-    fragment = BeautifulSoup(str(element), "html.parser")
-    root = fragment.find(element.name)
-    if not isinstance(root, Tag):
-        return ""
-    for comment in list(root.find_all(string=lambda node: isinstance(node, Comment))):
-        comment.extract()
-    for tag in list(
-        root.find_all(
-            [
-                "audio",
-                "canvas",
-                "embed",
-                "hr",
-                "iframe",
-                "img",
-                "math",
-                "object",
-                "script",
-                "source",
-                "style",
-                "svg",
-                "video",
-            ]
-        )
-    ):
-        tag.decompose()
-    ruby_tags = {"ruby", "rb", "rt", "rp", "rtc", "br"}
-    for tag in list(root.find_all(True)):
-        if tag.name not in ruby_tags:
-            tag.unwrap()
-            continue
-        for attr in ("id", "name", "data-tn-id", _INLINE_ID_ATTR, _LINE_WRAPPER_ATTR):
-            tag.attrs.pop(attr, None)
-    return root.decode_contents()
-
-
-def _append_source(element: Tag, source: str, markup: str) -> None:
-    """向双语原文块写入纯文本，或写入已清理的日语 ruby 片段。"""
-    if not markup:
-        element.append(source)
-        return
-    fragment = BeautifulSoup(markup, "html.parser")
-    for child in list(fragment.contents):
-        element.append(child.extract())
-
-
-def _append_text_with_breaks(soup: BeautifulSoup, element: Tag, text: str) -> None:
-    """向元素追加文本，并把译文换行转换为 XHTML ``br``。"""
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    for index, line in enumerate(lines):
-        if line:
-            element.append(line)
-        if index + 1 < len(lines):
-            element.append(soup.new_tag("br"))
-
-
-def _replace_block_content(
-    soup: BeautifulSoup,
-    el: Tag,
-    text: str,
-    meta: dict[str, object],
-) -> None:
-    """替换块内文字，按解析阶段记录的位置恢复图片，并按译文换行生成 ``br``。"""
-    raw_inline = meta.get(_INLINE_META_KEY)
-    inline = raw_inline if isinstance(raw_inline, dict) else {}
-    raw_nodes = inline.get("nodes")
-    nodes = raw_nodes if isinstance(raw_nodes, list) else []
-    source_length = inline.get("source_length")
-    if not isinstance(source_length, int) or source_length < 0:
-        source_length = 0
-    source_text = re.sub(r"\s+", " ", el.get_text("", strip=False))
-    if source_length <= 0:
-        source_length = len(source_text)
-    captured_links: list[tuple[int, Tag]] = []
-    link_search_start = 0
-    for link in list(el.find_all("a", href=True)):
-        inline_parent = link.find_parent(attrs={_INLINE_ID_ATTR: True})
-        if link.has_attr(_INLINE_ID_ATTR) or (
-            inline_parent is not None and inline_parent is not el
-        ):
-            continue
-        link_text = re.sub(r"\s+", " ", link.get_text("", strip=False))
-        offset = source_text.find(link_text, link_search_start) if link_text else 0
-        if offset < 0:
-            offset = 0
-        else:
-            link_search_start = offset + len(link_text)
-        clone_soup = BeautifulSoup(str(link), "html.parser")
-        clone = clone_soup.find("a")
-        if not isinstance(clone, Tag):
-            continue
-        adjacent_identity: Tag | None = None
-        for sibling in list(link.previous_siblings) + list(link.next_siblings):
-            if isinstance(sibling, NavigableString) and not str(sibling).strip():
-                continue
-            if (
-                isinstance(sibling, Tag)
-                and sibling.name == "a"
-                and not sibling.get_text(strip=True)
-                and any(sibling.get(key) for key in ("id", "name"))
-            ):
-                adjacent_identity = sibling
-            break
-        if adjacent_identity is not None:
-            for key in ("id", "name"):
-                value = adjacent_identity.get(key)
-                if isinstance(value, str) and value:
-                    clone[key] = value
-            adjacent_identity.extract()
-        captured_links.append((offset, clone))
-
-    restored: list[tuple[int, int, Tag]] = []
-    for order, record in enumerate(nodes):
-        if not isinstance(record, dict):
-            continue
-        inline_id = record.get("id")
-        offset = record.get("offset")
-        if not isinstance(inline_id, str) or not isinstance(offset, int):
-            continue
-        node = el.find(True, attrs={_INLINE_ID_ATTR: inline_id})
-        if not isinstance(node, Tag):
-            continue
-        node.extract()
-        node.attrs.pop(_INLINE_ID_ATTR, None)
-        if offset <= 0:
-            target_offset = 0
-        elif source_length <= 0 or offset >= source_length:
-            target_offset = len(text)
-        else:
-            target_offset = round(offset * len(text) / source_length)
-        restored.append((target_offset, order, node))
-    for source_offset, node in captured_links:
-        target_offset = (
-            0
-            if source_offset <= 0
-            else len(text)
-            if source_offset >= source_length
-            else round(source_offset * len(text) / source_length)
-        )
-        restored.append((target_offset, len(restored), node))
-
-    el.clear()
-    cursor = 0
-    for target_offset, _order, node in sorted(restored):
-        target_offset = min(max(target_offset, cursor), len(text))
-        if target_offset > cursor:
-            _append_text_with_breaks(soup, el, text[cursor:target_offset])
-        el.append(node)
-        cursor = target_offset
-    if cursor < len(text):
-        _append_text_with_breaks(soup, el, text[cursor:])
-
-
-def _render_segments_html(
-    template: str,
-    segments: list[Segment],
-    *,
-    bilingual: bool = False,
-    order: str = "target_first",
-    source_lang: str = "",
-) -> str:
-    """把同一物理 HTML 资源内的译文按锚点一次性回填。
-
-    EPUB 的逻辑章节边界可以落在同一个 XHTML 中，也可以跨越多个 XHTML；
-    真正的回填单位是物理资源而非 Chapter，调用方需先把属于同一
-    ``resource_href`` 的 Segment（可能来自多个 Chapter）聚合后再调用本函数。
-    """
-    soup = BeautifulSoup(template or "", "html.parser")
-    # 合并 cont 续段：续段文本并回其所属 anchor 元素
-    by_anchor: dict[str, str] = {}
-    src_by_anchor: dict[str, str] = {}
-    kind_by_anchor: dict[str, str] = {}
-    meta_by_anchor: dict[str, dict] = {}
-    cur_anchor: str | None = None
-    for s in segments:
-        if s.cont and cur_anchor is not None:
-            by_anchor[cur_anchor] += _seg_text(s)
-            src_by_anchor[cur_anchor] += s.source
-        elif s.anchor:
-            cur_anchor = s.anchor
-            by_anchor[cur_anchor] = _seg_text(s)
-            src_by_anchor[cur_anchor] = s.source
-            kind_by_anchor[cur_anchor] = s.kind
-            meta_by_anchor[cur_anchor] = s.meta
-    for anchor, text in by_anchor.items():
-        el = soup.find(True, attrs={"data-tn-id": anchor})
-        if el is None:
-            continue
-        line_wrapper = el.has_attr(_LINE_WRAPPER_ATTR)
-        if kind_by_anchor.get(anchor) == KIND_HEADING:
-            text = normalize_heading_numbering(text)
-        src = (
-            _bilingual_source(src_by_anchor.get(anchor, ""), text)
-            if bilingual and kind_by_anchor.get(anchor) != KIND_HEADING
-            else ""
-        )
-        source_markup = _japanese_ruby_source(el, source_lang) if src else ""
-        _replace_block_content(soup, el, text, meta_by_anchor.get(anchor, {}))
-        del el["data-tn-id"]
-        if not src:
-            continue
-        # p 的原文可作为相邻段落插入；li/blockquote/td/th 则必须留在原容器内，
-        # 避免生成 <ul><li>...</li><p>...</p></ul> 或
-        # <table><tr>...</tr><p>...</p></table> 之类的非法结构，
-        # 同时保留列表、引用块和表格单元格的语义和样式。
-        nested_source = el.name in {"li", "blockquote", "td", "th"}
-        src_el = soup.new_tag("span" if line_wrapper else "div" if nested_source else "p")
-        src_el["class"] = ["tn-source", "ibooks-dark-theme-use-custom-text-color"]
-        _append_source(src_el, src, source_markup)
-        if line_wrapper and order == "source_first":
-            el.insert_before(src_el)
-            src_el.insert_after(soup.new_tag("br"))
-        elif line_wrapper:
-            el.insert_after(src_el)
-            el.insert_after(soup.new_tag("br"))
-        elif nested_source and order == "source_first":
-            el.insert(0, src_el)
-        elif nested_source:
-            el.append(src_el)
-        elif order == "source_first":
-            el.insert_before(src_el)
-        else:
-            el.insert_after(src_el)
-    # br 拆行包装只用于提供独立回填锚点；完成后去掉 span，恢复干净 DOM。
-    for wrapper in list(soup.find_all(True, attrs={_LINE_WRAPPER_ATTR: True})):
-        wrapper.unwrap()
-    return str(soup)
-
-
-def _render_chapter_html(
-    chapter: Chapter,
-    *,
-    bilingual: bool = False,
-    order: str = "target_first",
-    source_lang: str = "",
-) -> str:
-    """回填旧版“每章一个模板”的 HTML/EPUB 章节（仅用于 schema 1 状态）。
-
-    schema 2 状态的物理资源改由 :func:`_render_segments_html` 按聚合后的
-    Segment 一次性回填，见 ``_assemble_epub``。
-    """
-    return _render_segments_html(
-        chapter.template or "",
-        chapter.segments,
-        bilingual=bilingual,
-        order=order,
-        source_lang=source_lang,
-    )
-
-
-def _segments_by_resource(chapters: list[Chapter]) -> dict[str, list[Segment]]:
-    """按源文顺序，将各逻辑章节中的 EPUB Segment 按物理资源分组。"""
-    grouped: dict[str, list[Segment]] = {}
-    for chapter in chapters:
-        for segment in chapter.segments:
-            href = segment.resource_href
-            if href:
-                grouped.setdefault(href, []).append(segment)
-    return grouped
-
-
-def _base_no_frag(href: str) -> str:
-    """取 href 的文件名（去目录、去 #锚点），用于跨文件相对路径匹配。"""
-    return os.path.basename((href or "").split("#", 1)[0])
-
-
-def _attr_str(value: object) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _rewrite_opf_metadata(
-    data: bytes,
-    *,
-    book_title: str,
-    lang: str,
-    force_horizontal: bool,
-) -> bytes:
-    """更新 OPF 元数据：书名可选改写，译后语言改为目标语言，竖排源书改横排方向。"""
-    try:
-        soup = BeautifulSoup(data, "xml")
-        if book_title:
-            title_el = soup.find("dc:title") or soup.find("title")
-            if title_el is not None:
-                title_el.clear()
-                title_el.append(book_title)
-
-        lang_el = soup.find("dc:language") or soup.find("language")
-        if lang_el is None:
-            metadata = soup.find("metadata")
-            if metadata is not None:
-                lang_el = soup.new_tag("dc:language")
-                metadata.append(lang_el)
-        if lang_el is not None:
-            lang_el.clear()
-            lang_el.append(lang)
-
-        if force_horizontal:
-            for spine in soup.find_all("spine"):
-                spine["page-progression-direction"] = "ltr"
-        return soup.encode()
-    except Exception:
-        return data
-
-
-def _epub_looks_vertical(zf: zipfile.ZipFile) -> bool:
-    """粗略检测 EPUB 是否声明了竖排排版。"""
-    for info in zf.infolist():
-        low = info.filename.lower()
-        if not low.endswith((".opf", ".css", ".xhtml", ".html", ".htm")):
-            continue
-        try:
-            data = zf.read(info.filename)
-        except Exception:
-            continue
-        if any(marker.search(data) for marker in _VERTICAL_MARKERS):
-            return True
-    return False
-
-
-def _rewrite_html_document(
-    data: bytes | str,
-    *,
-    lang: str,
-    force_horizontal: bool,
-    bilingual: bool = False,
-    rewrite_language: bool = True,
-) -> bytes:
-    """Rewrite HTML language/layout and optionally inject the bilingual style."""
-    try:
-        if isinstance(data, bytes):
-            text = UnicodeDammit(data).unicode_markup
-            if text is None:
-                text = data.decode("utf-8", errors="replace")
-        else:
-            text = data
-        soup = BeautifulSoup(text, "html.parser")
-        html = soup.find("html")
-        if html is None:
-            return text.encode("utf-8")
-        if rewrite_language:
-            html["lang"] = lang
-            html["xml:lang"] = lang
-        classes = html.get("class")
-        if force_horizontal and isinstance(classes, list) and "vrtl" in classes:
-            html["class"] = [c for c in classes if c != "vrtl"]
-        if force_horizontal and soup.find(id=_HORIZONTAL_OVERRIDE_ID) is None:
-            head = soup.find("head")
-            if head is None:
-                head = soup.new_tag("head")
-                html.insert(0, head)
-            style = soup.new_tag("style", id=_HORIZONTAL_OVERRIDE_ID)
-            style.string = _HORIZONTAL_OVERRIDE_CSS
-            head.append(style)
-
-        if bilingual and soup.find(id=_BILINGUAL_STYLE_ID) is None:
-            head = soup.find("head")
-            if head is None:
-                head = soup.new_tag("head")
-                html.insert(0, head)
-            style = soup.new_tag("style", id=_BILINGUAL_STYLE_ID)
-            style.string = _BILINGUAL_CSS
-            head.append(style)
-        output = _XML_ENCODING.sub(r'\1"utf-8"', str(soup))
-        return output.encode("utf-8")
-    except Exception:
-        return data if isinstance(data, bytes) else data.encode("utf-8")
-
-
-def _direct_child(parent: Tag | BeautifulSoup, name: str) -> Tag | None:
-    """返回 ``parent`` 的首个指定直接子元素。"""
-    child = parent.find(name, recursive=False)
-    return child if isinstance(child, Tag) else None
-
-
-def _nav_label_nodes(soup: BeautifulSoup) -> list[tuple[Tag, str]]:
-    """按 preorder 列出 EPUB3 NAV 目录条目标签及原始 href。
-
-    枚举顺序复用 ``epub_toc.nav_toc_scopes``/``nav_root_list`` 定位规则，
-    并按 ``epub_toc._parse_nav`` 同样的 ``li`` 直接子 ``a``/``span`` 规则
-    遍历，保证此处的 node_index 与解析阶段完全一致。
-    """
-    labels: list[tuple[Tag, str]] = []
-
-    def walk_list(ordered_list: Tag) -> None:
-        for li in ordered_list.find_all("li", recursive=False):
-            if not isinstance(li, Tag):
-                continue
-            label = _direct_child(li, "a") or _direct_child(li, "span")
-            if label is not None:
-                labels.append((label, _attr_str(label.get("href"))))
-            nested = _direct_child(li, "ol")
-            if nested is not None:
-                walk_list(nested)
-
-    for scope in nav_toc_scopes(soup):
-        root = nav_root_list(scope)
-        if root is not None:
-            walk_list(root)
-    return labels
-
-
-def _ncx_nav_points(soup: BeautifulSoup) -> list[Tag]:
-    """按 preorder 列出 NCX ``navPoint``，遍历规则与 ``epub_toc._parse_ncx`` 一致。"""
-    nav_map = soup.find("navMap")
-    if not isinstance(nav_map, Tag):
-        return []
-    points: list[Tag] = []
-
-    def walk(parent: Tag) -> None:
-        for child in parent.children:
-            if not isinstance(child, Tag) or child.name != "navPoint":
-                continue
-            points.append(child)
-            walk(child)
-
-    walk(nav_map)
-    return points
-
-
 def _translated_toc_title(entry: dict[str, object]) -> str:
     """返回目录条目的有效译名（标题编号统一为汉字），缺失时回退原标题。"""
     value = entry.get("title_translated") or entry.get("title")
@@ -667,86 +262,6 @@ def _toc_kind_at(toc_entries: list[dict[str, object]], name: str) -> str | None:
     if lowered.endswith(("/nav.xhtml", "/nav.html", "nav.xhtml", "nav.html")):
         return "nav"
     return None
-
-
-def _rewrite_toc(
-    data: bytes,
-    entries_or_legacy_titles: list[dict[str, object]] | dict[str, str],
-    *,
-    is_ncx: bool,
-    toc_path: str = "",
-) -> bytes:
-    """回填 NCX/NAV 的可见标题，``src``/``href`` 属性原样保留。
-
-    新状态传入目录项列表：按 ``toc_path + node_index`` 精确定位节点，
-    同一 XHTML 中的多个 fragment 分别使用对应译名；回填前核对 ``raw_href``
-    是否与源文件一致，不一致（状态与源书不匹配）时跳过该节点，不误改。
-    传入 ``{basename: title}`` 字典时使用旧版模式，沿用按 href 文件名
-    匹配的逻辑，供 schema 1 旧状态导出使用。
-    """
-    try:
-        exact_entries = (
-            _indexed_toc_entries(entries_or_legacy_titles, toc_path)
-            if isinstance(entries_or_legacy_titles, list)
-            else {}
-        )
-        legacy_titles = (
-            entries_or_legacy_titles if isinstance(entries_or_legacy_titles, dict) else {}
-        )
-        if is_ncx:
-            soup = BeautifulSoup(data, "xml")
-            for node_index, nav_point in enumerate(_ncx_nav_points(soup)):
-                nav_label = _direct_child(nav_point, "navLabel")
-                label = nav_label.find("text") if nav_label is not None else None
-                if not isinstance(label, Tag):
-                    continue
-                content = _direct_child(nav_point, "content")
-                entry = exact_entries.get(node_index)
-                if entry is not None:
-                    raw_src = _attr_str(content.get("src")) if content else ""
-                    expected = entry.get("raw_href")
-                    if isinstance(expected, str) and expected != raw_src:
-                        continue  # 状态与源书不匹配，宁可保留原标题也不改错节点
-                    title = _translated_toc_title(entry)
-                else:
-                    title = legacy_titles.get(
-                        _base_no_frag(_attr_str(content.get("src")) if content else "")
-                    )
-                if title:
-                    label.clear()
-                    label.append(title)
-            return soup.encode()
-
-        # EPUB3 nav.xhtml：只改 epub:type="toc" 的导航，避免误改 landmarks / page-list
-        soup = BeautifulSoup(data, "html.parser")
-        if legacy_titles:
-            toc_navs = [
-                n
-                for n in soup.find_all("nav")
-                if "toc" in (_attr_str(n.get("epub:type")) or _attr_str(n.get("type"))).split()
-            ]
-            scopes = toc_navs or [soup]  # 找不到带类型的 toc nav 时退回全局
-            for scope in scopes:
-                for a in scope.find_all("a", href=True):
-                    t = legacy_titles.get(_base_no_frag(_attr_str(a.get("href"))))
-                    if t:
-                        a.clear()
-                        a.append(t)
-            return str(soup).encode("utf-8")
-        for node_index, (label, raw_href) in enumerate(_nav_label_nodes(soup)):
-            entry = exact_entries.get(node_index)
-            if entry is None:
-                continue
-            expected = entry.get("raw_href")
-            if isinstance(expected, str) and expected != raw_href:
-                continue  # 状态与源书不匹配，宁可保留原标题也不改错节点
-            title = _translated_toc_title(entry)
-            if title:
-                label.clear()
-                label.append(title)
-        return str(soup).encode("utf-8")
-    except Exception:
-        return data
 
 
 def _parse_source_markup(data: bytes, expected_mode: str | None = None):
@@ -802,8 +317,13 @@ def _rewrite_markup_languages(tree: etree._Element, target_lang: str) -> None:
 def _set_visible_label(node: etree._Element, title: str) -> None:
     node.text = title
     for descendant in node.iterdescendants():
-        descendant.text = None
-        descendant.tail = None
+        if isinstance(descendant.tag, str):
+            descendant.text = None
+            descendant.tail = None
+        else:
+            # Comments and processing instructions are immutable; only their
+            # visible tail belongs to the authorized label text.
+            descendant.tail = None
 
 
 def _rewrite_toc_lxml(
@@ -894,7 +414,8 @@ def _rewrite_toc_lxml(
             title = _translated_toc_title(entry)
             if title:
                 _set_visible_label(label, title)
-    _rewrite_markup_languages(root, target_lang)
+    if not is_ncx:
+        _rewrite_markup_languages(root, target_lang)
     return _serialize_source_tree(tree, data, mode)
 
 
@@ -1040,6 +561,7 @@ def _add_bilingual_sources(
                     etree._Element,
                 ]
             ] = []
+            seen_rubies: set[int] = set()
             for segment in block_segments:
                 state = segment.epub_state
                 assert state is not None
@@ -1049,14 +571,33 @@ def _add_bilingual_sources(
                         if original is not None
                         else owner
                     )
-                    source = direct_run_source_copy(
-                        original if original is not None else block,
-                        original_owner,
-                        source_lang=source_lang,
-                        source_tag=span_name,
-                        source_value=slot.source_value,
-                        ruby_source=slot.field == "text",
+                    ruby = next(
+                        (
+                            node
+                            for node in (original_owner, *original_owner.iterancestors())
+                            if node is not block
+                            and isinstance(node.tag, str)
+                            and node.tag.rsplit("}", 1)[-1].lower() == "ruby"
+                        ),
+                        None,
                     )
+                    if ruby is not None and slot.field == "tail" and original_owner is ruby:
+                        ruby = None
+                    if ruby is not None and ruby_base_count(ruby) <= 1:
+                        ruby = None
+                    ruby_id = id(ruby) if ruby is not None else None
+                    source = None
+                    if ruby_id is None or ruby_id not in seen_rubies:
+                        source = direct_run_source_copy(
+                            original if original is not None else block,
+                            original_owner,
+                            source_lang=source_lang,
+                            source_tag=span_name,
+                            source_value=slot.source_value,
+                            ruby_source=ruby_id is not None,
+                        )
+                        if ruby_id is not None:
+                            seen_rubies.add(ruby_id)
                     target = etree.Element(span_name, **BILINGUAL_DIRECT_TARGET_ATTRS)
                     target_core = (
                         slot.target_core if slot.target_core is not None else slot.source_core
@@ -1071,7 +612,8 @@ def _add_bilingual_sources(
                         if parent is None:
                             raise ValueError("EPUB direct-br tail slot has no parent")
                         parent.insert(parent.index(owner) + 1, target)
-                    pending_sources.append((slot, owner, boundary, source, target))
+                    if source is not None:
+                        pending_sources.append((slot, owner, boundary, source, target))
 
             # Source wrappers around active boundaries are siblings of those
             # boundaries.  Safe text owners keep both wrappers local, while a
@@ -1261,7 +803,7 @@ def _assemble_source_epub(
     source_lang = raw_source_lang if isinstance(raw_source_lang, str) else ""
     meta = raw_meta if isinstance(raw_meta, dict) else {}
     schema = meta.get("epub_schema")
-    if not isinstance(schema, int) or schema < 3:
+    if schema != 3:
         raise ValueError(
             f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
         )
@@ -1292,70 +834,77 @@ def _assemble_source_epub(
             raise ValueError(f"EPUB slot contract digest mismatch: {segment.resource_href}")
         grouped.setdefault(segment.resource_href, []).append(segment)
     toc_entries = [entry for entry in meta.get("toc_entries", []) if isinstance(entry, dict)]
-    with zipfile.ZipFile(source_path, "r") as zin, zipfile.ZipFile(out_path, "w") as zout:
-        zout.comment = zin.comment
-        for info in zin.infolist():
-            name = info.filename
-            data = zin.read(name)
-            low = name.lower()
-            resource_info = resources_meta.get(name)
-            if resource_info is not None and hashlib.sha256(data).hexdigest() != str(
-                resource_info.get("resource_sha256", "")
-            ):
-                raise ValueError(f"EPUB resource digest mismatch: {name}")
-            if name == "mimetype":
-                zout.writestr(info, data, zipfile.ZIP_STORED)
-            elif low.endswith(".opf"):
-                tree, mode = _parse_source_markup(data)
-                _rewrite_opf_language_lxml(tree, target_lang)
-                zout.writestr(info, _serialize_source_tree(tree, data, mode))
-            elif name in grouped:
-                resource = resources_meta.get(name)
-                if resource is None:
-                    raise ValueError(f"EPUB resource missing persisted metadata: {name}")
-                rendered = _render_source_resource(
-                    data,
-                    name,
-                    grouped[name],
-                    expected_digest=str(resource.get("resource_sha256", "")),
-                    expected_mode=str(resource.get("parse_mode", "")),
-                    target_lang=target_lang,
-                    bilingual=bilingual,
-                    order=order,
-                    source_lang=source_lang,
-                )
-                toc_kind = _toc_kind_at(toc_entries, name)
-                if toc_kind in {"nav", "ncx"}:
-                    rendered = _rewrite_toc_lxml(
-                        rendered,
-                        toc_entries,
-                        is_ncx=toc_kind == "ncx",
-                        toc_path=name,
-                        target_lang=target_lang,
-                    )
-                zout.writestr(info, rendered)
-            elif _toc_kind_at(toc_entries, name) in {"nav", "ncx"}:
-                resource = resources_meta.get(name)
-                expected_mode = str(resource.get("parse_mode", "")) if resource else None
-                kind = _toc_kind_at(toc_entries, name)
-                zout.writestr(
-                    info,
-                    _rewrite_toc_lxml(
+    with zipfile.ZipFile(source_path, "r") as zin:
+        try:
+            preflight_zip(zin)
+        except ZipSafetyError as exc:
+            raise ValueError(f"EPUB archive rejected: {exc.code}") from exc
+        with _MetadataZipFile(out_path, "w") as zout:
+            zout.comment = zin.comment
+            opf_path = str(meta.get("opf_path") or "")
+            for info in zin.infolist():
+                name = info.filename
+                data = read_member(zin, info)
+                low = name.lower()
+                resource_info = resources_meta.get(name)
+                if resource_info is not None and hashlib.sha256(data).hexdigest() != str(
+                    resource_info.get("resource_sha256", "")
+                ):
+                    raise ValueError(f"EPUB resource digest mismatch: {name}")
+                if name == "mimetype":
+                    _write_source_member(zout, info, data, compress_type=zipfile.ZIP_STORED)
+                elif name == opf_path:
+                    tree, mode = _parse_source_markup(data)
+                    _rewrite_opf_language_lxml(tree, target_lang)
+                    _write_source_member(zout, info, _serialize_source_tree(tree, data, mode))
+                elif name in grouped:
+                    resource = resources_meta.get(name)
+                    if resource is None:
+                        raise ValueError(f"EPUB resource missing persisted metadata: {name}")
+                    rendered = _render_source_resource(
                         data,
-                        toc_entries,
-                        is_ncx=kind == "ncx",
-                        toc_path=name,
+                        name,
+                        grouped[name],
+                        expected_digest=str(resource.get("resource_sha256", "")),
+                        expected_mode=str(resource.get("parse_mode", "")),
                         target_lang=target_lang,
-                        expected_mode=expected_mode,
-                    ),
-                )
-            elif name in resources_meta and low.endswith(_HTML_EXTS):
-                resource = resources_meta[name]
-                tree, mode = _parse_source_markup(data, str(resource.get("parse_mode", "")))
-                _rewrite_markup_languages(tree.getroot(), target_lang)
-                zout.writestr(info, _serialize_source_tree(tree, data, mode))
-            else:
-                zout.writestr(info, data)
+                        bilingual=bilingual,
+                        order=order,
+                        source_lang=source_lang,
+                    )
+                    toc_kind = _toc_kind_at(toc_entries, name)
+                    if toc_kind in {"nav", "ncx"}:
+                        rendered = _rewrite_toc_lxml(
+                            rendered,
+                            toc_entries,
+                            is_ncx=toc_kind == "ncx",
+                            toc_path=name,
+                            target_lang=target_lang,
+                        )
+                    _write_source_member(zout, info, rendered)
+                elif _toc_kind_at(toc_entries, name) in {"nav", "ncx"}:
+                    resource = resources_meta.get(name)
+                    expected_mode = str(resource.get("parse_mode", "")) if resource else None
+                    kind = _toc_kind_at(toc_entries, name)
+                    _write_source_member(
+                        zout,
+                        info,
+                        _rewrite_toc_lxml(
+                            data,
+                            toc_entries,
+                            is_ncx=kind == "ncx",
+                            toc_path=name,
+                            target_lang=target_lang,
+                            expected_mode=expected_mode,
+                        ),
+                    )
+                elif name in resources_meta and low.endswith(_HTML_EXTS):
+                    resource = resources_meta[name]
+                    tree, mode = _parse_source_markup(data, str(resource.get("parse_mode", "")))
+                    _rewrite_markup_languages(tree.getroot(), target_lang)
+                    _write_source_member(zout, info, _serialize_source_tree(tree, data, mode))
+                else:
+                    _write_source_member(zout, info, data)
     return out_path
 
 
@@ -1375,18 +924,11 @@ def _assemble_epub(
     bilingual: bool = False,
     order: str = "target_first",
 ) -> str:
-    """复制原 EPUB，并按物理资源替换正文、回填目录及目标语言元数据。
-
-    schema 2 状态（``resource_templates.json`` 非空）按 ``Segment.resource_href``
-    把全书 Segment 聚合到物理 href，每个物理 XHTML 只渲染一次——天然兼容
-    “一个文件含多个逻辑章”和“一章跨多个文件”。schema 1 旧状态（模板仍
-    随 Chapter 存储）继续按旧版逻辑逐章渲染。
-    """
-    m = store.load_manifest()
-    target_lang = _epub_lang(m.get("target_lang", "zh"))
-    meta = m.get("meta") if isinstance(m.get("meta"), dict) else {}
+    """Render a schema-3 source EPUB from its original archive and slot state."""
+    manifest = store.load_manifest()
+    meta = manifest.get("meta") if isinstance(manifest.get("meta"), dict) else {}
     schema = meta.get("epub_schema")
-    if not isinstance(schema, int) or schema < 3:
+    if schema != 3:
         raise ValueError(
             f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
         )
@@ -1394,135 +936,14 @@ def _assemble_epub(
         store,
         source_path,
         out_path,
-        target_lang=target_lang,
+        target_lang=_epub_lang(manifest.get("target_lang", "zh")),
         bilingual=bilingual,
         order=order,
     )
-    raw_source_lang = m.get("source_lang", "")
-    source_lang = raw_source_lang if isinstance(raw_source_lang, str) else ""
-    raw_meta = m.get("meta")
-    meta = raw_meta if isinstance(raw_meta, dict) else {}
-    raw_toc_entries = meta.get("toc_entries", [])
-    toc_entries: list[dict[str, object]] = (
-        [entry for entry in raw_toc_entries if isinstance(entry, dict)]
-        if isinstance(raw_toc_entries, list)
-        else []
-    )
-
-    chapters = [store.load_chapter(c["index"]) for c in m["chapters"]]
-    resource_templates = store.load_resource_templates()
-
-    # href -> 渲染后的 XHTML
-    rendered: dict[str, str] = {}
-    if meta.get("epub_schema") == 2:
-        if not resource_templates:
-            raise ValueError(
-                "EPUB 翻译状态使用 schema 2，但缺少 resource_templates.json（状态不完整，无法导出）"
-            )
-        grouped = _segments_by_resource(chapters)
-        undeclared = sorted(set(grouped) - set(resource_templates))
-        if undeclared:
-            raise ValueError("EPUB 翻译状态引用了未登记的正文资源：" + ", ".join(undeclared[:3]))
-        for href, segments in grouped.items():
-            rendered[href] = _render_segments_html(
-                resource_templates[href],
-                segments,
-                bilingual=bilingual,
-                order=order,
-                source_lang=source_lang,
-            )
-    else:
-        # schema 1 旧状态：模板仍随 Chapter 存储，逐章渲染。
-        for chapter in chapters:
-            if chapter.href and chapter.template:
-                rendered[chapter.href] = _render_chapter_html(
-                    chapter,
-                    bilingual=bilingual,
-                    order=order,
-                    source_lang=source_lang,
-                )
-
-    # 目录标题：兼容旧状态的 basename 映射（用于旧状态导出，以及精确模式未命中时的回退）。
-    legacy_titles: dict[str, str] = {}
-    for c in m["chapters"]:
-        base = _base_no_frag(c.get("href") or "")
-        t = _ch_title(c)
-        if base and t:
-            legacy_titles[base] = t
-    for entry in toc_entries:
-        href = entry.get("resource_href") or entry.get("href")
-        base = _base_no_frag(href if isinstance(href, str) else "")
-        title = _translated_toc_title(entry)
-        if base and title:
-            legacy_titles[base] = title
-    book_title = ""
-
-    with zipfile.ZipFile(source_path, "r") as zin:
-        force_horizontal = _epub_looks_vertical(zin)
-        infos = zin.infolist()
-        with zipfile.ZipFile(out_path, "w") as zout:
-            for info in infos:
-                name = info.filename
-                low = name.lower()
-                data = zin.read(name)
-                toc_kind = _toc_kind_at(toc_entries, name)
-                if name == "mimetype":
-                    zout.writestr(info, data, zipfile.ZIP_STORED)
-                elif low.endswith(".opf"):
-                    zout.writestr(
-                        info,
-                        _rewrite_opf_metadata(
-                            data,
-                            book_title=book_title,
-                            lang=target_lang,
-                            force_horizontal=force_horizontal,
-                        ),
-                    )
-                elif toc_kind == "ncx" or (toc_kind is None and low.endswith(".ncx")):
-                    # 优先按 toc_entries 中的 toc_path + kind 路由（OPF 可把 NCX 命名为
-                    # 任意扩展名，如 toc.xml）；没有精确匹配的目录项时，才改用 .ncx 后缀判断。
-                    exact = _indexed_toc_entries(toc_entries, name)
-                    if exact:
-                        zout.writestr(
-                            info, _rewrite_toc(data, toc_entries, is_ncx=True, toc_path=name)
-                        )
-                    else:
-                        zout.writestr(info, data)
-                elif toc_kind == "nav" or (toc_kind is None and low.endswith(_HTML_EXTS)):
-                    html_data = rendered[name].encode("utf-8") if name in rendered else data
-                    exact = _indexed_toc_entries(toc_entries, name)
-                    if exact:
-                        # 存在精确匹配的目录项时，无条件使用精确模式，不依赖 _is_nav 探测
-                        # （解析端 nav_toc_scopes 也能识别缺少 epub:type 的 NAV）。
-                        html_data = _rewrite_toc(
-                            html_data, toc_entries, is_ncx=False, toc_path=name
-                        )
-                    elif _is_nav(html_data):
-                        # 兼容旧状态的回退逻辑：没有 toc_entries 时，根据内容特征识别 NAV。
-                        html_data = _rewrite_toc(
-                            html_data, legacy_titles, is_ncx=False, toc_path=name
-                        )
-                    zout.writestr(
-                        info,
-                        _rewrite_html_document(
-                            html_data,
-                            lang=target_lang,
-                            force_horizontal=force_horizontal,
-                            bilingual=bilingual,
-                        ),
-                    )
-                else:
-                    zout.writestr(info, data)
-    return out_path
 
 
-def _is_nav(data: bytes) -> bool:
-    return b"epub:type" in data and b"toc" in data
-
-
-def _inject_bilingual_style(out_path: str, chapter_filenames: set[str], lang: str) -> None:
-    """ebooklib 写盘时按模板重建每章 <head>，内联样式会被丢弃；这里对写好的 zip
-    做一次后处理，把双语样式补回各章节 head（复用 _rewrite_html_document）。"""
+def _inject_generated_bilingual_style(out_path: str, chapter_filenames: set[str]) -> None:
+    """Add the bilingual style to generated EbookLib chapter documents only."""
     with zipfile.ZipFile(out_path, "r") as zin:
         infos = zin.infolist()
         entries = {info.filename: zin.read(info.filename) for info in infos}
@@ -1531,14 +952,50 @@ def _inject_bilingual_style(out_path: str, chapter_filenames: set[str], lang: st
         with zipfile.ZipFile(tmp_path, "w") as zout:
             for info in infos:
                 data = entries[info.filename]
-                if os.path.basename(info.filename) in chapter_filenames:
-                    data = _rewrite_html_document(
-                        data,
-                        lang=lang,
-                        force_horizontal=False,
-                        bilingual=True,
-                        rewrite_language=False,
-                    )
+                if os.path.basename(
+                    info.filename
+                ) in chapter_filenames and info.filename.lower().endswith(_HTML_EXTS):
+                    try:
+                        tree = etree.fromstring(
+                            data,
+                            etree.XMLParser(
+                                no_network=True,
+                                recover=False,
+                                resolve_entities=False,
+                                remove_comments=False,
+                                remove_pis=False,
+                            ),
+                        ).getroottree()
+                        root = tree.getroot()
+                        namespace = root.nsmap.get(None)
+
+                        def qualified(name: str, namespace: str | None = namespace) -> str:
+                            return f"{{{namespace}}}{name}" if namespace else name
+
+                        head = next(
+                            (
+                                child
+                                for child in root
+                                if isinstance(child.tag, str)
+                                and child.tag.rsplit("}", 1)[-1].lower() == "head"
+                            ),
+                            None,
+                        )
+                        if head is None:
+                            head = etree.Element(qualified("head"))
+                            root.insert(0, head)
+                        if not any(
+                            isinstance(style.tag, str)
+                            and style.tag.rsplit("}", 1)[-1].lower() == "style"
+                            and style.get("id") == BILINGUAL_STYLE_ID
+                            for style in head
+                        ):
+                            style = etree.Element(qualified("style"), id=BILINGUAL_STYLE_ID)
+                            style.text = BILINGUAL_CSS
+                            head.append(style)
+                        data = etree.tostring(tree, encoding="UTF-8", xml_declaration=True)
+                    except (etree.XMLSyntaxError, ValueError):
+                        pass
                 zout.writestr(info, data)
         os.replace(tmp_path, out_path)
     finally:
@@ -1659,7 +1116,7 @@ def _build_epub_from_chapters(
     book.spine = spine
     epub.write_epub(out_path, book)
     if bilingual:
-        _inject_bilingual_style(out_path, chapter_filenames, lang)
+        _inject_generated_bilingual_style(out_path, chapter_filenames)
     return out_path
 
 
@@ -1681,20 +1138,23 @@ def assemble(
     bilingual=True 时额外输出原文（淡背景块），order 控制译文/原文先后。
     """
     m = store.load_manifest()
+    if out_format == "txt":
+        out_path = out_path or _default_out(source_path, "txt", "", bilingual=bilingual)
+    else:
+        out_path = out_path or _default_out(source_path, "epub", "", bilingual=bilingual)
+    _reject_output_alias(source_path, out_path)
+    if order not in {"target_first", "source_first"}:
+        raise ValueError(f"invalid bilingual order: {order!r}")
     # 唯一权威就绪门禁：身份核验 + 完整度检查。不完整状态直接拒绝，
     # 绝不静默回退成“部分原文 + 部分译文”的混合产物。
     from trans_novel.pipeline.readiness import ensure_assemble_ready
 
     ensure_assemble_ready(store, source_path)
-    if order not in {"target_first", "source_first"}:
-        raise ValueError(f"invalid bilingual order: {order!r}")
     if out_format == "txt":
-        out_path = out_path or _default_out(source_path, "txt", "", bilingual=bilingual)
         return _assemble_text(store, out_path, bilingual=bilingual, order=order)
     # epub
     from trans_novel.assemble.epub_verifier import publish_epub
 
-    out_path = out_path or _default_out(source_path, "epub", "", bilingual=bilingual)
     if m["fmt"] == "epub":
         mode = "bilingual" if bilingual else "monolingual"
         return publish_epub(
@@ -1726,4 +1186,5 @@ def assemble(
             bilingual=bilingual,
             order=order,
         ),
+        source_identity_path=source_path,
     )

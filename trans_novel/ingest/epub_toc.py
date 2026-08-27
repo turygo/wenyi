@@ -24,6 +24,8 @@ from urllib.parse import unquote, urlsplit
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
+from trans_novel.assemble.zip_safety import read_member
+
 
 @dataclass(frozen=True)
 class ResolvedEpubHref:
@@ -244,7 +246,7 @@ def parse_toc_entries(zf: zipfile.ZipFile, toc_paths: list[str]) -> list[dict[st
     for toc_path in toc_paths:
         if toc_path not in names:
             continue
-        data = zf.read(toc_path)
+        data = read_member(zf, zf.getinfo(toc_path))
         is_ncx = toc_path.lower().endswith(".ncx")
         if not is_ncx:
             try:

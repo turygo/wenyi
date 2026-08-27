@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import struct
 import tempfile
 import unittest
 import zipfile
@@ -13,6 +14,9 @@ from lxml import etree
 
 from tests.sample_data import write_phase9_epub
 from trans_novel.assemble.bilingual_dom import (
+    BILINGUAL_CSS as _BILINGUAL_CSS,
+)
+from trans_novel.assemble.bilingual_dom import (
     BILINGUAL_DIRECT_TARGET_CLASS,
     BILINGUAL_SOURCE_CLASS,
 )
@@ -20,16 +24,13 @@ from trans_novel.assemble.epub_verifier import (
     EpubPublishError,
     EpubVerificationError,
     _bilingual_proof,
+    _compare_dom,
     _nav_label_locations,
     _source_subtree_signature,
     publish_epub,
     verify_epub,
 )
-from trans_novel.assemble.writer import (
-    _BILINGUAL_CSS,
-    _add_bilingual_sources,
-    _rewrite_html_document,
-)
+from trans_novel.assemble.writer import _add_bilingual_sources
 from trans_novel.pipeline.runstore import RunStore
 
 
@@ -84,6 +85,82 @@ class TestEpubStage2(unittest.TestCase):
             event = Path(state.event_log_path).read_text(encoding="utf-8").splitlines()[-1]
             self.assertIn('"event": "epub_verification_passed"', event)
             self.assertIn('"output": "published.epub"', event)
+
+    def test_input_output_aliases_are_rejected_before_any_writer(self) -> None:
+        from trans_novel.assemble.writer import assemble
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.epub"
+            write_phase9_epub(str(source))
+            before = source.read_bytes()
+            store = SimpleNamespace(
+                load_manifest=lambda: {"fmt": "text", "target_lang": "zh"},
+            )
+            with (
+                patch("trans_novel.pipeline.readiness.ensure_assemble_ready"),
+                self.assertRaises(ValueError),
+            ):
+                assemble(store, str(source), str(source), out_format="txt")
+            self.assertEqual(source.read_bytes(), before)
+
+            generated_store = RunStore(str(root / "generated-state"))
+            called = []
+            with self.assertRaises(EpubPublishError) as raised:
+                publish_epub(
+                    generated_store,
+                    None,
+                    source,
+                    mode="generated",
+                    source_identity_path=source,
+                    writer=lambda path: called.append(path),
+                )
+            self.assertEqual(raised.exception.report["failures"][0]["code"], "input_output_alias")
+            self.assertEqual(called, [])
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_generated_assemble_alias_is_rejected_before_writer(self) -> None:
+        from trans_novel.assemble.writer import assemble
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "book.txt"
+            source.write_text("source", encoding="utf-8")
+
+            class Store:
+                def load_manifest(self):
+                    return {"fmt": "text", "target_lang": "zh"}
+
+            with (
+                patch("trans_novel.pipeline.readiness.ensure_assemble_ready"),
+                self.assertRaisesRegex(ValueError, "paths must differ"),
+            ):
+                assemble(Store(), str(source), str(source), out_format="epub")
+
+    def test_source_assemble_rejects_unsafe_zip_before_output_write(self) -> None:
+        from trans_novel.assemble.writer import _assemble_source_epub
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "unsafe.epub"
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr("META-INF/x/../container.xml", b"<container/>")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+
+            class Store:
+                def load_manifest(self):
+                    return {
+                        "meta": {
+                            "epub_schema": 3,
+                            "epub_sha256": digest,
+                            "epub_resources": [],
+                        },
+                        "source_lang": "en",
+                        "chapters": [],
+                    }
+
+            output = Path(directory) / "output.epub"
+            with self.assertRaisesRegex(ValueError, "unsafe_entry"):
+                _assemble_source_epub(Store(), str(source), str(output), target_lang="zh")
+            self.assertFalse(output.exists())
 
     def test_identical_bytes_have_relocation_stable_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -141,21 +218,6 @@ class TestEpubStage2(unittest.TestCase):
                 assert report is not None
                 self.assertTrue(report["passed"])
                 self.assertEqual(report["authorized_differences"]["bilingual_nodes"], 12)
-
-    def test_style_only_rewrite_preserves_vertical_root_and_language_keys(self) -> None:
-        source = b'<html class="vrtl keep" xml:lang="ja"><head></head><body><p>Original</p></body></html>'
-        output = _rewrite_html_document(
-            source,
-            lang="zh-Hans",
-            force_horizontal=False,
-            bilingual=True,
-            rewrite_language=False,
-        )
-        source_root = etree.fromstring(source)
-        output_root = etree.fromstring(output)
-        self.assertEqual(set(source_root.attrib), set(output_root.attrib))
-        self.assertEqual(output_root.get("class"), "vrtl keep")
-        self.assertIsNotNone(output_root.xpath(".//style[@id='tn-bilingual-style']"))
 
     def test_direct_br_pairing_order_is_checked_for_both_orders(self) -> None:
         source = etree.fromstring(b"<html><head></head><body><p>One<br/>Two</p></body></html>")
@@ -1394,6 +1456,224 @@ class TestEpubStage2(unittest.TestCase):
                 any(
                     item["code"] == "recovered_diagnostic_mismatch"
                     for item in mismatch_report["failures"]
+                )
+            )
+
+    def test_generated_mono_rejects_stray_tn_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "generated.epub"
+            write_phase9_epub(str(source))
+            with zipfile.ZipFile(source) as zin:
+                entries = {info.filename: zin.read(info.filename) for info in zin.infolist()}
+            entries["OEBPS/text/chapter-1.xhtml"] = entries["OEBPS/text/chapter-1.xhtml"].replace(
+                b"</body>", b'<p class="tn-source">stray</p></body>'
+            )
+            with zipfile.ZipFile(source, "w") as zout:
+                for name, data in entries.items():
+                    zout.writestr(
+                        name,
+                        data,
+                        zipfile.ZIP_STORED if name == "mimetype" else zipfile.ZIP_DEFLATED,
+                    )
+            report = verify_epub(source, mode="generated", bilingual=False)
+            self.assertIn("unexpected_source_nodes", {item["code"] for item in report["failures"]})
+
+    def test_generated_bilingual_rejects_missing_source_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "generated.epub"
+            write_phase9_epub(str(source))
+            report = verify_epub(source, mode="generated", bilingual=True)
+            self.assertTrue(report["failures"])
+            self.assertIn(
+                "missing_source_nodes",
+                {item["code"] for item in report["failures"]},
+            )
+
+    def test_multi_base_ruby_direct_run_does_not_duplicate_source_cores(self) -> None:
+        source = etree.fromstring(
+            "<html><head></head><body><p><ruby><rb>漢</rb><rt>かん</rt>"
+            "<rb>字</rb><rt>じ</rt></ruby>です<br/>次</p></body></html>".encode()
+        )
+        slots = [
+            SimpleNamespace(
+                element_path=(0, 0),
+                field="text",
+                source_value="漢",
+                source_core="漢",
+                target_core="Kan",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+            SimpleNamespace(
+                element_path=(0, 2),
+                field="text",
+                source_value="字",
+                source_core="字",
+                target_core="Ji",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+            SimpleNamespace(
+                element_path=(0,),
+                field="tail",
+                source_value="です",
+                source_core="です",
+                target_core="Desu",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+            SimpleNamespace(
+                element_path=(1,),
+                field="tail",
+                source_value="次",
+                source_core="次",
+                target_core="Next",
+                leading_whitespace="",
+                trailing_whitespace="",
+            ),
+        ]
+        segment = SimpleNamespace(
+            kind="text",
+            source="source",
+            target="target",
+            epub_state=SimpleNamespace(block_path=(1, 0), slots=slots),
+        )
+        template = etree.tostring(source)
+        for order in ("target_first", "source_first"):
+            output = etree.fromstring(template)
+            block = output.xpath(".//p")[0]
+            _add_bilingual_sources(
+                output,
+                [segment],
+                order=order,
+                source_blocks={(1, 0): etree.fromstring(template).xpath(".//p")[0]},
+                block_refs={(1, 0): block},
+            )
+            source_nodes = output.xpath(".//*[contains(@class, 'tn-source')]")
+            style = etree.SubElement(output.xpath(".//head")[0], "style", id="tn-bilingual-style")
+            style.text = _BILINGUAL_CSS
+            self.assertEqual(len(source_nodes), 3)
+            values = ["".join(node.itertext()) for node in source_nodes]
+            combined = "".join(values)
+            self.assertIn("です", values)
+            self.assertEqual(len(source.xpath(".//ruby")), 1)
+            self.assertEqual(sum(len(node.xpath(".//ruby")) for node in source_nodes), 1)
+            self.assertEqual(sum(len(node.xpath(".//rt")) for node in source_nodes), 2)
+            self.assertEqual(combined.count("漢"), 1)
+            self.assertEqual(combined.count("字"), 1)
+            failures = []
+            _bilingual_proof(
+                etree.fromstring(template),
+                output,
+                [segment],
+                source_lang="ja",
+                order=order,
+                resource="test.xhtml",
+                failures=failures,
+            )
+            self.assertEqual(failures, [])
+
+    def test_descriptor_flags_publish_and_secondary_opf_stays_identical(self) -> None:
+        from tests.test_assemble import _run
+        from trans_novel.assemble.writer import assemble
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.epub"
+            write_phase9_epub(str(source))
+            with zipfile.ZipFile(source) as zin:
+                entries = {info.filename: zin.read(info.filename) for info in zin.infolist()}
+            backup = (
+                b'<package xmlns="http://www.idpf.org/2007/opf"><metadata '
+                b'xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:language>ja</dc:language>'
+                b"</metadata></package>"
+            )
+            entries["META-INF/backup.opf"] = backup
+            with zipfile.ZipFile(source, "w") as zout:
+                for name, data in entries.items():
+                    zout.writestr(
+                        name,
+                        data,
+                        zipfile.ZIP_STORED if name == "mimetype" else zipfile.ZIP_DEFLATED,
+                    )
+            raw = bytearray(source.read_bytes())
+            with zipfile.ZipFile(source) as zin:
+                info = zin.getinfo("OEBPS/text/chapter-1.xhtml")
+            descriptor = struct.unpack_from("<H", raw, info.header_offset + 6)[0] | 0x08
+            struct.pack_into("<H", raw, info.header_offset + 6, descriptor)
+            marker = b"OEBPS/text/chapter-1.xhtml"
+            central_offset = raw.find(b"PK\x01\x02", info.header_offset + 30)
+            while central_offset >= 0:
+                name_length = struct.unpack_from("<H", raw, central_offset + 28)[0]
+                if raw[central_offset + 46 : central_offset + 46 + name_length] == marker:
+                    break
+                central_offset = raw.find(b"PK\x01\x02", central_offset + 4)
+            self.assertGreaterEqual(central_offset, 0)
+            struct.pack_into("<H", raw, central_offset + 8, descriptor)
+            store, _ = _run(str(source), str(root / "state"))
+            output = root / "output.epub"
+            assemble(store, str(source), str(output), out_format="epub")
+            with zipfile.ZipFile(source) as source_zip, zipfile.ZipFile(output) as output_zip:
+                self.assertEqual(
+                    [info.flag_bits for info in source_zip.infolist()],
+                    [info.flag_bits for info in output_zip.infolist()],
+                )
+                self.assertTrue(output_zip.read("OEBPS/text/chapter-1.xhtml"))
+                self.assertEqual(output_zip.read("META-INF/backup.opf"), backup)
+
+    def test_ncx_root_language_and_comment_pi_contents_are_immutable(self) -> None:
+        from trans_novel.assemble.writer import _rewrite_toc_lxml
+
+        data = (
+            b'<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" xml:lang="ja">'
+            b"<navMap><navPoint><navLabel><text>Old<!--keep-->"
+            b' One<?keep pi?> tail</text></navLabel><content src="ch.xhtml"/>'
+            b"</navPoint></navMap></ncx>"
+        )
+        result = _rewrite_toc_lxml(
+            data,
+            [
+                {
+                    "toc_path": "toc.ncx",
+                    "node_index": 0,
+                    "raw_href": "ch.xhtml",
+                    "title_translated": "New",
+                }
+            ],
+            is_ncx=True,
+            toc_path="toc.ncx",
+            target_lang="zh-Hans",
+        )
+        root = etree.fromstring(result)
+        self.assertEqual(root.get("{http://www.w3.org/XML/1998/namespace}lang"), "ja")
+        label = root.xpath("//*[local-name()='text']")[0]
+        self.assertEqual(label.text, "New")
+        self.assertEqual(label[0].text, "keep")
+        self.assertEqual(label[1].text, "pi")
+
+    def test_toc_label_outer_tail_is_preserved_and_inner_tail_corruption_fails(self) -> None:
+        for label_name in ("a", "text"):
+            source = etree.fromstring(
+                f"<root><{label_name}>Old<!--keep--></{label_name}> OUT</root>".encode()
+            )
+            output = etree.fromstring(
+                f"<root><{label_name}>New<!--keep--></{label_name}> OUT</root>".encode()
+            )
+            self.assertTrue(
+                _compare_dom(
+                    source,
+                    output,
+                    {((0,), "text"): {"kind": "toc", "expected": "New", "count": True}},
+                    toc_label_paths={(0,)},
+                )
+            )
+            output[0][0].tail = " stale"
+            self.assertFalse(
+                _compare_dom(
+                    source,
+                    output,
+                    {((0,), "text"): {"kind": "toc", "expected": "New", "count": True}},
+                    toc_label_paths={(0,)},
                 )
             )
 
