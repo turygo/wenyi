@@ -288,6 +288,40 @@ class TestReviewAutofixEpubSlots(unittest.TestCase):
         self.assertTrue(issues[0]["fixed"])
 
 
+class TestReviewAutofixGate(unittest.TestCase):
+    def test_rejects_rewrite_that_drops_dialogue_quotes(self):
+        class _Translator:
+            def retranslate_with_feedback(self, *args, **kwargs):
+                return "他说：走吧。"
+
+        segment = Segment(
+            index=0,
+            source="彼は「行こう」と言った。",
+            target="他说：“走吧。”",
+        )
+        node = ReviewNode(
+            reviewer=None,
+            translator=_Translator(),
+            glossary=None,
+            config=_cfg(),
+            style_brief="",
+        )
+        issues = [
+            {
+                "index": 0,
+                "type": "mistranslation",
+                "detail": "措辞错误",
+                "suggestion": "重新表达",
+            }
+        ]
+
+        accepted = node._autofix_severe([segment], issues, [], "")
+
+        self.assertEqual(accepted, [])
+        self.assertEqual(segment.target, "他说：“走吧。”")
+        self.assertFalse(issues[0].get("fixed", False))
+
+
 class TestBackTranslator(unittest.TestCase):
     def test_check(self):
         def handler(messages, agent, operation, json_mode):

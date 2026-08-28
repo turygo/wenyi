@@ -58,6 +58,22 @@ def _has_quote_loss(source: str, target: str) -> bool:
     return not any(ch in tgt for ch in _TGT_QUOTE_CHARS)
 
 
+_PAIRED_DIALOGUE_QUOTES = (("“", "”"), ("「", "」"), ("『", "』"), ("«", "»"))
+
+
+def _dialogue_quote_pair_count(text: str) -> int:
+    return text.count('"') // 2 + sum(
+        min(text.count(opening), text.count(closing))
+        for opening, closing in _PAIRED_DIALOGUE_QUOTES
+    )
+
+
+def drops_dialogue_quotes(source: str, current: str, proposal: str) -> bool:
+    """Return whether a rewrite removes dialogue boundaries preserved by the current target."""
+    required = min(_dialogue_quote_pair_count(source), _dialogue_quote_pair_count(current))
+    return _dialogue_quote_pair_count(proposal) < required
+
+
 # ── b) number_mismatch ──────────────────────────────────────────────────
 _EN_UNITS = {
     "one": 1,

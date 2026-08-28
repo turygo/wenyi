@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject review autofixes that introduce deterministic lint regressions or remove preserved dialogue quotes.
+
 ## [0.1.4] - 2026-08-28
 ### Added
 

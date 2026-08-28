@@ -22,7 +22,7 @@ from trans_novel.ingest.models import (
     normalize_slot_transport,
     translation_text,
 )
-from trans_novel.pipeline import checks
+from trans_novel.pipeline import checks, lint
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
     backtranslate_input_fingerprint,
@@ -341,6 +341,7 @@ class ReviewNode:
         只带摘要与提案指纹，不带 source/before/proposed 明文。
         """
         accepted_entries: list[dict] = []
+        locked_terms = [term for term in terms if getattr(term, "locked", False)]
         by_seg: dict[int, list[dict]] = {}
         for it in issues:
             if it.get("type") in self._SEVERE_TYPES:
@@ -374,9 +375,23 @@ class ReviewNode:
                 )
             except (TypeError, ValueError):
                 new_t = ""
+            lint_gate = (
+                lint.polish_gate(
+                    seg.source,
+                    seg.target or "",
+                    new_t,
+                    locked_terms=locked_terms,
+                    src_lang=self.config.source_lang,
+                    normalize_punctuation=False,
+                )
+                if isinstance(new_t, str)
+                else None
+            )
             accepted = (
-                isinstance(new_t, str)
+                lint_gate is not None
                 and bool(new_t)
+                and lint_gate.accepted
+                and not lint.drops_dialogue_quotes(seg.source, seg.target or "", new_t)
                 and not checks.length_flags([seg.source], [new_t])
             )
             usage = getattr(getattr(self.translator, "client", None), "usage", None)
