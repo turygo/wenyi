@@ -3,6 +3,8 @@
 本项目的所有重要变更都记录在此文件中，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ## [Unreleased]
+
+## [0.1.4] - 2026-08-28
 ### Added
 
 - 新增公开 `editor` 模型角色，支持为润色和自然化改写配置独立模型；省略时继承 `primary`。
