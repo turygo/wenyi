@@ -127,6 +127,37 @@ class TestTranslatorEpubSlots(unittest.TestCase):
         )
         self.assertEqual(segment.target, "改甲 改乙")
 
+    def test_non_linguistic_epub_segment_preserves_source_slots_without_call(self):
+        slot = EpubTextSlot(
+            id="slot-page",
+            field="text",
+            source_value="123",
+            source_core="123",
+        )
+        segment = Segment(
+            index=0,
+            source="123",
+            resource_href="OEBPS/ch.xhtml",
+            epub_state=EpubSegmentState(
+                resource_href="OEBPS/ch.xhtml",
+                resource_sha256="resource",
+                block_fingerprint="block",
+                parse_mode="xml",
+                slots=[slot],
+                slot_contract_sha256="contract",
+            ),
+        )
+        client = FakeClient(handler=lambda *args: self.fail("LLM must not be called"))
+
+        translated = Translator(client, self._config()).translate_batch(
+            [segment.source],
+            agent="translator",
+            segments=[segment],
+        )
+
+        self.assertEqual(translated, [[{"id": "slot-page", "core": "123"}]])
+        self.assertEqual(client.calls, [])
+
 
 class TestTranslatorAlignment(unittest.TestCase):
     def _config(self):
@@ -149,6 +180,21 @@ class TestTranslatorAlignment(unittest.TestCase):
         self.assertTrue(client.calls)
         self.assertTrue(all(c["agent"] == "translator" for c in client.calls))
         self.assertTrue(all(c["operation"] == "translate.batch" for c in client.calls))
+
+    def test_non_linguistic_segments_are_preserved_and_excluded_from_prompt(self):
+        def handler(messages, agent, operation, json_mode):
+            self.assertEqual(_count_segments(messages[-1]["content"]), 1)
+            return json.dumps({"translations": ["你好"]}, ensure_ascii=False)
+
+        client = FakeClient(handler=handler)
+        translator = Translator(client, self._config())
+
+        translated = translator.translate_batch(["-", "123", "Hello"], agent="translator")
+        untouched = translator.translate_batch(["—", "2026"], agent="translator")
+
+        self.assertEqual(translated, ["-", "123", "你好"])
+        self.assertEqual(untouched, ["—", "2026"])
+        self.assertEqual(len(client.calls), 1)
 
     def test_back_matter_light_agent_routing(self):
         """light 旁路调用显式传 light-translator Agent，agent 原样透传到调用记录。"""

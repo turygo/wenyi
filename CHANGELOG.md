@@ -7,6 +7,7 @@
 ### Fixed
 
 - Reject review autofixes that introduce deterministic lint regressions or remove preserved dialogue quotes.
+- Preserve non-linguistic segments without sending them to the LLM, including EPUB text-slot records.
 
 ## [0.1.4] - 2026-08-28
 ### Added

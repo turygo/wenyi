@@ -250,11 +250,37 @@ class Translator(Agent):
         glossary_terms = glossary_terms or []
         if not sources:
             return []
+        if segments and len(segments) != len(sources):
+            raise ValueError("translation segment count mismatch")
+        if (
+            segments
+            and any(segment.epub_state is not None for segment in segments)
+            and any(segment.epub_state is None for segment in segments)
+        ):
+            raise ValueError("EPUB slot transport cannot mix EPUB and flat segments")
+
+        translated_indices = [
+            index
+            for index, source in enumerate(sources)
+            if any(character.isalpha() for character in source)
+        ]
+        targets: list = list(sources)
+        if segments:
+            for index, segment in enumerate(segments):
+                if segment.epub_state is not None:
+                    targets[index] = slot_transport(segment, target=False)
+        if not translated_indices:
+            return targets
+
+        translated_sources = [sources[index] for index in translated_indices]
+        translated_segments = (
+            [segments[index] for index in translated_indices] if segments else None
+        )
         attempts = self.config.pipeline.align_retry_limit + 1
         for _ in range(attempts):
             try:
-                return self._call_batch(
-                    sources,
+                translated = self._call_batch(
+                    translated_sources,
                     glossary_terms,
                     style,
                     context,
@@ -262,25 +288,25 @@ class Translator(Agent):
                     chapter_digest,
                     agent=agent,
                     operation=operation,
-                    segments=segments,
+                    segments=translated_segments,
                 )
+                for index, target in zip(translated_indices, translated, strict=True):
+                    targets[index] = target
+                return targets
             except (AlignmentError, JSONParseError):
                 pass
-        targets: list = []
-        for index, source in enumerate(sources):
+        for index in translated_indices:
             try:
-                targets.append(
-                    self._translate_one(
-                        source,
-                        glossary_terms,
-                        style,
-                        context,
-                        book_synopsis,
-                        chapter_digest,
-                        agent=agent,
-                        operation=operation,
-                        segment=segments[index] if segments else None,
-                    )
+                targets[index] = self._translate_one(
+                    sources[index],
+                    glossary_terms,
+                    style,
+                    context,
+                    book_synopsis,
+                    chapter_digest,
+                    agent=agent,
+                    operation=operation,
+                    segment=segments[index] if segments else None,
                 )
             except (AlignmentError, JSONParseError) as error:
                 raise AlignmentError(
