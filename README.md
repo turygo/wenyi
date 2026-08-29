@@ -84,24 +84,29 @@ trans-novel translate book.epub --back-matter full
 
 ```yaml
 llm:
-  provider: opencode-go
   models:
-    primary: deepseek-v4-flash:high
-    # editor 省略时继承 primary；显式配置可使用不同模型
-    editor: deepseek-v4-flash:high
-    fast: deepseek-v4-flash:off
+    primary:
+      - opencode-go/deepseek-v4-flash:high
+    # editor 省略时继承 primary 的完整候选列表
+    editor:
+      - opencode-go/deepseek-v4-flash:high
+    fast:
+      - opencode-go/deepseek-v4-flash:off
 
 quality: balanced
 ```
 
-- `primary`：正文翻译、全局分析和定名；默认 thinking 级别为 `high`。
-- `editor`：润色；省略时继承 `primary`，默认 thinking 级别为 `high`。
-- `fast`：术语挖掘、术语抽取和附属章轻量翻译；默认 thinking 级别为 `off`。
+- `primary`：正文翻译、全局分析和定名；候选按顺序尝试，默认 thinking 级别为 `high`。
+- `editor`：润色；省略时继承 `primary` 的完整候选列表，默认 thinking 级别为 `high`。
+- `fast`：术语挖掘、术语抽取和附属章轻量翻译；候选按顺序尝试，默认 thinking 级别为 `off`。
+- 每个角色都必须是非空的 `provider/model-id` 列表；同一角色不能重复候选。
 - `quality`：`economy`、`balanced` 或 `quality`。
 
-模型规格可在模型 ID 最右侧追加 `:off`、`:low`、`:medium`、`:high` 或 `:max`。
-程序启动时会根据 Provider/模型能力校验；不支持的级别直接报错并列出可选值，不会静默
-升级或降级。没有级别后缀时，`primary` 和 `editor` 默认 `high`，`fast` 默认 `off`。
+模型规格可在模型 ID 最右侧追加 `:off`、`:low`、`:medium`、`:high` 或 `:max`；
+Provider/模型 ID 中间的 `/` 只分割第一个斜杠，因此 OpenRouter 的嵌套模型 ID 可直接使用。
+程序启动时会校验整个候选链；不支持的级别直接报错，不会静默升级或降级。
+候选会在当前 Provider 的内部重试耗尽后再切换；404 或结构化 `model_not_found` 直接切换，
+400/401/403、凭据缺失和本地配置错误立即报错。
 
 Agent 路由、重试、超时、切分、上下文窗口和并发数都是内部策略，不接受 YAML 覆盖。
 Provider 使用固定的官方地址和密钥环境变量：
@@ -111,42 +116,43 @@ Provider 使用固定的官方地址和密钥环境变量：
 | `opencode-go` | `OPENCODE_API_KEY` |
 | `deepseek` | `DEEPSEEK_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
-| `openrouter` | `OPENROUTER_API_KEY` |
-| `bailian` | `BAILIAN_API_KEY` |
-| `ollama` | 无 |
-| `vllm` | 无 |
-
 百炼使用华北 2（北京）的共享 OpenAI 兼容端点。正文模型保留 DeepSeek V4 Flash、
 快任务改用更便宜的千问 3.7 Flash 时，可写：
 ```yaml
 llm:
-  provider: bailian
   models:
-    primary: deepseek-v4-flash:high
-    editor: deepseek-v4-flash:high
-    fast: qwen3.7-flash:off
+    primary:
+      - bailian/deepseek-v4-flash:high
+      - opencode-go/deepseek-v4-flash:high
+    editor:
+      - bailian/deepseek-v4-flash:high
+    fast:
+      - bailian/qwen3.7-flash:off
+      - opencode-go/deepseek-v4-flash:off
 
 quality: balanced
 ```
 
-OpenAI 兼容服务使用单端点配置：
+OpenAI 兼容服务仍使用单端点配置；只要候选链引用 `openai-compatible`，就必须配置该端点：
 
 ```yaml
 llm:
-  provider: openai-compatible
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_env: DASHSCOPE_API_KEY
   models:
-    primary: qwen-max
-    editor: qwen-max
-    fast: qwen-turbo
+    primary:
+      - openai-compatible/qwen-max
+    editor:
+      - openai-compatible/qwen-max
+    fast:
+      - openai-compatible/qwen-turbo
 
 quality: balanced
 ```
 
-配置中只写密钥环境变量名，不能写明文密钥。旧的 `llm.providers`、`llm.agents`、
-`pipeline`、`segment` 等格式已废弃，加载时会直接报错；删除旧文件后直接运行，或执行
-`wenyi init --force` 生成新配置。
+配置中只写密钥环境变量名，不能写明文密钥。旧的 `llm.provider`、`llm.providers`、
+`llm.agents`、标量模型值以及 `pipeline`、`segment` 等格式已废弃，加载时会直接报错；
+删除旧文件后直接运行，或执行 `wenyi init --force` 生成新配置。
 
 ## 工作流程
 
@@ -190,6 +196,11 @@ trans-novel tools assemble book.epub
 
 ## 模型路由
 
+每个内部 Agent 固定映射到 `primary`、`editor` 或 `fast` 角色。角色候选按配置顺序尝试：
+当前 Provider 的传输层先完成既有重试，只有 fallback 分类器返回固定原因时才切换到下一候选；
+404 和结构化 `model_not_found` 直接切换，永久/本地配置错误原样抛出。一次逻辑调用只计一次，
+但每个物理尝试仍分别记入用量和遥测。
+
 默认使用 OpenCode Go，通过其 OpenAI-compatible 端点
 `https://opencode.ai/zen/go/v1` 调用 DeepSeek V4 Flash。直接使用 DeepSeek、OpenAI 或
 OpenRouter 时走各自官方地址；Ollama 与 vLLM 使用本地默认地址；
@@ -198,12 +209,12 @@ OpenRouter 时走各自官方地址；Ollama 与 vLLM 使用本地默认地址�
 内部 Agent 固定映射到三个用户模型角色：
 
 - `primary`：正文翻译、定向重译、标题翻译、全局分析和定名。
-- `editor`：润色；省略时继承 `primary`。
+- `editor`：润色；省略时继承 `primary` 的完整候选列表。
 - `fast`：语言识别、术语挖掘、术语抽取和附属章粗翻。
 thinking 级别由模型规格最右侧的后缀决定。请求字段由内置的逐 Provider/模型能力表
 生成：OpenCode Go 的 `deepseek-v4-flash:high` 下发 `thinking=enabled` 与
 `reasoning_effort=high`，`:off` 下发 `thinking=disabled`。该模型不支持 `low`，
-配置为 `deepseek-v4-flash:low` 会在启动时直接报错。
+配置为 `opencode-go/deepseek-v4-flash:low` 会在启动时直接报错。
 
 ## 项目结构
 
