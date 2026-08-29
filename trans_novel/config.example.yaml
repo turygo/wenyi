@@ -1,11 +1,13 @@
-# 模型规格：`模型 ID:thinking 级别`；级别可选 off / low / medium / high / max
+# 模型规格：`provider/model-id:thinking 级别`；级别可选 off / low / medium / high / max
 llm:
-  provider: opencode-go
   models:
-    primary: deepseek-v4-flash:high
-    # editor 省略时继承 primary；显式配置可使用不同模型
-    editor: deepseek-v4-flash:high
-    fast: deepseek-v4-flash:off
+    primary:
+      - opencode-go/deepseek-v4-flash:high
+    # editor 省略时继承 primary 的完整候选列表
+    editor:
+      - opencode-go/deepseek-v4-flash:high
+    fast:
+      - opencode-go/deepseek-v4-flash:off
 
 # economy（省钱）| balanced（均衡）| quality（最高质量）
 quality: balanced

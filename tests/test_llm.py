@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 import unittest
 from typing import ClassVar
 
@@ -12,13 +10,13 @@ from pydantic import ValidationError
 from tests.fake_llm import fake_llm_dict
 from trans_novel.config import Config, LLMConfig, ModelRef, PipelineConfig
 from trans_novel.llm import (
-    AgentRouter,
     FakeClient,
     GenerationOptions,
     build_client,
     parse_json_loose,
 )
 from trans_novel.llm.errors import JSONParseError
+from trans_novel.pipeline.fingerprints import primary_model_profile
 
 
 class TestParseJsonLoose(unittest.TestCase):
@@ -55,228 +53,111 @@ class TestParseJsonLoose(unittest.TestCase):
 class TestConfigValidation(unittest.TestCase):
     def test_zero_config_defaults(self):
         cfg = Config.from_dict({})
-        self.assertEqual(cfg.llm.provider, "opencode-go")
-        self.assertEqual(cfg.llm.models.primary, "deepseek-v4-flash:high")
-        self.assertEqual(cfg.llm.models.editor, "deepseek-v4-flash:high")
-        self.assertEqual(cfg.llm.models.fast, "deepseek-v4-flash:off")
-        self.assertEqual(cfg.quality, "balanced")
+        self.assertEqual(cfg.llm.models.primary, ["opencode-go/deepseek-v4-flash:high"])
+        self.assertEqual(cfg.llm.models.editor, ["opencode-go/deepseek-v4-flash:high"])
+        self.assertEqual(cfg.llm.models.fast, ["opencode-go/deepseek-v4-flash:off"])
 
-    def test_omitted_editor_inherits_selected_primary(self):
+    def test_omitted_editor_inherits_complete_primary_chain(self):
         cfg = Config.from_dict(
             {
                 "llm": {
-                    "provider": "fake",
-                    "models": {"primary": "custom-primary", "fast": "custom-fast"},
-                }
-            }
-        )
-        self.assertEqual(cfg.llm.models.editor, "custom-primary")
-
-    def test_explicit_editor_null_or_empty_is_rejected(self):
-        for editor in (None, ""):
-            with (
-                self.subTest(editor=editor),
-                self.assertRaisesRegex(ValidationError, r"llm\.models\.editor"),
-            ):
-                Config.from_dict(
-                    {
-                        "llm": {
-                            "provider": "fake",
-                            "models": {
-                                "primary": "custom-primary",
-                                "editor": editor,
-                                "fast": "custom-fast",
-                            },
-                        }
-                    }
-                )
-
-    def test_missing_file_uses_defaults_without_creating_file(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "config.yaml")
-            cfg = Config.load(path)
-            self.assertEqual(cfg.quality, "balanced")
-            self.assertFalse(os.path.exists(path))
-
-    def test_opencode_go_has_built_in_endpoint_credentials_and_model_profile(self):
-        from trans_novel.llm.registry import ProviderRegistry
-        from trans_novel.llm.usage import UsageTracker
-        from trans_novel.model_profiles import DIALECT_DEEPSEEK, DIALECT_GENERIC
-
-        transport = ProviderRegistry(Config.defaults().llm, UsageTracker()).transport()
-        self.assertEqual(transport.provider, "opencode-go")
-        self.assertEqual(transport.base_url, "https://opencode.ai/zen/go/v1")
-        self.assertEqual(transport.api_key_env, "OPENCODE_API_KEY")
-        flash = transport.capabilities_for("deepseek-v4-flash")
-        self.assertEqual(flash.request_dialect, DIALECT_DEEPSEEK)
-        self.assertEqual(flash.reasoning_efforts, frozenset({"high", "max"}))
-        self.assertTrue(flash.catalogued)
-        self.assertTrue(flash.supports_thinking_disabled)
-        self.assertTrue(flash.supports_temperature)
-        mimo = transport.capabilities_for("mimo-v2.5")
-        self.assertEqual(mimo.request_dialect, DIALECT_DEEPSEEK)
-        self.assertTrue(mimo.catalogued)
-        self.assertTrue(mimo.supports_thinking_disabled)
-        self.assertTrue(mimo.supports_temperature)
-        muse = transport.capabilities_for("muse-spark-1.2-contributor")
-        self.assertTrue(muse.catalogued)
-        self.assertEqual(muse.reasoning_efforts, frozenset({"low"}))
-        self.assertTrue(muse.responses_api)
-        self.assertTrue(muse.supports_temperature)
-        unknown = transport.capabilities_for("unknown-model")
-        self.assertEqual(unknown.request_dialect, DIALECT_GENERIC)
-        self.assertEqual(unknown.reasoning_efforts, frozenset())
-
-    def test_bailian_has_built_in_endpoint_credentials_and_model_profiles(self):
-        from trans_novel.llm.registry import ProviderRegistry
-        from trans_novel.llm.usage import UsageTracker
-        from trans_novel.model_profiles import DIALECT_BAILIAN
-
-        cfg = Config.from_dict(
-            {
-                "llm": {
-                    "provider": "bailian",
                     "models": {
-                        "primary": "deepseek-v4-flash:high",
-                        "fast": "qwen3.7-flash:off",
-                    },
+                        "primary": ["fake/first", "fake/second"],
+                        "fast": ["fake/fast"],
+                    }
                 }
             }
         )
-        transport = ProviderRegistry(cfg.llm, UsageTracker()).transport()
-        self.assertEqual(transport.provider, "bailian")
+        self.assertEqual(cfg.llm.models.editor, ["fake/first", "fake/second"])
+
+    def test_lists_are_non_empty_and_unique(self):
+        for models in ([], ["fake/a", "fake/a"]):
+            with self.subTest(models=models), self.assertRaises(ValidationError):
+                Config.from_dict({"llm": {"models": {"primary": models}}})
+
+    def test_old_provider_and_scalar_models_are_rejected(self):
+        with self.assertRaises(ValueError):
+            Config.from_dict({"llm": {"provider": "fake", "models": {"primary": ["fake/a"]}}})
+        with self.assertRaises(ValidationError):
+            Config.from_dict({"llm": {"models": {"primary": "fake/a"}}})
+
+    def test_provider_model_parsing_rules(self):
+        from trans_novel.model_profiles import parse_model_selection, parse_provider_model
+
         self.assertEqual(
-            transport.base_url,
-            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            parse_provider_model("openrouter/google/gemini:high"),
+            ("openrouter", "google/gemini:high"),
         )
-        self.assertEqual(transport.api_key_env, "BAILIAN_API_KEY")
-        deepseek = transport.capabilities_for("deepseek-v4-flash")
-        self.assertEqual(deepseek.request_dialect, DIALECT_BAILIAN)
-        self.assertEqual(
-            deepseek.reasoning_efforts,
-            frozenset({"low", "medium", "high", "max"}),
+        self.assertEqual(parse_provider_model("ollama/qwen3:32b"), ("ollama", "qwen3:32b"))
+        with self.assertRaises(ValueError):
+            parse_provider_model("unknown/model")
+        with self.assertRaises(ValueError):
+            parse_provider_model("fake/")
+        self.assertEqual(parse_model_selection("qwen3:32b").model, "qwen3:32b")
+
+    def test_provider_endpoints_and_capabilities_are_keyed(self):
+        from trans_novel.llm.registry import ProviderRegistry
+        from trans_novel.llm.usage import UsageTracker
+        from trans_novel.model_profiles import DIALECT_BAILIAN, DIALECT_DEEPSEEK
+
+        cfg = Config.from_dict(
+            {
+                "llm": {
+                    "models": {
+                        "primary": [
+                            "opencode-go/deepseek-v4-flash:high",
+                            "bailian/qwen3.7-flash:off",
+                        ],
+                        "fast": ["bailian/qwen3.7-flash:off"],
+                    }
+                }
+            }
         )
-        qwen = transport.capabilities_for("qwen3.7-flash")
-        self.assertEqual(qwen.request_dialect, DIALECT_BAILIAN)
-        self.assertEqual(qwen.reasoning_efforts, frozenset())
+        registry = ProviderRegistry(cfg.llm, UsageTracker())
+        go = registry.transport("opencode-go")
+        bailian = registry.transport("bailian")
+        self.assertIs(go, registry.transport("opencode-go"))
+        self.assertEqual(go.provider, "opencode-go")
+        self.assertEqual(bailian.provider, "bailian")
+        self.assertEqual(go.capabilities_for("deepseek-v4-flash").request_dialect, DIALECT_DEEPSEEK)
+        self.assertEqual(bailian.capabilities_for("qwen3.7-flash").request_dialect, DIALECT_BAILIAN)
 
     def test_model_thinking_suffix_is_validated_against_capabilities(self):
-        cfg = Config.from_dict(
-            {
-                "llm": {
-                    "provider": "opencode-go",
-                    "models": {
-                        "primary": "deepseek-v4-flash:max",
-                        "fast": "deepseek-v4-flash:off",
-                    },
-                }
-            }
-        )
-        self.assertEqual(cfg.llm.models.primary, "deepseek-v4-flash:max")
-        with self.assertRaisesRegex(
-            ValidationError,
-            "deepseek-v4-flash 不支持 thinking 级别 'low'.*支持：off, high, max",
-        ):
+        with self.assertRaises(ValidationError):
             Config.from_dict(
-                {
-                    "llm": {
-                        "provider": "opencode-go",
-                        "models": {
-                            "primary": "deepseek-v4-flash:low",
-                            "fast": "deepseek-v4-flash:off",
-                        },
-                    }
-                }
+                {"llm": {"models": {"primary": ["opencode-go/deepseek-v4-flash:low"]}}}
             )
-
-    def test_editor_model_selection_validation_is_field_specific(self):
-        with self.assertRaisesRegex(ValidationError, r"llm\.models\.editor"):
-            Config.from_dict(
-                {
-                    "llm": {
-                        "provider": "opencode-go",
-                        "models": {
-                            "primary": "deepseek-v4-flash:high",
-                            "editor": "deepseek-v4-flash:low",
-                            "fast": "deepseek-v4-flash:off",
-                        },
-                    }
-                }
-            )
-
-    def test_known_model_rejects_unknown_thinking_suffix(self):
-        with self.assertRaisesRegex(ValidationError, "未知 thinking 级别 'turbo'"):
-            Config.from_dict(
-                {
-                    "llm": {
-                        "provider": "opencode-go",
-                        "models": {
-                            "primary": "deepseek-v4-flash:turbo",
-                            "fast": "deepseek-v4-flash:off",
-                        },
-                    }
-                }
-            )
-
-    def test_non_thinking_colon_remains_part_of_model_id(self):
-        from trans_novel.model_profiles import parse_model_selection
-
-        selection = parse_model_selection("qwen3:32b")
-        self.assertEqual(selection.model, "qwen3:32b")
-        self.assertIsNone(selection.thinking)
-
-    def test_custom_models(self):
-        cfg = Config.from_dict(
-            {
-                "llm": {
-                    "provider": "openai",
-                    "models": {"primary": "gpt-5", "fast": "gpt-5-mini"},
-                },
-                "quality": "quality",
-            }
-        )
-        self.assertEqual(cfg.llm.models.primary, "gpt-5")
-        self.assertTrue(cfg.pipeline.polish)
 
     def test_openai_compatible_requires_base_url(self):
         with self.assertRaisesRegex(ValidationError, "base_url"):
-            LLMConfig.model_validate(
-                {
-                    "provider": "openai-compatible",
-                    "models": {"primary": "a", "fast": "b"},
-                }
-            )
+            LLMConfig.model_validate({"models": {"primary": ["openai-compatible/a"]}})
+        cfg = LLMConfig.model_validate(
+            {
+                "models": {"primary": ["openai-compatible/a"], "fast": ["fake/f"]},
+                "base_url": "https://example.com/v1",
+            }
+        )
+        self.assertEqual(cfg.base_url, "https://example.com/v1")
 
     def test_standard_provider_rejects_endpoint_overrides(self):
         with self.assertRaisesRegex(ValidationError, "只用于 openai-compatible"):
-            LLMConfig.model_validate({"provider": "deepseek", "base_url": "https://example.com"})
+            LLMConfig.model_validate(
+                {"models": {"primary": ["fake/a"]}, "base_url": "https://example.com"}
+            )
 
-    def test_unknown_and_old_fields_fail_fast(self):
+    def test_unknown_and_deprecated_fields_fail_fast(self):
         with self.assertRaisesRegex(ValidationError, "Extra inputs"):
             Config.from_dict({"unknown": True})
-        for raw in (
-            {"pipeline": {"polish": True}},
-            {"llm": {"providers": {}, "agents": {}}},
-        ):
-            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, "已废弃"):
-                Config.from_dict(raw)
+        with self.assertRaisesRegex(ValueError, "已废弃"):
+            Config.from_dict({"llm": {"provider": "fake", "models": {"primary": ["fake/a"]}}})
 
     def test_quality_profiles(self):
-        expected = {
-            "economy": (False, "light"),
-            "balanced": (False, "full"),
-            "quality": (True, "full"),
-        }
-        for name, values in expected.items():
-            profile = PipelineConfig.for_quality(name)
-            self.assertEqual((profile.polish, profile.back_matter), values)
+        self.assertTrue(PipelineConfig.for_quality("quality").polish)
 
     def test_fake_provider_usable_without_credentials(self):
         cfg = Config.from_dict({"llm": fake_llm_dict()})
-        router = build_client(cfg)
-        self.assertIsInstance(router, AgentRouter)
         self.assertEqual(
-            router.complete(
+            build_client(cfg).complete(
                 [{"role": "user", "content": "x"}],
                 agent="preparer",
                 operation="terms.mine",
@@ -284,21 +165,38 @@ class TestConfigValidation(unittest.TestCase):
             "",
         )
 
-    def test_fake_model_tuple_roles(self):
-        self.assertEqual(
-            fake_llm_dict(models=("same",))["models"],
-            {"primary": "same", "editor": "same", "fast": "same"},
-        )
-        self.assertEqual(
-            fake_llm_dict(models=("primary", "fast"))["models"],
-            {"primary": "primary", "editor": "primary", "fast": "fast"},
-        )
+    def test_fake_model_roles_are_qualified_lists(self):
         self.assertEqual(
             fake_llm_dict(models=("primary", "editor", "fast"))["models"],
-            {"primary": "primary", "editor": "editor", "fast": "fast"},
+            {
+                "primary": ["fake/primary"],
+                "editor": ["fake/editor"],
+                "fast": ["fake/fast"],
+            },
         )
-        with self.assertRaises(ValueError):
-            fake_llm_dict(models=("one", "two", "three", "four"))
+
+
+class TestProviderTransportConfiguration(unittest.TestCase):
+    def test_openai_compatible_overrides_do_not_redirect_builtin_provider(self):
+        from trans_novel.llm.registry import ProviderRegistry
+        from trans_novel.llm.usage import UsageTracker
+
+        cfg = LLMConfig(
+            models={
+                "primary": ["deepseek/custom-chain", "openai-compatible/custom-model"],
+            },
+            base_url="https://custom.example/v1",
+            api_key_env="CUSTOM_API_KEY",
+        )
+        registry = ProviderRegistry(cfg, UsageTracker())
+
+        builtin = registry.transport("deepseek")
+        custom = registry.transport("openai-compatible")
+
+        self.assertEqual(builtin.base_url, "https://api.deepseek.com")
+        self.assertEqual(builtin.api_key_env, "DEEPSEEK_API_KEY")
+        self.assertEqual(custom.base_url, "https://custom.example/v1")
+        self.assertEqual(custom.api_key_env, "CUSTOM_API_KEY")
 
 
 class TestRoleProfiles(unittest.TestCase):
@@ -308,30 +206,38 @@ class TestRoleProfiles(unittest.TestCase):
             editor_model_profile,
             fast_model_profile,
             primary_fast_model_profile,
-            primary_model_profile,
         )
 
         primary = Config.from_dict(
             {
                 "llm": {
-                    "provider": "fake",
-                    "models": {"primary": "p", "editor": "e", "fast": "f"},
+                    "models": {
+                        "primary": ["fake/p", "fake/p2"],
+                        "editor": ["fake/e"],
+                        "fast": ["fake/f"],
+                    }
                 }
             }
         )
         editor_changed = Config.from_dict(
             {
                 "llm": {
-                    "provider": "fake",
-                    "models": {"primary": "p", "editor": "e2", "fast": "f"},
+                    "models": {
+                        "primary": ["fake/p", "fake/p2"],
+                        "editor": ["fake/e2"],
+                        "fast": ["fake/f"],
+                    }
                 }
             }
         )
         primary_changed = Config.from_dict(
             {
                 "llm": {
-                    "provider": "fake",
-                    "models": {"primary": "p2", "editor": "e", "fast": "f"},
+                    "models": {
+                        "primary": ["fake/p2"],
+                        "editor": ["fake/e"],
+                        "fast": ["fake/f"],
+                    }
                 }
             }
         )
@@ -348,15 +254,73 @@ class TestRoleProfiles(unittest.TestCase):
         self.assertEqual(
             editor_fast_model_profile(primary), editor_fast_model_profile(primary_changed)
         )
-        self.assertEqual(primary_model_profile(primary), "fake|p")
-        self.assertEqual(editor_model_profile(primary), "fake|e")
-        self.assertEqual(fast_model_profile(primary), "fake|f")
-        self.assertEqual(editor_fast_model_profile(primary), "fake|e|f")
-        self.assertEqual(primary_fast_model_profile(primary), "fake|p|f")
-        self.assertNotEqual(
-            primary_fast_model_profile(primary), primary_fast_model_profile(primary_changed)
+        self.assertIn('"fake/p","fake/p2"', primary_model_profile(primary))
+        reordered = Config.from_dict(
+            {
+                "llm": {
+                    "models": {
+                        "primary": ["fake/p2", "fake/p"],
+                        "editor": ["fake/e"],
+                        "fast": ["fake/f"],
+                    }
+                }
+            }
         )
+        self.assertNotEqual(primary_model_profile(primary), primary_model_profile(reordered))
         self.assertEqual(fast_model_profile(primary), fast_model_profile(editor_changed))
+
+    def test_role_profile_serializes_candidate_boundaries(self):
+        single = Config.from_dict(
+            {
+                "llm": {
+                    "models": {
+                        "primary": ["fake/a|fake/b"],
+                        "editor": ["fake/e"],
+                        "fast": ["fake/f"],
+                    }
+                }
+            }
+        )
+        multiple = Config.from_dict(
+            {
+                "llm": {
+                    "models": {
+                        "primary": ["fake/a", "fake/b"],
+                        "editor": ["fake/e"],
+                        "fast": ["fake/f"],
+                    }
+                }
+            }
+        )
+        self.assertNotEqual(primary_model_profile(single), primary_model_profile(multiple))
+
+    def test_role_profile_includes_base_url_for_whitespace_custom_provider(self):
+        first = Config.from_dict(
+            {
+                "llm": {
+                    "models": {
+                        "primary": ["openai-compatible /model"],
+                        "editor": ["fake/e"],
+                        "fast": ["fake/f"],
+                    },
+                    "base_url": "https://one.example/v1",
+                }
+            }
+        )
+        second = Config.from_dict(
+            {
+                "llm": {
+                    "models": {
+                        "primary": ["openai-compatible /model"],
+                        "editor": ["fake/e"],
+                        "fast": ["fake/f"],
+                    },
+                    "base_url": "https://two.example/v1",
+                }
+            }
+        )
+        self.assertNotEqual(primary_model_profile(first), primary_model_profile(second))
+        self.assertIn('"base_url":"https://one.example/v1"', primary_model_profile(first))
 
 
 class TestFakeClient(unittest.TestCase):

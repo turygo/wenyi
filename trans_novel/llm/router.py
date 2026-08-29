@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Any
 
 from trans_novel.config import PRODUCTION_AGENT_IDS, Config, ModelRef
@@ -12,9 +13,9 @@ from trans_novel.llm.generation import GenerationOptions
 from trans_novel.llm.json_parser import parse_json_loose
 from trans_novel.llm.providers.transport import validate_generation_options
 from trans_novel.llm.registry import ProviderRegistry
-from trans_novel.llm.retrying import classify_retry
+from trans_novel.llm.retrying import classify_fallback
 from trans_novel.llm.telemetry import CallTelemetrySink
-from trans_novel.model_profiles import parse_model_selection
+from trans_novel.model_profiles import parse_model_selection, parse_provider_model
 
 _PRIMARY_AGENTS = frozenset({"translator", "analyst"})
 _EDITOR_AGENTS = frozenset({"editor"})
@@ -33,9 +34,11 @@ class AgentRouter(LLMClient):
     ) -> None:
         super().__init__()
         self.config = config
-        self._primary_selection = parse_model_selection(config.llm.models.primary)
-        self._editor_selection = parse_model_selection(config.llm.models.editor)
-        self._fast_selection = parse_model_selection(config.llm.models.fast)
+        self._role_candidates = {
+            "primary": tuple(config.llm.models.primary),
+            "editor": tuple(config.llm.models.editor),
+            "fast": tuple(config.llm.models.fast),
+        }
         if registry is not None:
             self._registry = registry
             if generation_options is not None:
@@ -54,34 +57,34 @@ class AgentRouter(LLMClient):
                 telemetry_sink=telemetry_sink,
             )
 
-    def _model(self, agent: str | None) -> ModelRef:
+    def _models(self, agent: str | None) -> tuple[ModelRef, ...]:
         if not agent or agent not in PRODUCTION_AGENT_IDS:
             raise UnknownAgentError(
                 f"未知或缺失 Agent：{agent!r}（生产 LLM 调用必须提供内置 Agent 标识）"
             )
         if agent in _PRIMARY_AGENTS:
-            selection = self._primary_selection
-            thinking = selection.thinking or "high"
+            role, default_thinking = "primary", "high"
         elif agent in _EDITOR_AGENTS:
-            selection = self._editor_selection
-            thinking = selection.thinking or "high"
+            role, default_thinking = "editor", "high"
         elif agent in _FAST_AGENTS:
-            selection = self._fast_selection
-            thinking = selection.thinking or "off"
+            role, default_thinking = "fast", "off"
         else:  # pragma: no cover - PRODUCTION_AGENT_IDS 与映射必须同步
             raise UnknownAgentError(f"Agent 未绑定模型角色：{agent!r}")
-        if thinking == "off":
-            reasoning_enabled = False
-            reasoning_effort = "high"
-        else:
-            reasoning_enabled = True
-            reasoning_effort = thinking
-        return ModelRef(
-            provider=self.config.llm.provider,
-            model=selection.model,
-            reasoning_enabled=reasoning_enabled,
-            reasoning_effort=reasoning_effort,
-        )
+        models: list[ModelRef] = []
+        for value in self._role_candidates[role]:
+            provider, model = parse_provider_model(value)
+            selection = parse_model_selection(model)
+            thinking = selection.thinking or default_thinking
+            reasoning_enabled = thinking != "off"
+            models.append(
+                ModelRef(
+                    provider=provider,
+                    model=selection.model,
+                    reasoning_enabled=reasoning_enabled,
+                    reasoning_effort=thinking if reasoning_enabled else "high",
+                )
+            )
+        return tuple(models)
 
     def complete(
         self,
@@ -93,29 +96,41 @@ class AgentRouter(LLMClient):
         agent: str,
         operation: str,
     ) -> str:
-        model_ref = self._model(agent)
-        validate_generation_options(
-            self._registry.capabilities_for(model_ref.model),
-            model_ref,
-            self.generation_options,
-        )
+        models = self._models(agent)
+        logical_call_id = uuid.uuid4().hex if self._registry.telemetry_sink is not None else None
+        attempt_counter = [0]
+        records: list[tuple[ModelRef, str]] = []
         start = time.monotonic()
         try:
-            try:
-                return self._registry.transport().complete(
-                    messages,
+            for model_ref in models:
+                validate_generation_options(
+                    self._registry.capabilities_for(model_ref.provider, model_ref.model),
                     model_ref,
-                    json_mode=json_mode,
-                    max_tokens=max_tokens,
-                    stage=stage,
-                    agent=agent,
-                    operation=operation,
+                    self.generation_options,
                 )
-            except Exception as error:
-                reason = classify_retry(error)
-                if reason is None:
-                    raise
-                raise AllModelsFailedError(((model_ref, reason),)) from error
+            for index, model_ref in enumerate(models):
+                try:
+                    return self._registry.transport(model_ref.provider).complete(
+                        messages,
+                        model_ref,
+                        json_mode=json_mode,
+                        max_tokens=max_tokens,
+                        stage=stage,
+                        agent=agent,
+                        operation=operation,
+                        logical_call_id=logical_call_id,
+                        attempt_counter=attempt_counter,
+                    )
+                except Exception as error:
+                    reason = classify_fallback(error)
+                    if reason is None:
+                        raise
+                    records.append((model_ref, reason))
+                    if index + 1 < len(models):
+                        self.usage.record_fallback(agent, operation)
+                        continue
+                    raise AllModelsFailedError(tuple(records)) from error
+            raise AssertionError("model candidate chain must not be empty")
         finally:
             self.usage.record_logical_call(agent, operation, (time.monotonic() - start) * 1000)
 

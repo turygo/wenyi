@@ -9,6 +9,18 @@ RequestDialect = Literal["generic", "deepseek", "bailian", "openai", "openrouter
 ThinkingLevel = Literal["off", "low", "medium", "high", "max"]
 ReasoningEffort = Literal["low", "medium", "high", "max"]
 
+BUILTIN_PROVIDERS: tuple[str, ...] = (
+    "deepseek",
+    "opencode-go",
+    "bailian",
+    "openai",
+    "openrouter",
+    "openai-compatible",
+    "ollama",
+    "vllm",
+    "fake",
+)
+
 DIALECT_GENERIC: RequestDialect = "generic"
 DIALECT_DEEPSEEK: RequestDialect = "deepseek"
 DIALECT_BAILIAN: RequestDialect = "bailian"
@@ -152,6 +164,22 @@ _MODEL_CAPABILITIES: dict[tuple[str, str], ModelCapabilities] = {
         supports_temperature=True,
     ),
 }
+
+
+def parse_provider_model(value: str) -> tuple[str, str]:
+    """Parse public ``provider/model`` syntax, splitting only its first slash."""
+    if not isinstance(value, str):
+        raise ValueError("model selection must be a string")
+    provider, separator, model = value.partition("/")
+    if not separator:
+        raise ValueError("model selection must use provider/model syntax")
+    provider = provider.strip()
+    model = model.strip()
+    if provider not in BUILTIN_PROVIDERS:
+        raise ValueError(f"unknown provider: {provider!r}")
+    if not model:
+        raise ValueError("model ID must not be empty")
+    return provider, model
 
 
 def parse_model_selection(value: str) -> ModelSelection:

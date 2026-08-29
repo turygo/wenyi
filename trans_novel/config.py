@@ -14,7 +14,11 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from trans_novel.model_profiles import ReasoningEffort, validate_model_selection
+from trans_novel.model_profiles import (
+    ReasoningEffort,
+    parse_provider_model,
+    validate_model_selection,
+)
 
 PRODUCTION_AGENT_IDS: tuple[str, ...] = (
     "translator",
@@ -24,25 +28,14 @@ PRODUCTION_AGENT_IDS: tuple[str, ...] = (
     "light-translator",
 )
 
-ProviderType = Literal[
-    "deepseek",
-    "opencode-go",
-    "bailian",
-    "openai",
-    "openrouter",
-    "openai-compatible",
-    "ollama",
-    "vllm",
-    "fake",
-]
 QualityPreset = Literal["economy", "balanced", "quality"]
 
-_DEFAULT_PRIMARY_MODEL = "deepseek-v4-flash:high"
-_DEFAULT_FAST_MODEL = "deepseek-v4-flash:off"
+_DEFAULT_PRIMARY_MODEL = "opencode-go/deepseek-v4-flash:high"
+_DEFAULT_FAST_MODEL = "opencode-go/deepseek-v4-flash:off"
 _DEPRECATED_ROOT_KEYS = frozenset(
     {"language", "segment", "pipeline", "honorific", "punctuation", "paths", "output"}
 )
-_DEPRECATED_LLM_KEYS = frozenset({"providers", "agents", "tiers"})
+_DEPRECATED_LLM_KEYS = frozenset({"provider", "providers", "agents", "tiers"})
 
 
 @dataclass(frozen=True)
@@ -64,39 +57,55 @@ class ModelRoles(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    primary: str = _DEFAULT_PRIMARY_MODEL
-    editor: str
-    fast: str = _DEFAULT_FAST_MODEL
+    primary: list[str] = Field(default_factory=lambda: [_DEFAULT_PRIMARY_MODEL])
+    editor: list[str] = Field(default_factory=lambda: [_DEFAULT_PRIMARY_MODEL])
+    fast: list[str] = Field(default_factory=lambda: [_DEFAULT_FAST_MODEL])
 
     @model_validator(mode="before")
     @classmethod
     def _inherit_editor(cls, value: Any) -> Any:
         if isinstance(value, dict) and "editor" not in value:
-            return {**value, "editor": value.get("primary", _DEFAULT_PRIMARY_MODEL)}
+            primary = value.get("primary", [_DEFAULT_PRIMARY_MODEL])
+            return {**value, "editor": list(primary) if isinstance(primary, list) else primary}
         return value
 
     @field_validator("primary", "editor", "fast")
     @classmethod
-    def _model_id_non_empty(cls, value: str) -> str:
-        value = value.strip()
+    def _model_ids_non_empty(cls, value: list[str] | None) -> list[str]:
+        if value is None:
+            raise ValueError("模型列表不能为空")
         if not value:
+            raise ValueError("模型列表不能为空")
+        normalized = [item.strip() for item in value]
+        if any(not item for item in normalized):
             raise ValueError("模型 ID 不能为空")
-        return value
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("模型列表不能包含重复候选")
+        return normalized
 
 
 class LLMConfig(BaseModel):
-    """单 Provider、三模型角色的公开 LLM 配置。"""
+    """三模型角色的公开 LLM 配置。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: ProviderType = "opencode-go"
     models: ModelRoles = Field(default_factory=ModelRoles)
     base_url: str | None = None
     api_key_env: str | None = None
 
     @model_validator(mode="after")
     def _validate_llm(self) -> LLMConfig:
-        if self.provider == "openai-compatible":
+        has_custom = False
+        for role in ("primary", "editor", "fast"):
+            for value in getattr(self.models, role):
+                try:
+                    provider, model = parse_provider_model(value)
+                    validate_model_selection(provider, model)
+                except ValueError as error:
+                    raise ValueError(f"llm.models.{role}：{error}") from None
+                if provider == "openai-compatible":
+                    has_custom = True
+        if has_custom:
             if not (self.base_url or "").strip():
                 raise ValueError("llm.base_url：openai-compatible 必须配置服务地址")
         elif self.base_url is not None or self.api_key_env is not None:
@@ -104,12 +113,6 @@ class LLMConfig(BaseModel):
                 "llm.base_url / llm.api_key_env 只用于 openai-compatible；"
                 "标准 Provider 使用内置地址和密钥环境变量"
             )
-        for role in ("primary", "editor", "fast"):
-            value = getattr(self.models, role)
-            try:
-                validate_model_selection(self.provider, value)
-            except ValueError as error:
-                raise ValueError(f"llm.models.{role}：{error}") from None
         return self
 
 

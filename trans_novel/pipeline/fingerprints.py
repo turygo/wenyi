@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import json
+
+from trans_novel.model_profiles import parse_provider_model
 from trans_novel.pipeline.state import input_fingerprint, normalize_lang_code
 
 
@@ -35,27 +38,21 @@ def primary_fast_model_profile(config) -> str:
 
 
 def _role_profile(config, *roles: str) -> str:
-    selected = set(roles)
-    values = [_provider(config)]
-    values.extend(_role(config, role) for role in ("primary", "editor", "fast") if role in selected)
-    return "|".join(values)
-
-
-def _provider(config) -> str:
-    llm = getattr(config, "llm", None)
-    if llm is None:
-        return ""
-    return str(getattr(llm, "provider", "") or "")
-
-
-def _role(config, role: str) -> str:
     llm = getattr(config, "llm", None)
     if llm is None:
         return ""
     models = getattr(llm, "models", None)
     if models is None:
         return ""
-    return str(getattr(models, role, "") or "")
+    profile = {
+        role: list(getattr(models, role, ()) or ())
+        for role in ("primary", "editor", "fast")
+        if role in roles
+    }
+    candidates = [candidate for role in roles for candidate in profile[role]]
+    if any(parse_provider_model(candidate)[0] == "openai-compatible" for candidate in candidates):
+        profile["base_url"] = str(getattr(llm, "base_url", "") or "")
+    return json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def glossary_semantic_fingerprint_part(terms) -> str:

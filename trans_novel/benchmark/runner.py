@@ -181,7 +181,11 @@ def _model_client(
     *,
     roles: ModelRoles | None = None,
 ) -> Any:
-    models = roles or ModelRoles(primary=model, editor=model, fast=spec.fast_model)
+    models = roles or ModelRoles(
+        primary=[f"{spec.provider}/{model}"],
+        editor=[f"{spec.provider}/{model}"],
+        fast=[f"{spec.provider}/{spec.fast_model}"],
+    )
     if factory is not None:
         attempts = (
             {
@@ -228,7 +232,7 @@ def _model_client(
                 continue
         raise BenchmarkError("client_factory does not accept a supported signature")
     config = Config(
-        llm=LLMConfig(provider=spec.provider, models=models),
+        llm=LLMConfig(models=models),
         source_lang="en",
         target_lang="zh",
     )
@@ -339,8 +343,11 @@ class FullRunner:
         preset = "quality" if pipeline_variant == "polish" else "balanced"
         return Config(
             llm=LLMConfig(
-                provider=spec.provider,
-                models=ModelRoles(primary=primary, editor=editor, fast=spec.fast_model),
+                models=ModelRoles(
+                    primary=[f"{spec.provider}/{primary}"],
+                    editor=[f"{spec.provider}/{editor}"],
+                    fast=[f"{spec.provider}/{spec.fast_model}"],
+                )
             ),
             quality=preset,
             source_lang="en",
@@ -360,9 +367,9 @@ class FullRunner:
             _attach_sink(self.client, sink, required=True)
             return self.client
         roles = ModelRoles(
-            primary=candidate.primary_model,
-            editor=candidate.editor_model,
-            fast=spec.fast_model,
+            primary=[f"{spec.provider}/{candidate.primary_model}"],
+            editor=[f"{spec.provider}/{candidate.editor_model}"],
+            fast=[f"{spec.provider}/{spec.fast_model}"],
         )
         return _model_client(
             spec,

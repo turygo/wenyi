@@ -17,11 +17,11 @@ def fake_llm_dict(*, models=("p",), extra_agents=None) -> dict:
         raise ValueError("新配置不支持 Agent 路由覆盖")
     if not models or len(models) > 3:
         raise ValueError("fake 模型配置必须包含 1 至 3 个模型")
-    primary = models[0]
-    editor = models[0] if len(models) < 3 else models[1]
-    fast = primary if len(models) == 1 else models[-1]
+    qualified = [f"fake/{model}" for model in models]
+    primary = qualified[:1]
+    editor = qualified[:1] if len(models) < 3 else qualified[1:2]
+    fast = qualified[:1] if len(models) == 1 else qualified[-1:]
     return {
-        "provider": "fake",
         "models": {"primary": primary, "editor": editor, "fast": fast},
     }
 

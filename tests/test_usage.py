@@ -86,13 +86,13 @@ class _ClientStub:
 def _transport(tracker: UsageTracker):
     config = LLMConfig.model_validate(
         {
-            "provider": "deepseek",
-            "models": {"primary": "m1", "fast": "m2"},
+            "models": {"primary": ["deepseek/m1"], "fast": ["deepseek/m2"]},
         }
     )
     return OpenAICompatibleTransport(
         config,
         tracker,
+        provider="deepseek",
         provider_name="DeepSeek",
         default_base_url="https://api.deepseek.com",
         default_api_key_env="DEEPSEEK_API_KEY",

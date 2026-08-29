@@ -84,10 +84,11 @@ class FakeProviderTransport:
         cfg: LLMConfig,
         usage: UsageTracker,
         *,
+        provider: str,
         generation_options: GenerationOptions | None = None,
         telemetry_sink: CallTelemetrySink | None = None,
     ) -> None:
-        self.provider = cfg.provider
+        self.provider = provider
         self.cfg = cfg
         self.usage = usage
         self.generation_options = generation_options
@@ -103,6 +104,8 @@ class FakeProviderTransport:
         stage: str | None = None,
         agent: str,
         operation: str,
+        logical_call_id: str | None = None,
+        attempt_counter: list[int] | None = None,
     ) -> str:
         started_at = (
             datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -113,6 +116,11 @@ class FakeProviderTransport:
             model_ref,
             self.generation_options,
         )
+        if attempt_counter is not None:
+            attempt_counter[0] += 1
+            attempt_index = attempt_counter[0]
+        else:
+            attempt_index = 1
         self.usage.record_attempt(
             agent=agent, operation=operation, provider=self.provider, model_ref=model_ref
         )
@@ -128,8 +136,8 @@ class FakeProviderTransport:
                 self.telemetry_sink.record(
                     CallAttemptTelemetry(
                         schema_version=1,
-                        logical_call_id=uuid.uuid4().hex,
-                        attempt_index=1,
+                        logical_call_id=logical_call_id or uuid.uuid4().hex,
+                        attempt_index=attempt_index,
                         started_at=started_at,
                         elapsed_ms=round((time.monotonic() - started) * 1000),
                         stage=stage,

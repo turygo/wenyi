@@ -44,7 +44,10 @@ class TestCliBootstrap(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, result.output)
             self.assertIn("已生成配置文件", plain(result.output))
             config = Config.load(config_path)
-            self.assertEqual(config.llm.provider, "opencode-go")
+            self.assertEqual(
+                config.llm.models.primary,
+                ["opencode-go/deepseek-v4-flash:high"],
+            )
             with open(config_path, encoding="utf-8") as stream:
                 self.assertEqual(stream.read(), Config.default_config_text())
 
@@ -96,10 +99,11 @@ class TestCliBootstrap(unittest.TestCase):
             with open(config_path, "w", encoding="utf-8") as stream:
                 stream.write(
                     "llm:\n"
-                    "  provider: opencode-go\n"
                     "  models:\n"
-                    "    primary: deepseek-v4-flash:low\n"
-                    "    fast: deepseek-v4-flash:off\n"
+                    "    primary:\n"
+                    "      - opencode-go/deepseek-v4-flash:low\n"
+                    "    fast:\n"
+                    "      - opencode-go/deepseek-v4-flash:off\n"
                 )
             with patch("trans_novel.cli.os.path.isfile", return_value=True):
                 result = CliRunner().invoke(

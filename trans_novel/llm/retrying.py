@@ -4,11 +4,10 @@
 调用方会立即原样抛出异常。
 """
 
-from __future__ import annotations
-
+from collections.abc import Mapping
 from typing import Any
 
-# 归一化降级原因（AllModelsFailedError 只暴露这些固定类别）。
+# Normalized fallback reasons (AllModelsFailedError exposes only these categories).
 EMPTY_RESPONSE = "empty_response"
 RATE_LIMIT = "rate_limit"
 TIMEOUT = "timeout"
@@ -16,7 +15,8 @@ CONNECTION = "connection"
 HTTP_408 = "http_408"
 HTTP_409 = "http_409"
 SERVER_ERROR = "server_error"
-PROVIDER_RETRY = "provider_retry"  # 仅当显式 x-should-retry: true 且未命中更具体的类别时
+MODEL_NOT_FOUND = "model_not_found"
+PROVIDER_RETRY = "provider_retry"
 
 
 class EmptyResponseError(Exception):
@@ -185,3 +185,22 @@ def classify_retry(error: BaseException) -> str | None:
     if header is True:
         return PROVIDER_RETRY
     return None
+
+
+def _structured_model_not_found(error: BaseException) -> bool:
+    if getattr(error, "code", None) == MODEL_NOT_FOUND:
+        return True
+    body = getattr(error, "body", None)
+    if not isinstance(body, Mapping):
+        return False
+    if body.get("code") == MODEL_NOT_FOUND:
+        return True
+    nested = body.get("error")
+    return isinstance(nested, Mapping) and nested.get("code") == MODEL_NOT_FOUND
+
+
+def classify_fallback(error: BaseException) -> str | None:
+    """Return a fixed reason only when an exhausted candidate may be skipped."""
+    if _status_code(error) == 404 or _structured_model_not_found(error):
+        return MODEL_NOT_FOUND
+    return classify_retry(error)

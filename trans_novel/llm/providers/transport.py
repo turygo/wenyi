@@ -1,7 +1,7 @@
-"""单 Provider 模型传输。
+"""Provider transport implementations.
 
-模型选择和思考策略由 AgentRouter 解析成 ModelRef；传输层只负责构造请求、
-执行固定重试策略并记录用量。
+Model selection and thinking strategy are parsed into ModelRef by AgentRouter;
+the transport builds requests, executes fixed retries, and records usage.
 """
 
 from __future__ import annotations
@@ -22,7 +22,13 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from trans_novel.config import LLMConfig, ModelRef
 from trans_novel.llm.base import Messages
 from trans_novel.llm.generation import GenerationOptions
-from trans_novel.llm.retrying import EmptyResponseError, _status_code, classify_retry
+from trans_novel.llm.retrying import (
+    MODEL_NOT_FOUND,
+    EmptyResponseError,
+    _status_code,
+    classify_fallback,
+    classify_retry,
+)
 from trans_novel.llm.telemetry import CallAttemptTelemetry, CallTelemetrySink
 from trans_novel.llm.usage import UsageTracker, has_response_usage, normalize_response_usage
 from trans_novel.model_profiles import (
@@ -82,6 +88,8 @@ class ProviderTransport(Protocol):
         stage: str | None = None,
         agent: str,
         operation: str,
+        logical_call_id: str | None = None,
+        attempt_counter: list[int] | None = None,
     ) -> str: ...
 
 
@@ -195,13 +203,14 @@ def _response_meta(response: Any) -> tuple[str | None, str | None, str | None]:
 
 
 class OpenAICompatibleTransport:
-    """延迟创建客户端，并使用固定、经过测试的超时与重试策略。"""
+    """Lazily create a client and use the fixed timeout/retry strategy."""
 
     def __init__(
         self,
         cfg: LLMConfig,
         usage: UsageTracker,
         *,
+        provider: str,
         provider_name: str,
         default_base_url: str | None,
         default_api_key_env: str | None,
@@ -209,12 +218,14 @@ class OpenAICompatibleTransport:
         generation_options: GenerationOptions | None = None,
         telemetry_sink: CallTelemetrySink | None = None,
     ) -> None:
-        self.provider = cfg.provider
+        self.provider = provider
         self.cfg = cfg
         self.usage = usage
         self.provider_name = provider_name
-        self.base_url = cfg.base_url or default_base_url
-        self.api_key_env = cfg.api_key_env or default_api_key_env
+        self.base_url = cfg.base_url if provider == "openai-compatible" else default_base_url
+        self.api_key_env = (
+            cfg.api_key_env if provider == "openai-compatible" else default_api_key_env
+        )
         self.requires_api_key = requires_api_key
         if not self.base_url:
             raise ValueError(f"llm.base_url：{provider_name} provider 必须配置服务地址")
@@ -256,6 +267,8 @@ class OpenAICompatibleTransport:
         stage: str | None = None,
         agent: str,
         operation: str,
+        logical_call_id: str | None = None,
+        attempt_counter: list[int] | None = None,
     ) -> str:
         capabilities = self.capabilities_for(model_ref.model)
         kwargs = build_request_kwargs(
@@ -268,10 +281,8 @@ class OpenAICompatibleTransport:
         )
         if capabilities.responses_api:
             kwargs = build_responses_request_kwargs(kwargs)
-        client = self._ensure_client()
-
         telemetry_enabled = self.telemetry_sink is not None
-        logical_call_id = uuid.uuid4().hex if telemetry_enabled else None
+        logical_call_id = logical_call_id or uuid.uuid4().hex if telemetry_enabled else None
         if telemetry_enabled:
             try:
                 request_digest = _request_hash(kwargs)
@@ -344,15 +355,26 @@ class OpenAICompatibleTransport:
             except Exception:
                 _warn_telemetry_failure()
 
+        client = self._ensure_client()
+
         @retry(
             stop=stop_after_attempt(_MAX_RETRIES + 1),
             wait=wait_exponential(multiplier=1, max=30),
-            retry=retry_if_exception(lambda error: classify_retry(error) is not None),
+            retry=retry_if_exception(
+                lambda error: (
+                    classify_fallback(error) != MODEL_NOT_FOUND
+                    and classify_retry(error) is not None
+                )
+            ),
             reraise=True,
         )
         def call() -> str:
             nonlocal attempt_index
-            attempt_index += 1
+            if attempt_counter is None:
+                attempt_index += 1
+            else:
+                attempt_counter[0] += 1
+                attempt_index = attempt_counter[0]
             started_at = _started_at()
             started = time.monotonic()
             self.usage.record_attempt(

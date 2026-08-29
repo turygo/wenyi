@@ -1240,9 +1240,9 @@ class IntegrationRunner:
         sink: _JsonlTelemetrySink,
     ) -> Any:
         roles = ModelRoles(
-            primary=candidate.primary_model,
-            editor=candidate.editor_model,
-            fast=spec.fast_model,
+            primary=[f"{spec.provider}/{candidate.primary_model}"],
+            editor=[f"{spec.provider}/{candidate.editor_model}"],
+            fast=[f"{spec.provider}/{spec.fast_model}"],
         )
         if self.client is not None:
             raise IntegrationError(

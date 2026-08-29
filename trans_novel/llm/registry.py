@@ -1,4 +1,4 @@
-"""单 Provider 传输注册表。"""
+"""Provider-keyed lazy transport registry."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ _PROVIDER_SPECS: dict[str, dict[str, Any]] = {
 
 
 class ProviderRegistry:
-    """为当前唯一 Provider 延迟创建传输；测试可按 Provider 名注入 stub。"""
+    """Lazily create one transport per provider; tests may inject keyed stubs."""
 
     def __init__(
         self,
@@ -84,7 +84,7 @@ class ProviderRegistry:
         self._injected = dict(transports or {})
         for transport in self._injected.values():
             transport.usage = usage
-        self._built: ProviderTransport | None = None
+        self._built: dict[str, ProviderTransport] = {}
         self._lock = threading.Lock()
 
     @property
@@ -96,18 +96,20 @@ class ProviderRegistry:
         with self._lock:
             if options == self._generation_options:
                 return
-            if self._built is not None:
+            if self._built:
                 raise ValueError("cannot change generation options after transport materialization")
             self._generation_options = options
 
-    def transport(self) -> ProviderTransport:
+    def transport(self, provider: str) -> ProviderTransport:
         with self._lock:
-            injected = self._injected.get(self.cfg.provider)
+            injected = self._injected.get(provider)
             if injected is not None:
                 return injected
-            if self._built is None:
-                self._built = self._build()
-            return self._built
+            transport = self._built.get(provider)
+            if transport is None:
+                transport = self._build(provider)
+                self._built[provider] = transport
+            return transport
 
     @property
     def telemetry_sink(self) -> CallTelemetrySink | None:
@@ -117,30 +119,32 @@ class ProviderRegistry:
         with self._lock:
             if sink is self._telemetry_sink:
                 return
-            if self._built is not None:
+            if self._built:
                 raise ValueError("cannot change telemetry sink after transport materialization")
             self._telemetry_sink = sink
 
-    def capabilities_for(self, model: str) -> ModelCapabilities:
-        transport = self._injected.get(self.cfg.provider)
+    def capabilities_for(self, provider: str, model: str) -> ModelCapabilities:
+        transport = self._injected.get(provider)
         if transport is not None:
             capabilities_method = getattr(transport, "capabilities_for", None)
             if callable(capabilities_method):
                 return capabilities_method(model)
-        return capabilities_for(self.cfg.provider, model)
+        return capabilities_for(provider, model)
 
-    def _build(self) -> ProviderTransport:
-        if self.cfg.provider == "fake":
+    def _build(self, provider: str) -> ProviderTransport:
+        if provider == "fake":
             return FakeProviderTransport(
                 self.cfg,
                 self.usage,
+                provider=provider,
                 generation_options=self.generation_options,
                 telemetry_sink=self._telemetry_sink,
             )
-        spec = _PROVIDER_SPECS[self.cfg.provider]
+        spec = _PROVIDER_SPECS[provider]
         return OpenAICompatibleTransport(
             self.cfg,
             self.usage,
+            provider=provider,
             provider_name=spec["provider_name"],
             default_base_url=spec["default_base_url"],
             default_api_key_env=spec["default_api_key_env"],

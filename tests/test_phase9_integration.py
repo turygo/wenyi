@@ -34,6 +34,7 @@ from trans_novel.cli import app
 from trans_novel.config import Config
 from trans_novel.llm import FakeClient
 from trans_novel.llm.telemetry import CallAttemptTelemetry
+from trans_novel.model_profiles import parse_model_selection, parse_provider_model
 from trans_novel.pipeline.bootstrap import Application
 from trans_novel.pipeline.runner import RequiredNodeFailed
 from trans_novel.pipeline.runstore import RunStore
@@ -63,13 +64,15 @@ class _InstrumentedFakeClient(FakeClient):
             operation=operation,
         )
         self._attempts += 1
-        model = (
+        model_ref = (
             self.models[1]
             if agent == "editor"
             else self.models[2]
             if agent in {"preparer", "light-translator"}
             else self.models[0]
         )
+        provider, model = parse_provider_model(model_ref)
+        selection = parse_model_selection(model)
         request_hash = hashlib.sha256(
             json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -83,9 +86,9 @@ class _InstrumentedFakeClient(FakeClient):
                 stage=stage,
                 agent=agent,
                 operation=operation,
-                provider=self.provider,
-                requested_model=model.removesuffix(":off"),
-                resolved_model=model.removesuffix(":off"),
+                provider=provider,
+                requested_model=selection.model,
+                resolved_model=selection.model,
                 reasoning_enabled=False,
                 reasoning_effort=None,
                 temperature=0.1,
@@ -272,7 +275,7 @@ class TestPhase9Integration(unittest.TestCase):
             ).run(str(source))
             old_name_fingerprint = first.load_state().nodes["name_terms"].input_fingerprint
             changed = _config(root / "state")
-            changed.llm.models.primary = "different-primary"
+            changed.llm.models.primary = ["fake/different-primary"]
             client = FakeClient(handler=routing_handler)
             second = Application(changed, client=client).run(str(source))
             self.assertNotEqual(
@@ -436,12 +439,20 @@ class TestPhase9Integration(unittest.TestCase):
         def factory(**kwargs):
             roles = kwargs.get("models")
             if roles is not None:
-                models = (roles.primary, roles.editor, roles.fast)
+                models = (roles.primary[0], roles.editor[0], roles.fast[0])
             else:
                 if len(factory_calls) < 3:
-                    models = ("qwen3.8-max:off", "deepseek-v4-pro:off", "qwen3.7-flash:off")
+                    models = (
+                        "bailian/qwen3.8-max:off",
+                        "bailian/deepseek-v4-pro:off",
+                        "bailian/qwen3.7-flash:off",
+                    )
                 else:
-                    models = ("deepseek-v4-flash:off", "qwen3.7-plus:off", "qwen3.7-flash:off")
+                    models = (
+                        "bailian/deepseek-v4-flash:off",
+                        "bailian/qwen3.7-plus:off",
+                        "bailian/qwen3.7-flash:off",
+                    )
             client = _InstrumentedFakeClient(
                 handler=routing_handler, models=models, provider="bailian"
             )
@@ -820,7 +831,7 @@ class TestPhase9Integration(unittest.TestCase):
             runner, _source, _clients = self._runner_fixture(root)
             singleton = _InstrumentedFakeClient(
                 handler=routing_handler,
-                models=("primary-a:off", "editor-a:off", "fast:off"),
+                models=("fake/primary-a:off", "fake/editor-a:off", "fake/fast:off"),
             )
             runner.client_factory = lambda **_kwargs: singleton
             with self.assertRaises(IntegrationError):
