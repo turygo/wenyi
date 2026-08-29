@@ -29,32 +29,16 @@ PUNCT_RULE = (
 TRANSLATOR_SYSTEM = Template("""\
 你是一位资深的文学翻译，精通将$src_label小说翻译为简体中文，专精长篇小说/轻小说。严格遵守：
 1. 忠实原文，绝不漏译、增译，绝不合并或拆分段落；保留原文分段。
-2. 输入是带编号的$src_label段落数组。必须输出等长的中文译文数组（数量与输入段落严格相等），
-   顺序、数量与输入严格一一对应；第 i 个译文对应第 i 段原文。
-3. 【专有名词对照表】是全书对照表的**相关子集参考**，可能含本批未出现的词条：**只有当某词条原文确实出现在
-   本批待译段落里，才套用其固定译法**，切勿把与本批无关的词条硬塞进译文。已列词条全书统一用其译法；
-   表中未列的专名，沿用【前文回顾】中已出现的译法，勿另起译名。人名同样必须译出：即使未列入对照表、前文也未出现，
-   也须按通行音译/意译规则给出中文译名，不得让人名以拉丁字母原样残留在译文中；首次出现可在译名后括注原文。
-4. 参考【全书概览】把握整体走向（主线剧情、人物弧光、伏笔与谜底），使本段措辞与后文不冲突；
-   参考【本章梗概】把握本章脉络；参考【前文译文】保持衔接：代词指代、人物称谓、语气与跨段句意须自然连贯。
-5. 源语言相关要点：
-$lang_guidance
-6. 保留原文语气与文体；**严格执行【风格指南】给出的叙事人称、句式节奏与语域**；
-   对话按角色的口癖/自称习惯译出辨识度；心理、修辞按中文小说习惯自然表达，不生硬直译、不堆砌翻译腔。
-7. 原文为直接引语（带引号）的段，译文必须保留成对引号「“”」；绝不把对话降格为无引号叙述。
-8. $punct_rule
-9. 仅输出 JSON 对象：{"translations": ["第0段译文", "第1段译文", ...]}，不要任何解释或思考过程。\
+2. 输入是带编号的$src_label段落数组。必须输出等长的中文译文数组，顺序一一对应。
+3. 严格遵守【专有名词对照表】中实际出现的固定译法，表中未列专名按通行规则翻译。
+4. 参考【风格指南】和【前文译文】保持衔接。
+5. $punct_rule
+6. 仅输出 JSON 对象：{"translations": ["第0段译文", "第1段译文", ...]}。\
 """)
 
 TRANSLATOR_USER = Template("""\
 【角色信息 / 风格指南】
 $style
-
-【全书概览】
-$book_synopsis
-
-【本章梗概】
-$chapter_digest
 
 【专有名词对照表】（必须遵守）
 $glossary
@@ -68,18 +52,11 @@ $numbered_source
 请翻译以上每一段，输出 JSON：{"translations":[...]}，数组长度必须恰好为 $n。\
 """)
 
-
 TRANSLATOR_FIX_USER = Template("""\
 【角色信息 / 风格指南】
 $style
 
-【全书概览】
-$book_synopsis
-
-【本章梗概】
-$chapter_digest
-
-【专有名词对照表】（必须遵守）
+【专有名词对照表】
 $glossary
 
 【前文译文】
@@ -88,65 +65,30 @@ $context_before
 【后文译文】
 $context_after
 
-【审校意见】（首译存在的问题，重译必须修正）
+【首译问题】
 $feedback
 
 【待重译$src_label段落】（仅 1 段）
 [0] $source
 
-请重译该段，完整传达原文全部信息并与前后文衔接，输出 JSON：{"translations":["译文"]}，数组长度恰为 1。\
+请重译该段，输出 JSON：{"translations":["译文"]}。\
 """)
 
 TRANSLATOR_FIX_MULTI_USER = Template("""\
 【角色信息 / 风格指南】
 $style
 
-【全书概览】
-$book_synopsis
-
-【本章梗概】
-$chapter_digest
-
-【专有名词对照表】（必须遵守）
-$glossary
-
-【本批当前译文】（按批内段号编号，包含各待修复段落的旧译文，可据此定位原译及上下文）
-$batch_targets
-
-【待重译$src_label段落及各自审校意见】（编号对应上方【本批当前译文】中的段号；首译存在问题，重译须逐项修正）
-$items
-
-请依次重译以上每一段，完整传达原文全部信息并与前后文衔接，输出 JSON：{"translations":[...]}，数组长度必须恰为 $n（待重译段数），顺序与上方列表一致。\
-""")
-
-REVIEWER_SYSTEM = Template("""\
-你是严格的译文审校，比对$src_label原文与中文译文，逐段找出**确凿**的问题。问题类型：
-- missing：漏译（原文有的信息译文缺失）
-- added：增译（译文凭空增加原文没有的信息）
-- mistranslation：误译/误读原意
-- terminology：原文确实出现、且对照表已给固定译法的**专名**（人名/地名/组织/作品名/产品名），译文未遵守
-  （对照表为全书参考，含本批未出现的词条；只就本批原文实际出现的词判断，勿因表中无关词条误报）
-- pronoun：人称/性别代词错误
-只报实质性错误：合理的语序调整、自然意译、风格润色**不算问题**，不要报。
-对照表可能收录了不该统一的普通词组，或其译法本身有误：普通名词短语的措辞差异（如"我妈/我母亲"）不算问题；
-若译文用法明显更符合通行规范、而对照表存疑，不要报 terminology，可在 detail 里注明存疑。
-拿不准是否为错就不报，宁缺毋滥。每条须给出可直接采纳的 suggestion。
-仅输出 JSON 对象，键顺序必须为 issues、reviewed_segments、complete，且 reviewed_segments 与 complete 必须是最后两个键：
-{"issues":[{"index":整数段号,"type":"...","detail":"简述","suggestion":"修改后的译文或具体改法"}],"reviewed_segments":段落总数,"complete":true}
-没有问题也必须输出完整回执，例如：{"issues":[],"reviewed_segments":段落总数,"complete":true}。\
-""")
-
-REVIEWER_USER = Template("""\
 【专有名词对照表】
 $glossary
 
-【逐段对照】（共 $n 段）
-$pairs
+【本批当前译文】
+$batch_targets
 
-请审校并输出 JSON。必须完整审校全部 $n 段；键顺序必须严格为 issues、reviewed_segments、complete，最后两个键分别为 reviewed_segments=$n 和 complete=true：
-{"issues":[...],"reviewed_segments":$n,"complete":true}。\
+【待重译$src_label段落及问题】
+$items
+
+请依次重译，输出 JSON：{"translations":[...]}，数组长度恰为 $n。\
 """)
-
 POLISHER_SYSTEM = Template("""\
 你是中文润色编辑。给定$src_label源文与其中文直译，在严格忠实源文的前提下，提升译文的中文流畅度与文学性：
 理顺语序、修正翻译腔、统一文体语气。
@@ -176,20 +118,14 @@ $numbered_target
 TITLE_TRANSLATOR_SYSTEM = Template("""\
 你是$src_label小说的标题翻译。把【章节标题与目录项】逐条翻译为简体中文：
 1. 输入依次为各章标题或额外目录项标题（带编号），不包含书名。
-2. 必须输出等长的中文数组（数量与输入条数严格相等），顺序一一对应。
-3. 严格遵守【专有名词对照表】的固定译法（人名/地名/术语全书一致）。
-4. 标题须简洁、合乎中文书名/章节命名习惯；不加引号、书名号或解释；
-   形如「第3章」「序章」「エピローグ」之类的卷章序号/通用标记，按中文惯例翻译
-   （如「第3章」「序章」「尾声」），不要音译。
-5. 结合【全书概览】理解标题语境（如 reception 是婚礼酒会而非开业），周/星期表记与全书约定一致。
-6. $punct_rule
-仅输出 JSON：{"titles":["第0条标题译文","第1条标题译文",...]}，长度与输入条数相等。\
+2. 必须输出等长的中文数组，顺序一一对应。
+3. 严格遵守【专有名词对照表】中实际出现的固定译法。
+4. 标题须简洁、合乎中文命名习惯；通用章序标记按中文惯例翻译。
+5. $punct_rule
+仅输出 JSON：{"titles":["第0条标题译文","第1条标题译文",...]}。\
 """)
 
 TITLE_TRANSLATOR_USER = Template("""\
-【全书概览】
-$book_synopsis
-
 【专有名词对照表】
 $glossary
 
@@ -263,23 +199,6 @@ $target
 请抽取新出现或被本批确认的术语、称呼变体和固定表达，输出 JSON：{"terms":[...]}。\
 """)
 
-BACKTRANSLATE_SYSTEM = Template("""\
-你是回译译者。把给定的中文译文回译成$src_label，只看中文、忠实表达其含义，输出 JSON：
-{"backtranslations":["...",...]}，长度与输入一致。\
-""")
-
-BACKTRANSLATE_USER = Template("""\
-【中文译文】（共 $n 段）
-$numbered_target
-
-输出 JSON：{"backtranslations":[...]}。\
-""")
-
-CONSISTENCY_SYSTEM = Template("""\
-你是全书一致性审查员。给定专有名词对照表和若干章节译文摘要，检查：
-术语译法是否前后统一、同一人物代词性别是否一致、语气文体是否漂移、标点是否统一为简体中文规范。
-仅输出 JSON：{"issues":[{"type":"terminology/pronoun/tone/punctuation","detail":"...","where":"章节线索"}]}。\
-""")
 
 GLOSSARY_AUDIT_SYSTEM = Template("""\
 你是术语一致性审计员。给定一份专有名词对照表（同一原文可能出现多种译法或形近变体），
@@ -287,38 +206,6 @@ GLOSSARY_AUDIT_SYSTEM = Template("""\
 裁定优先级：已锁定 > 高置信度 > 出现更普遍/更规范的中文译名。
 仅输出 JSON：{"unifications":[{"source":"原文词","canonical":"规范中文译法","variants":["被替换的其它译法"],"reason":"简述"}]}
 没有需要统一的就输出 {"unifications":[]}。\
-""")
-
-CHAPTER_DIGEST_SYSTEM = Template("""\
-你是小说章节梗概员。阅读给定的$src_label单章原文，用简体中文写出该章梗概（不超过 200 字）：
-交代本章关键情节推进、登场人物及其处境、重要信息或转折，去除细枝末节。只输出梗概正文，不要解释。\
-""")
-
-CHAPTER_DIGEST_USER = Template("""\
-【章节原文（$src_label）】
-$source
-
-请输出该章中文梗概（不超过 200 字）。\
-""")
-
-BOOK_SYNOPSIS_SYSTEM = Template("""\
-你是小说全书概览员。依据【前期分析】与【各章梗概】，用简体中文写出一份"全书概览"（不超过 500 字），
-供译者在翻译任意章节前把握全局，避免与后文冲突：
-主线剧情走向与结局、主要人物及其关系与弧光、核心设定/谜底/重要伏笔、整体基调。
-只输出概览正文，不要解释或分点编号。\
-""")
-
-BOOK_SYNOPSIS_USER = Template("""\
-【前期分析】
-$analysis
-
-【人物定名表】
-$cast
-
-【各章梗概】
-$digests
-
-请综合以上，输出全书概览（不超过 500 字）；概览中的专名必须使用【人物定名表】给出的译名。\
 """)
 
 TERM_MINER_SYSTEM = Template("""\
@@ -358,82 +245,10 @@ $glossary
 【剧情简报】
 $brief
 
-【各章梗概】
-$digests
-
 【候选列表（编号 表面形式（出现次数） 例句）】
 $candidates
 
 请为值得入表的候选给出唯一定名，输出 JSON：{"terms":[...]}。\
-""")
-
-NATURALIZE_SCREEN_SYSTEM = Template("""\
-你是中文书稿的母语审读编辑。你只看中文稿，手边没有任何外文原文。
-任务：找出「读起来像从外文直译、不像中文母语作者手笔」的段落——即翻译腔：生硬的欧化句式、别扭的搭配、冗余的对称结构、准被动堆叠、不自然的抽象名词化等。
-要求：只标你有把握的。正常的书面语、专业术语、合理的被动句、新闻体叙述不要标。宁缺勿滥。
-输出 JSON：{"issues":[{"index":段号,"quote":"该段中最别扭的原文短语(照抄，≤30字)","reason":"一句话说明哪里不自然"}]}；全部自然则 {"issues":[]}\
-""")
-
-NATURALIZE_SCREEN_USER = Template("""\
-【待审读中文段落】（共 $n 段，只看措辞是否自然，不涉及任何外文原文）
-$numbered
-
-请找出翻译腔段落，输出 JSON：{"issues":[...]}。\
-""")
-
-NATURALIZE_REWRITE_SYSTEM = Template("""\
-你是中文母语改写编辑。你只看中文文本，手边没有任何外文原文。给定一段读起来像翻译腔的中文，把它改写得更像母语作者的自然表达。
-要求：只改变表达方式（句式、搭配、语序、措辞），绝不改变信息内容；完整保留数字、专有名词、引号内容、括注
-（如「利亚(Liya)」中的英文括注）。
-仅输出 JSON：{"rewritten":"改写后的整段文本"}。\
-""")
-
-NATURALIZE_REWRITE_USER = Template("""\
-【原段落】
-$text
-
-【审读提示】
-别扭之处：$quote
-原因：$reason
-
-请改写该段，使其更自然，同时严格保留原有信息、专名、数字、引号与括注。输出 JSON：{"rewritten":"..."}。\
-""")
-
-NATURALIZE_PAIR_SYSTEM = Template("""\
-你是中文母语审读编辑。下面给出同一段落的两个版本 A 和 B（只看中文）。判断哪个版本更像中文母语作者的自然表达（搭配、句式、节奏）。输出 JSON：{"winner":"A|B|tie"}\
-""")
-
-NATURALIZE_PAIR_USER = Template("""\
-【版本 A】
-$a
-
-【版本 B】
-$b
-
-请判断哪个更自然，输出 JSON：{"winner":"A|B|tie"}。\
-""")
-
-NATURALIZE_FIDELITY_SYSTEM = Template("""\
-你是双语翻译审核员。给定外文源文、译文原版、译文改写版。改写只允许改变中文表达方式，不允许改变内容。
-逐项核对改写版相对原版是否发生了以下任何变化（以源文为准）：
-- 丢失或弱化了源文的信息：修饰语、限定词（如 any/every/only）、程度副词、语气强度、逻辑关系；
-- 增加了源文没有的信息或强调；
-- 改变了指称、因果、时间关系。
-只要有一项成立即不通过。纯表达方式变化（语序/搭配/句式）不算。
-输出 JSON：{"faithful":true|false}\
-""")
-
-NATURALIZE_FIDELITY_USER = Template("""\
-【源文】
-$source
-
-【译文原版】
-$orig
-
-【译文改写版】
-$rewritten
-
-请核对改写版是否忠实于源文（相对原版未丢失/增加/改变信息），输出 JSON：{"faithful":true|false}。\
 """)
 
 _DEFAULTS = {
@@ -441,8 +256,6 @@ _DEFAULTS = {
     "translator_user": TRANSLATOR_USER,
     "translator_fix_user": TRANSLATOR_FIX_USER,
     "translator_fix_multi_user": TRANSLATOR_FIX_MULTI_USER,
-    "reviewer_system": REVIEWER_SYSTEM,
-    "reviewer_user": REVIEWER_USER,
     "polisher_system": POLISHER_SYSTEM,
     "polisher_user": POLISHER_USER,
     "title_translator_system": TITLE_TRANSLATOR_SYSTEM,
@@ -451,26 +264,11 @@ _DEFAULTS = {
     "analyzer_user": ANALYZER_USER,
     "glossary_extractor_system": GLOSSARY_EXTRACTOR_SYSTEM,
     "glossary_extractor_user": GLOSSARY_EXTRACTOR_USER,
-    "backtranslate_system": BACKTRANSLATE_SYSTEM,
-    "backtranslate_user": BACKTRANSLATE_USER,
-    "consistency_system": CONSISTENCY_SYSTEM,
     "glossary_audit_system": GLOSSARY_AUDIT_SYSTEM,
-    "chapter_digest_system": CHAPTER_DIGEST_SYSTEM,
-    "chapter_digest_user": CHAPTER_DIGEST_USER,
-    "book_synopsis_system": BOOK_SYNOPSIS_SYSTEM,
-    "book_synopsis_user": BOOK_SYNOPSIS_USER,
     "term_miner_system": TERM_MINER_SYSTEM,
     "term_miner_user": TERM_MINER_USER,
     "cast_naming_system": CAST_NAMING_SYSTEM,
     "cast_naming_user": CAST_NAMING_USER,
-    "naturalize_screen_system": NATURALIZE_SCREEN_SYSTEM,
-    "naturalize_screen_user": NATURALIZE_SCREEN_USER,
-    "naturalize_rewrite_system": NATURALIZE_REWRITE_SYSTEM,
-    "naturalize_rewrite_user": NATURALIZE_REWRITE_USER,
-    "naturalize_pair_system": NATURALIZE_PAIR_SYSTEM,
-    "naturalize_pair_user": NATURALIZE_PAIR_USER,
-    "naturalize_fidelity_system": NATURALIZE_FIDELITY_SYSTEM,
-    "naturalize_fidelity_user": NATURALIZE_FIDELITY_USER,
 }
 
 

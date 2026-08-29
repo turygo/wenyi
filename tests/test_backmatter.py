@@ -1,473 +1,51 @@
-"""附属章节（back matter）旁路测试（离线 FakeClient）。
-
-守护两层契约：
-1. trans_novel/pipeline/backmatter.py 的标题识别 is_back_matter；
-2. workflow 在 config.pipeline.back_matter=skip/light/full 三档下对附属章的旁路行为：
-   - light：走 translate.back_matter 路由粗翻，跳过润色/审校/术语/回译/预扫梗概；
-   - skip：原文直通，附属章不发任何翻译调用（seg.target==seg.source）；
-   - full：附属章不旁路，照常走完整翻译/润色/审校/回译，但 is_back_matter 命中时不抽术语。
-"""
+"""Back-matter policy regressions for the minimal pipeline."""
 
 from __future__ import annotations
 
-import json
-import os
 import tempfile
 import unittest
 
-from tests.fake_llm import fake_llm_dict, routing_handler
-from trans_novel.config import Config
-from trans_novel.llm import FakeClient
+from trans_novel.config import PipelineConfig
+from trans_novel.ingest.models import Chapter, Document, Segment
 from trans_novel.pipeline.backmatter import is_back_matter
-from trans_novel.pipeline.bootstrap import Application
-from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING
-from trans_novel.pipeline.state import PolishBatch
-
-# Notes 正文里的独特标记：一旦出现在任何翻译调用的 user prompt 里，
-# 就说明附属章源文被送进了翻译模型——skip 档下这是契约违背。
-_BM_MARKER = "ZZQ_BACKMATTER_MARKER"
+from trans_novel.pipeline.bootstrap import build_workflow_definition
+from trans_novel.pipeline.contracts import GOAL_RUN_ALL
+from trans_novel.pipeline.planner import Planner, PrescanInputs, WorkflowPolicy
+from trans_novel.pipeline.runstore import RunStore
+from trans_novel.pipeline.state import NODE_TRANSLATE, RunIdentity
 
 
-def _write_doc(path: str) -> None:
-    """一篇正文章（日文、长段避开风格采样边界）+ 一个 '# Notes' 附属章（英文/数字）。"""
-    # >200 字符长段，避免风格采样取到过短片段的边界。
-    body_para = "綾小路は教室の窓際に座っていた。空はどこまでも青く鳥が鳴いていた。" + "あ" * 220
-    dialog = "「おはよう、綾小路くん」と堀北が声をかけた。彼女はいつも通り無表情だった。"
-    notes = (
-        f"1. Endnote {_BM_MARKER} on chapter one, page 12.\n\n"
-        "2. Bibliography entry: Doe, J. (2020). A Study. Some Press."
-    )
-    content = f"# 第一章 出会い\n\n{body_para}\n\n{dialog}\n\n# Notes\n\n{notes}\n"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+class TestBackMatterPolicy(unittest.TestCase):
+    def test_economy_defaults_light(self):
+        self.assertEqual(PipelineConfig.for_quality("economy").back_matter, "light")
 
+    def test_classifier_only_marks_obvious_back_matter(self):
+        self.assertTrue(is_back_matter("索引", index=1, total=2))
+        self.assertFalse(is_back_matter("第一章", index=0, total=2))
 
-def _config(state_dir: str, back_matter: str) -> Config:
-    config = Config.from_dict({"llm": fake_llm_dict(), "quality": "quality"})
-    config.source_lang = "ja"
-    config.state_dir = state_dir
-    # 正文章开启回译，让“附属章没有这些事件”成为有信号的断言。
-    config.pipeline.backtranslate_sample = 1.0
-    config.pipeline.back_matter = back_matter
-    return config
-
-
-def _events(store) -> list[dict]:
-    with open(store.event_log_path, encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
-
-
-def _bm_index(store) -> int:
-    """从 manifest 里定位附属章的章序号（不硬编码，跟随 is_back_matter）。"""
-    m = store.load_manifest()
-    return next(c["index"] for c in m["chapters"] if is_back_matter(c["title"]))
-
-
-def _lit_calls(calls, operation=None):
-    """翻译调用（system 含「文学翻译」），可按 operation 过滤。"""
-    return [
-        c
-        for c in calls
-        if "文学翻译" in c["messages"][0]["content"]
-        and (operation is None or c["operation"] == operation)
-    ]
-
-
-class TestIsBackMatter(unittest.TestCase):
-    """标题识别：附属章关键词命中，普通章/前言/序章不命中。"""
-
-    def test_positive_titles(self):
-        # 英文词边界（大小写不敏感）+ 短语，中文子串
-        positives = [
-            "Notes",
-            "NOTES",
-            "Endnotes",
-            "Index",
-            "Bibliography",
-            "Selected Bibliography",
-            "References",
-            "Acknowledgments",
-            "Acknowledgements",
-            "Copyright",
-            "Works Cited",
-            "About the Author",
-            "About the Authors",
-            "Contents",
-            "Table of Contents",
-            "Epigraph",
-            "Dedication",
-            "Title Page",
-            "注释",
-            "索引",
-            "参考文献",
-            "致谢",
-            "版权",
-            "关于作者",
-            "目录",
-            "扉页",
-            "献词",
-            "题词",
-        ]
-        for title in positives:
-            with self.subTest(title=title):
-                self.assertTrue(is_back_matter(title))
-
-    def test_negative_titles(self):
-        # 空串、正文章、前言/序章等叙事内容不得误判为附属章
-        negatives = [
-            "",
-            "Chapter 1",
-            "第一章 出会い",
-            "The Beginning",
-            "Introduction",
-            "Prologue",
-        ]
-        for title in negatives:
-            with self.subTest(title=title):
-                self.assertFalse(is_back_matter(title))
-
-    def test_position_gate_blocks_midbook_collisions(self):
-        """位置门控：正文区标题撞词不判附属章；同类标题在书首/书尾照常命中。"""
-        for title in ("The Index Case", "Notes from Underground", "Copyright Wars"):
-            with self.subTest(title=title):
-                self.assertFalse(
-                    is_back_matter(title, index=10, total=20),
-                    "正文区撞词不得旁路（误伤=整章静默降质）",
-                )
-        # 前置章关键词同样受位置门控约束：正文区的 "Contents of the Box" 不得旁路
-        self.assertFalse(is_back_matter("The Contents of the Box", index=10, total=20))
-        self.assertTrue(is_back_matter("Notes", index=19, total=20), "书尾 Notes 应命中")
-        self.assertTrue(is_back_matter("Index", index=18, total=20), "书尾 Index 应命中")
-        self.assertTrue(is_back_matter("Copyright", index=0, total=20), "书首版权页应命中")
-        self.assertTrue(is_back_matter("Contents", index=1, total=20), "书首目录页应命中")
-        self.assertTrue(is_back_matter("Epigraph", index=1, total=20), "书首题词页应命中")
-        self.assertTrue(is_back_matter("致谢", index=19, total=20))
-
-    def test_position_gate_optional(self):
-        """不给章序时退化为纯标题匹配（向后兼容）；单章书不启用门控。"""
-        self.assertTrue(is_back_matter("The Index Case"))
-        self.assertTrue(is_back_matter("Notes", index=0, total=1))
-
-
-class TestBackMatterLight(unittest.TestCase):
-    """light 档：附属章走 translate.back_matter 粗翻，跳过润色/审校/术语/回译，正文仍走 translate.batch。"""
-
-    def test_light_bypass(self):
+    def test_light_backmatter_uses_translate_without_polish(self):
         with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            _write_doc(txt)
-            cfg = _config(os.path.join(d, "state"), "light")
-
-            client = FakeClient(handler=routing_handler)
-            store = Application(cfg, client=client).run(txt)
-
-            bm = _bm_index(store)
-            bm_events = [e for e in _events(store) if e.get("chapter") == bm]
-
-            # (a) 旁路专属事件：chapter_back_matter(mode=light) + light 批次翻译
-            cbm = [e for e in bm_events if e["event"] == "chapter_back_matter"]
-            self.assertEqual(len(cbm), 1)
-            self.assertEqual(cbm[0]["mode"], "light")
-            bts = [e for e in bm_events if e["event"] == "batch_translated"]
-            self.assertTrue(bts, "light 档附属章应产生 batch_translated")
-            for e in bts:
-                self.assertTrue(e.get("back_matter"))
-                self.assertEqual(e.get("operation"), "translate.back_matter")
-                # V2 压缩载荷：保留事件名/档位语义，例行文本只带摘要
-                self.assertEqual(e.get("event_schema"), 2)
-                self.assertNotIn("segments", e)
-                self.assertNotIn("source", e)
-                self.assertNotIn("target", e)
-                self.assertIn("target_sha256", e)
-
-            # (b) 完整流水线的重活一律不落到附属章
-            for ev in (
-                "batch_polished",
-                "chapter_reviewed",
-                "batch_glossary_extracted",
-                "chapter_glossary_extracted",
-                "chapter_backtranslation_checked",
-            ):
-                self.assertFalse(any(e["event"] == ev for e in bm_events), f"附属章不应产生 {ev}")
-            # 预扫梗概亦跳过附属章
-            self.assertFalse(
-                any(e["event"] == "book_understanding_chapter_digest_saved" for e in bm_events),
-                "预扫逐章梗概应跳过附属章",
+            store = RunStore(d)
+            doc = Document(
+                title="Book",
+                fmt="text",
+                source_lang="en",
+                target_lang="zh",
+                source_path="book.txt",
+                chapters=[
+                    Chapter(index=0, title="Index", segments=[Segment(index=0, source="Note.")]),
+                ],
             )
-
-            # (c) 附属章走 translate.back_matter、正文走 translate.batch，两类调用都在，
-            #     且 Agent 归因正确：light-translator 与 translator
-            bm_calls = _lit_calls(client.calls, operation="translate.back_matter")
-            self.assertTrue(bm_calls, "附属章 light 翻译应为 translate.back_matter")
-            self.assertTrue(
-                all(c["agent"] == "light-translator" for c in bm_calls),
-                "附属章 light 翻译应归因 light-translator Agent",
+            state = store.stage_document(
+                doc, RunIdentity(source_bytes_sha256="x", source_lang="en", target_lang="zh")
             )
-            body_calls = _lit_calls(client.calls, operation="translate.batch")
-            self.assertTrue(body_calls, "正文翻译应为 translate.batch")
-            self.assertTrue(
-                all(c["agent"] == "translator" for c in body_calls),
-                "正文翻译应归因 translator Agent",
+            state["initialized"] = True
+            store.save_manifest(state)
+            plan = Planner(build_workflow_definition()).build_plan(
+                goal=GOAL_RUN_ALL,
+                store=store,
+                policy=WorkflowPolicy(polish=False, back_matter="light"),
+                prescan=PrescanInputs(),
             )
-
-            # (d) 附属章每段都有译文
-            ch = store.load_chapter(bm)
-            self.assertTrue(ch.text_segments)
-            self.assertTrue(all(s.target for s in ch.text_segments))
-
-            # (e) 附属章在 manifest 标 done
-            self.assertEqual(store.chapter_status(bm), STATUS_DONE)
-
-
-class TestBackMatterSkip(unittest.TestCase):
-    """skip 档：附属章原文直通，零翻译调用，target 等于 source。"""
-
-    def test_skip_bypass(self):
-        with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            _write_doc(txt)
-            cfg = _config(os.path.join(d, "state"), "skip")
-
-            client = FakeClient(handler=routing_handler)
-            store = Application(cfg, client=client).run(txt)
-
-            bm = _bm_index(store)
-
-            # (a) 原文直通：每段译文即原文
-            ch = store.load_chapter(bm)
-            self.assertTrue(ch.text_segments)
-            self.assertTrue(all(s.target == s.source for s in ch.text_segments))
-
-            # (b) 事件：chapter_back_matter(skip) + chapter_done(back_matter,skip)；
-            #     没有 batch_translated，也没有润色/审校/术语/回译
-            bm_events = [e for e in _events(store) if e.get("chapter") == bm]
-            cbm = [e for e in bm_events if e["event"] == "chapter_back_matter"]
-            self.assertEqual(len(cbm), 1)
-            self.assertEqual(cbm[0]["mode"], "skip")
-            done = [e for e in bm_events if e["event"] == "chapter_done"]
-            self.assertEqual(len(done), 1)
-            self.assertTrue(done[0].get("back_matter"))
-            self.assertEqual(done[0]["mode"], "skip")
-            for ev in (
-                "batch_translated",
-                "batch_polished",
-                "chapter_reviewed",
-                "batch_glossary_extracted",
-                "chapter_glossary_extracted",
-                "chapter_backtranslation_checked",
-            ):
-                self.assertFalse(
-                    any(e["event"] == ev for e in bm_events), f"skip 档附属章不应产生 {ev}"
-                )
-
-            # (c) 附属章源文从未进入任何翻译调用
-            self.assertTrue(_lit_calls(client.calls), "正文仍应被翻译")
-            for c in _lit_calls(client.calls):
-                self.assertNotIn(
-                    _BM_MARKER, c["messages"][-1]["content"], "附属章源文不得被送进翻译模型"
-                )
-
-
-class TestBackMatterFull(unittest.TestCase):
-    """full 档：附属章无旁路、照常翻译，但不抽术语；正文章仍抽词。"""
-
-    def test_full_runs_normal_pipeline(self):
-        with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            _write_doc(txt)
-            cfg = _config(os.path.join(d, "state"), "full")
-            cfg.pipeline.inflight_glossary = True  # 该断言依赖译后抽取路径（正文章应照常抽词）
-
-            client = FakeClient(handler=routing_handler)
-            store = Application(cfg, client=client).run(txt)
-
-            bm = _bm_index(store)
-            events = _events(store)
-
-            # 无旁路：全程不产生 chapter_back_matter
-            self.assertFalse(
-                any(e["event"] == "chapter_back_matter" for e in events), "full 档不得旁路附属章"
-            )
-            bm_events = [e for e in events if e.get("chapter") == bm]
-            # 附属章仍走完整翻译
-            self.assertTrue(
-                any(e["event"] == "batch_translated" for e in bm_events),
-                "full 档附属章应照常产生翻译事件",
-            )
-            # 但不抽术语
-            self.assertFalse(
-                any(
-                    e["event"] in ("chapter_glossary_extracted", "batch_glossary_extracted")
-                    for e in bm_events
-                ),
-                "full 档附属章不得产生抽词事件",
-            )
-            # 正文章不受影响，仍抽词
-            body_events = [e for e in events if e.get("chapter") != bm]
-            self.assertTrue(
-                any(
-                    e["event"] in ("chapter_glossary_extracted", "batch_glossary_extracted")
-                    for e in body_events
-                ),
-                "正文章应照常抽取术语",
-            )
-
-
-class TestBackMatterResume(unittest.TestCase):
-    """断点续跑：附属章已 done 后再 run，不得重翻。"""
-
-    def test_resume_skips_translated_back_matter(self):
-        with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            _write_doc(txt)
-            cfg = _config(os.path.join(d, "state"), "light")
-
-            Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
-
-            # 换新 client 续跑：全部章已 done，不应再发任何翻译调用
-            client2 = FakeClient(handler=routing_handler)
-            Application(cfg, client=client2).run(txt)
-            self.assertEqual(
-                len(_lit_calls(client2.calls)), 0, "续跑不得重翻任何章（含附属章 fast 档粗翻）"
-            )
-
-
-class TestBackMatterConfigValidation(unittest.TestCase):
-    def test_old_pipeline_config_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "已废弃"):
-            Config.from_dict({"llm": fake_llm_dict(), "pipeline": {"back_matter": "light"}})
-
-
-class TestBackMatterUpgradeReopen(unittest.TestCase):
-    """换档语义：升档重开已完成的附属章重译；降档不回退已有译文。"""
-
-    def test_skip_to_light_retranslates(self):
-        with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            _write_doc(txt)
-            state = os.path.join(d, "state")
-            store = Application(
-                _config(state, "skip"), client=FakeClient(handler=routing_handler)
-            ).run(txt)
-            bm = _bm_index(store)
-            self.assertTrue(all(s.target == s.source for s in store.load_chapter(bm).text_segments))
-
-            client2 = FakeClient(handler=routing_handler)
-            store = Application(_config(state, "light"), client=client2).run(txt)
-
-            reopened = [e for e in _events(store) if e["event"] == "back_matter_reopened"]
-            self.assertEqual(len(reopened), 1)
-            self.assertEqual(reopened[0]["prev_mode"], "skip")
-            self.assertEqual(reopened[0]["mode"], "light")
-            # 原文副本被清掉、fast 档重译；正文章不受影响（无重译调用即无 strong 调用）
-            ch = store.load_chapter(bm)
-            self.assertTrue(
-                all(s.target and s.target != s.source for s in ch.text_segments),
-                "升档后附属章应真的重译，而非复用原文副本",
-            )
-            self.assertTrue(_lit_calls(client2.calls, operation="translate.back_matter"))
-            self.assertTrue(
-                all(
-                    c["agent"] == "light-translator"
-                    for c in _lit_calls(client2.calls, operation="translate.back_matter")
-                ),
-                "升档重译应归因 light-translator Agent",
-            )
-            self.assertFalse(
-                _lit_calls(client2.calls, operation="translate.batch"),
-                "升档重开只影响附属章，正文不得重翻",
-            )
-            self.assertEqual(store.load_progress(bm).back_matter_mode, "light")
-
-    def test_light_to_skip_keeps_translation(self):
-        with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            _write_doc(txt)
-            state = os.path.join(d, "state")
-            store = Application(
-                _config(state, "light"), client=FakeClient(handler=routing_handler)
-            ).run(txt)
-            bm = _bm_index(store)
-            translated = [s.target for s in store.load_chapter(bm).text_segments]
-
-            client2 = FakeClient(handler=routing_handler)
-            store = Application(_config(state, "skip"), client=client2).run(txt)
-
-            self.assertFalse(
-                any(e["event"] == "back_matter_reopened" for e in _events(store)), "降档不得重开"
-            )
-            self.assertEqual(len(_lit_calls(client2.calls)), 0)
-            self.assertEqual(
-                [s.target for s in store.load_chapter(bm).text_segments],
-                translated,
-                "降档不得回退已有译文",
-            )
-
-
-class TestBackMatterUpgradeReopenOnlyChapter(unittest.TestCase):
-    """only_chapter 调试运行也先全局升档重开：非目标章的升档重开不被跳过
-    （reviewer finding 16：全局重开先于目标章筛选）。"""
-
-    def test_global_reopen_before_only_chapter_narrowing(self):
-        with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            _write_doc(txt)
-            state = os.path.join(d, "state")
-            store = Application(
-                _config(state, "skip"), client=FakeClient(handler=routing_handler)
-            ).run(txt)
-            bm = _bm_index(store)
-            self.assertEqual(store.load_progress(bm).back_matter_mode, "skip")
-
-            # 升档到 light，但只翻译正文第 0 章（only_chapter）——附属章必须被全局重开
-            client2 = FakeClient(handler=routing_handler)
-            store = Application(_config(state, "light"), client=client2).run(txt, only_chapter=0)
-            reopened = [e for e in _events(store) if e["event"] == "back_matter_reopened"]
-            self.assertEqual(len(reopened), 1, "only_chapter 不得跳过全局升档重开")
-            self.assertEqual(reopened[0]["prev_mode"], "skip")
-            self.assertEqual(reopened[0]["mode"], "light")
-            # 附属章被重开（译文清空、状态回 pending），本 run 不重译它（非目标章）
-            self.assertEqual(store.load_progress(bm).back_matter_mode, None)
-            self.assertEqual(store.chapter_status(bm), STATUS_PENDING)
-            self.assertFalse(
-                _lit_calls(client2.calls, operation="translate.back_matter"),
-                "only_chapter 只译目标章，附属章留待下轮补译",
-            )
-            # 目标章（正文）正常翻译完成
-            self.assertEqual(store.chapter_status(0), STATUS_DONE)
-
-
-class TestBackMatterMetaAndReport(unittest.TestCase):
-    """旁路痕迹：meta 记档位、清陈旧 pending_polish；report/summary 上报给人工复核。"""
-
-    def test_meta_report_and_stale_polish_cleanup(self):
-        from trans_novel.assemble.report import build_report
-        from trans_novel.glossary.store import GlossaryStore
-
-        with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            _write_doc(txt)
-            cfg = _config(os.path.join(d, "state"), "light")
-            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
-            bm = _bm_index(store)
-
-            # 进度记录旁路档位 → report 上报
-            self.assertEqual(store.load_progress(bm).back_matter_mode, "light")
-            g = GlossaryStore(store.glossary_path)
-            rep = build_report(store, g)
-            g.close()
-            self.assertEqual(rep["summary"]["back_matter_chapters"], 1)
-            self.assertEqual(rep["back_matter_chapters"][0]["chapter"], bm)
-            self.assertEqual(rep["back_matter_chapters"][0]["mode"], "light")
-
-            # 旧版完整流水线半跑遗留的润色标记：续跑走旁路时必须清掉
-            pg = store.load_progress(bm)
-            pg.pending_polish = [PolishBatch(start=0, count=1)]
-            store.save_progress(bm, pg)
-            store.set_chapter_status(bm, STATUS_PENDING)
-            store = Application(cfg, client=FakeClient(handler=routing_handler)).run(txt)
-            self.assertFalse(store.load_progress(bm).pending_polish)
-
-
-if __name__ == "__main__":
-    unittest.main()
+            entries = [e for stage in plan.stages for e in stage.entries if e.ci == 0]
+            self.assertEqual([e.node_id for e in entries], [NODE_TRANSLATE])

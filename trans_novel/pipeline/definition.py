@@ -14,7 +14,6 @@ from trans_novel.pipeline.contracts import FailurePolicy, Scope
 from trans_novel.pipeline.state import SCOPE_BOOK, SCOPE_CHAPTER
 
 # 聚合边：book 作用域节点依赖 chapter 作用域节点时必须显式声明（fan-in）。
-# 例如 book_synopsis 聚合所有正文章 digest；titles 聚合全部 translate 完成。
 
 
 class WorkflowDefinitionError(ValueError):

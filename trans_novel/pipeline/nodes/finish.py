@@ -1,10 +1,9 @@
-"""书级收尾节点：titles / consistency_qa / report / assemble。
+"""书级收尾节点：标题、确定性 QA、报告与装配。
 
-- titles：章标题与目录项翻译（书名保持原文；TOC entry 驱动同步；正文 heading 复用），
-  幂等（已全部译过则跳过）；provider 失败原样冒泡（必需节点，不得伪装成功空结果）；
-- consistency_qa：跨章一致性扫描（尽力而为输出：空 issue 列表 = 成功）；
-- report：QA 报告（含一致性扫描结果，若本轮已跑）；
-- assemble：正式回填（writer 内部先过就绪门禁，不完整状态拒绝产出）。
+- titles：章标题与目录项翻译，幂等且严格校验模型输出；
+- deterministic_qa：对所有已完成章节执行确定性 lint，不调用模型；
+- report：QA 报告；
+- assemble：正式回填，就绪门禁拒绝不完整状态。
 """
 
 from __future__ import annotations
@@ -19,18 +18,17 @@ from trans_novel.ingest.models import KIND_HEADING
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
     assemble_input_fingerprint,
-    consistency_input_fingerprint,
-    fast_model_profile,
+    deterministic_qa_input_fingerprint,
     glossary_semantic_fingerprint_part,
     primary_model_profile,
     report_input_fingerprint,
     titles_input_fingerprint,
 )
+from trans_novel.pipeline.lint import lint_targets
 from trans_novel.pipeline.nodes.common import terms_matching_text
-from trans_novel.pipeline.runstore import stable_digest
 from trans_novel.pipeline.state import (
     NODE_ASSEMBLE,
-    NODE_CONSISTENCY_QA,
+    NODE_DETERMINISTIC_QA,
     NODE_REPORT,
     NODE_TITLES,
     SCOPE_BOOK,
@@ -66,7 +64,6 @@ class TitlesNode:
         tgt = self.tgt
         m = store.load_manifest()
         chapters = m.get("chapters", [])
-        glossary = self.glossary
 
         def _flat(s: object) -> str:
             return " ".join(str(s or "").split())
@@ -139,26 +136,16 @@ class TitlesNode:
 
         if request.progress:
             request.progress(0, 0, "翻译章节标题…")
-        analysis = store.load_analysis() or {}
-        book_synopsis = analysis.get("book_synopsis") or "（无）"
-        system = prompts.render(
-            "title_translator_system",
-            src=src,
-            tgt=tgt,
-            n=len(unique_titles),
-        )
-        # 标题裁剪始终生效，不受 glossary_scope 配置影响（标题文本很短，全量术语表是噪声）。
-        title_terms = terms_matching_text(glossary.all_terms(), "\n".join(unique_titles))
+        system = prompts.render("title_translator_system", src=src, tgt=tgt, n=len(unique_titles))
+        title_terms = terms_matching_text(self.glossary.all_terms(), "\n".join(unique_titles))
         user = prompts.render(
             "title_translator_user",
             src=src,
             tgt=tgt,
-            book_synopsis=book_synopsis,
             glossary=prompts.render_glossary(title_terms),
             n=len(unique_titles),
             numbered_titles=prompts.numbered(unique_titles),
         )
-        # provider 失败必须冒泡（必需节点落失败态、计划中止），不伪装成功空结果。
         data = self.client.complete_json(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             stage="title_translate",
@@ -214,60 +201,57 @@ class TitlesNode:
             titles.extend(
                 str(e.get("title", "")) for e in raw_toc if isinstance(e, dict) and e.get("title")
             )
-        book_synopsis = (store.load_analysis() or {}).get("book_synopsis") or ""
         return titles_input_fingerprint(
-            titles, self.src, self.tgt, book_synopsis, primary_model_profile(self.config)
+            titles, self.src, self.tgt, primary_model_profile(self.config)
         )
 
 
-class ConsistencyQANode:
-    """跨章一致性扫描；成功空 issue 列表 = succeeded(findings_count=0)，绝非失败。"""
-
-    node_id = NODE_CONSISTENCY_QA
+class DeterministicQANode:
+    node_id = NODE_DETERMINISTIC_QA
     scope = SCOPE_BOOK
 
-    def __init__(self, *, checker, glossary: GlossaryStore, config: Config):
-        self.checker = checker
+    def __init__(self, *, glossary: GlossaryStore):
         self.glossary = glossary
-        self.config = config
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
-        if request.progress:
-            request.progress(0, 0, "检查全书一致性…")
-        issues = self.checker.check(store, self.glossary, strict=True)
-        store.log_event(
-            "consistency_qa_finished",
-            issue_count=len(issues),
-            issues_sha256=stable_digest(issues),
-        )
-        # 持久化到节点 output：崩溃在 QA 之后、report 之前，或跨 tools qa → tools
-        # report 调用，report 仍能取到本轮发现的问题（runner 内 artifacts 只活一轮）。
-        store.record_node_output(NODE_CONSISTENCY_QA, {"issues": issues})
-        fp = consistency_input_fingerprint(
-            self._targets_text(store),
-            glossary_semantic_fingerprint_part(self.glossary.all_terms()),
-            fast_model_profile(self.config),
+        terms = [term for term in self.glossary.all_terms() if getattr(term, "locked", 0)]
+        issues: list[dict] = []
+        target_texts: list[str] = []
+        state = store.load_state()
+        for chapter_meta in state.chapters:
+            if store.load_progress(chapter_meta.index).status != "done":
+                continue
+            chapter = store.load_chapter(chapter_meta.index)
+            target_texts.append(
+                "\n".join(segment.target or "" for segment in chapter.text_segments)
+            )
+            segments = chapter.text_segments
+            found = lint_targets(
+                [segment.source for segment in segments],
+                [segment.target or "" for segment in segments],
+                locked_terms=terms,
+                src_lang=state.identity.source_lang or "en",
+            )
+            for item in found:
+                segment = segments[item.index]
+                issues.append(
+                    {
+                        "chapter": chapter_meta.index,
+                        "index": segment.index,
+                        "type": item.type,
+                        "detail": item.detail,
+                    }
+                )
+        store.record_node_output(NODE_DETERMINISTIC_QA, {"issues": issues})
+        fp = deterministic_qa_input_fingerprint(
+            "\n".join(target_texts),
+            glossary_semantic_fingerprint_part(terms),
         )
         return NodeOutcome(findings_count=len(issues), artifacts={"issues": issues}, fingerprint=fp)
 
-    @staticmethod
-    def _targets_text(store) -> str:
-        from trans_novel.pipeline.runstore import STATUS_DONE
-
-        parts: list[str] = []
-        for c in store.load_state().chapters:
-            if store.load_progress(c.index).status != STATUS_DONE:
-                continue
-            parts.append(
-                "\n".join(s.target or "" for s in store.load_chapter(c.index).text_segments)
-            )
-        return "\n".join(parts)
-
 
 class ReportNode:
-    """QA 报告：汇总术语冲突/漏译/审校/回译疑点，合并本轮一致性扫描结果。"""
-
     node_id = NODE_REPORT
     scope = SCOPE_BOOK
 
@@ -276,41 +260,27 @@ class ReportNode:
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
-        if request.progress:
-            request.progress(0, 0, "生成报告…")
         report = build_report(store, self.glossary)
-        # 本轮 artifacts 优先；跨调用/崩溃后续跑回退到持久化的 QA 产物（不丢问题）。
-        consistency_issues = (request.artifacts.get("consistency_qa") or {}).get("issues")
-        if consistency_issues is None:
-            qa_node = store.load_state().nodes.get(NODE_CONSISTENCY_QA)
-            persisted = (qa_node.output or {}).get("issues") if qa_node else None
-            consistency_issues = persisted if persisted is not None else []
-        report["consistency_issues"] = consistency_issues
+        deterministic = (request.artifacts.get("deterministic_qa") or {}).get("issues")
+        if deterministic is None:
+            node = store.load_state().nodes.get(NODE_DETERMINISTIC_QA)
+            deterministic = (node.output or {}).get("issues") if node else []
+        report["deterministic_issues"] = deterministic or []
         store.save_report(report)
         store.log_event("report_saved", path=store.report_path)
-        fp = self._fingerprint(store, consistency_issues)
-        return NodeOutcome(artifacts={"report": report}, fingerprint=fp)
+        return NodeOutcome(
+            artifacts={"report": report}, fingerprint=self._fingerprint(store, deterministic)
+        )
 
-    def _fingerprint(self, store, consistency_issues: list | None = None) -> str:
+    def _fingerprint(self, store, deterministic: list | None = None) -> str:
         state = store.load_state()
-        review_issues: list[dict] = []
-        bt_issues: list[dict] = []
-        titles: list[str] = []
-        for c in state.chapters:
-            pg = store.load_progress(c.index)
-            review_issues.extend(pg.review_issue_dicts())
-            bt_issues.extend(pg.backtranslation_issue_dicts())
-            if c.title:
-                titles.append(c.title)
-        if consistency_issues is None:
-            qa_node = state.nodes.get(NODE_CONSISTENCY_QA)
-            consistency_issues = (qa_node.output or {}).get("issues") if qa_node else None
+        lint_issues = [issue for ci in state.progress.values() for issue in ci.lint_issues]
+        titles = [c.title for c in state.chapters if c.title]
+        if deterministic is None:
+            node = state.nodes.get(NODE_DETERMINISTIC_QA)
+            deterministic = (node.output or {}).get("issues") if node else []
         return report_input_fingerprint(
-            review_issues,
-            bt_issues,
-            consistency_issues or [],
-            [t.source for t in self.glossary.all_terms()],
-            titles,
+            lint_issues, deterministic or [], [t.source for t in self.glossary.all_terms()], titles
         )
 
 
@@ -380,4 +350,4 @@ class AssembleNode:
         return "\n".join(parts)
 
 
-__all__ = ["AssembleNode", "ConsistencyQANode", "ReportNode", "TitlesNode"]
+__all__ = ["AssembleNode", "DeterministicQANode", "ReportNode", "TitlesNode"]

@@ -1,14 +1,7 @@
 """正式回填的单一权威就绪门禁：运行身份核验 + 完整度检查。
 
 run_all 与 tools assemble 的每条正式产出路径都必须先过这里。不完整状态直接
-拒绝，绝不静默回退成“部分原文 + 部分译文”的混合产物；也不存在显式的
-“不完整预览”CLI 契约，因此本轮不提供预览旁路。
-
-除章节/目标/标记检查外，本门禁还要求“适用的必需上游节点全部 succeeded”：
-- required 节点缺失/pending/running/failed 一律拒绝（不是只看 failed）；
-- 可选节点（polish/naturalize/review/consistency_qa/book_synopsis）允许
-  策略性 skipped；尽力而为节点（mine_terms/name_terms）失败/缺失不阻塞；
-- 正在执行的 assemble 节点自身不计入。
+拒绝，绝不静默回退成“部分原文 + 部分译文”的混合产物。
 """
 
 from __future__ import annotations
@@ -17,10 +10,10 @@ from trans_novel.pipeline.runstore import STATUS_DONE, RunStore
 from trans_novel.pipeline.state import (
     BEST_EFFORT_NODES,
     NODE_ANALYZE,
-    NODE_BACKTRANSLATE,
-    NODE_DIGEST,
+    NODE_DETERMINISTIC_QA,
     NODE_FAILED_PERMANENT,
     NODE_FAILED_RETRYABLE,
+    NODE_POLISH,
     NODE_PREPARE,
     NODE_REPORT,
     NODE_SKIPPED,
@@ -43,11 +36,8 @@ def _chapter_node_base(key: str) -> str:
 def assemble_readiness_problems(store: RunStore) -> list[str]:
     """返回阻止正式回填的全部问题（空列表 = 可以回填）。
 
-    覆盖：未完成章节、必需 target 为空、待润色批次、异步审校待办、
-    适用的必需上游节点未成功（含缺失/pending/running/failed），以及失败态
-    必需节点。尽力而为节点（如 mine_terms 定名失败）允许继续，不阻塞产出；
-    可选节点（polish/naturalize/review/consistency/book_synopsis）的策略性
-    skipped 视为已决策，不阻塞。
+    覆盖未完成章节、空 target、待润色批次，以及适用的必需上游节点。
+    尽力而为的术语节点失败/缺失不阻塞产出；禁用润色被视为已决策。
     """
     state = store.load_state()
     problems: list[str] = []
@@ -59,8 +49,6 @@ def assemble_readiness_problems(store: RunStore) -> list[str]:
             continue
         if pg.pending_polish:
             problems.append(f"第{idx.index}章润色待完成")
-        if pg.review_pending:
-            problems.append(f"第{idx.index}章异步审校待完成")
 
     # 必需 target 非空：done 章的正文段都必须有译文（旁路章 target=source 同样非空）。
     for idx in state.chapters:
@@ -73,11 +61,8 @@ def assemble_readiness_problems(store: RunStore) -> list[str]:
                 problems.append(f"第{idx.index}章存在未翻译段落")
                 break
 
-    # 适用的必需上游节点完成门（不只看失败态）。核心必需链（prepare/analyze/
-    # translate/digest）只接受 succeeded——skipped 说明策略/状态异常，必须拒绝；
-    # backtranslate 允许 skipped（V1 迁移合成/legacy 允许，不阻断底层 writer 单测）。
-    # titles/report 仅在正式链路已参与（状态存在）时要求 succeeded：direct writer
-    # 或未请求的动作根不适用，不重新阻断底层 writer 单测；失败仍经失败节点检查拒绝。
+    # 核心必需链（prepare/analyze/translate）只接受 succeeded；
+    # titles/report 仅在正式链路已参与（状态存在）时要求 succeeded。
     def check_book(node_id: str, *, allow_skipped: bool = False) -> None:
         node = state.nodes.get(node_id)
         if node is None:
@@ -87,37 +72,21 @@ def assemble_readiness_problems(store: RunStore) -> list[str]:
         else:
             problems.append(f"节点 {node_id} 状态为 {node.status}（必需上游未完成）")
 
-    check_book(NODE_PREPARE)
-    check_book(NODE_ANALYZE)
-
-    for node_id in (NODE_TITLES, NODE_REPORT):
-        node = state.nodes.get(node_id)
-        if node is None:
-            problems.append(f"节点 {node_id} 未执行（必需上游未完成）")
-        elif node.status != NODE_SUCCEEDED:
-            problems.append(f"节点 {node_id} 状态为 {node.status}（必需上游未完成）")
-
-    def check_chapter_required(node_id: str, ci: int, *, allow_skipped: bool = False) -> None:
-        key = chapter_node_key(node_id, ci)
-        node = state.nodes.get(key)
-        if node is None:
-            problems.append(f"节点 {key} 未执行（必需上游未完成）")
-        elif node.status == NODE_SUCCEEDED or (allow_skipped and node.status == NODE_SKIPPED):
-            return
-        else:
-            problems.append(f"节点 {key} 状态为 {node.status}（必需上游未完成）")
+    for node_id in (NODE_PREPARE, NODE_ANALYZE, NODE_TITLES, NODE_DETERMINISTIC_QA, NODE_REPORT):
+        check_book(node_id)
 
     for idx in state.chapters:
         pg = state.progress.get(idx.index)
         if pg is None or pg.status != STATUS_DONE:
             continue
-        ci = idx.index
-        bypass = pg.back_matter_mode in ("skip", "light")
-        check_chapter_required(NODE_TRANSLATE, ci)
-        if pg.source_digest:
-            check_chapter_required(NODE_DIGEST, ci)
-        if not bypass:
-            check_chapter_required(NODE_BACKTRANSLATE, ci, allow_skipped=True)
+        key = chapter_node_key(NODE_TRANSLATE, idx.index)
+        node = state.nodes.get(key)
+        if node is None or node.status != NODE_SUCCEEDED:
+            problems.append(f"节点 {key} 未完成")
+        if pg.back_matter_mode is None:
+            polish = state.nodes.get(chapter_node_key(NODE_POLISH, idx.index))
+            if polish is None or polish.status not in (NODE_SUCCEEDED, NODE_SKIPPED):
+                problems.append(f"节点 {chapter_node_key(NODE_POLISH, idx.index)} 未完成")
 
     for key, node in sorted(state.nodes.items()):
         if node.status in (NODE_FAILED_RETRYABLE, NODE_FAILED_PERMANENT):

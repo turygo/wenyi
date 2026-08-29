@@ -40,7 +40,7 @@ class StrictModel(BaseModel):
         if (
             isinstance(value, str)
             and not value.strip()
-            and info.field_name not in {"style", "book_synopsis", "gender", "reading", "note"}
+            and info.field_name not in {"style", "gender", "reading", "note"}
         ):
             raise ValueError("string must not be empty")
         return value
@@ -232,6 +232,7 @@ class Candidate(StrictModel):
     )
     primary_model: _NONEMPTY
     editor_model: _NONEMPTY
+    pipeline_variant: Literal["minimal", "polish"]
 
     @field_validator("candidate_id")
     @classmethod
@@ -242,7 +243,7 @@ class Candidate(StrictModel):
 
 
 class CandidateSpec(StrictModel):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     benchmark_id: _NONEMPTY
     provider: Literal[
         "deepseek",
@@ -283,15 +284,15 @@ class CandidateSpec(StrictModel):
         if not self.fast_model.endswith(":off"):
             raise ValueError("fast_model must explicitly disable thinking with ':off'")
         thinking_suffixes = tuple(f":{level}" for level in ("off", "low", "medium", "high", "max"))
-        seen_pairs: set[tuple[str, str]] = set()
+        seen_pairs: set[tuple[str, str, str]] = set()
         for candidate in self.candidates:
             for field_name in ("primary_model", "editor_model"):
                 value = getattr(candidate, field_name)
                 if not value.endswith(thinking_suffixes):
                     raise ValueError(f"{field_name} must explicitly select a thinking level")
-            pair = (candidate.primary_model, candidate.editor_model)
+            pair = (candidate.primary_model, candidate.editor_model, candidate.pipeline_variant)
             if pair in seen_pairs:
-                raise ValueError("duplicate primary/editor pair")
+                raise ValueError("duplicate model pair and pipeline_variant")
             seen_pairs.add(pair)
         return self
 

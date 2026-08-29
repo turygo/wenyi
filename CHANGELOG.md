@@ -3,6 +3,10 @@
 本项目的所有重要变更都记录在此文件中，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ## [Unreleased]
+### Changed
+
+- 完成最简生产流水线切换：保留确定性 lint/QA 与可选润色，移除旧的模型审校链。
+- benchmark schema 升级，并支持对 minimal/polish 克隆进行消融；两条分支共享不可变的初译结果，分别记录目标哈希和用量增量。
 
 ### Fixed
 

@@ -109,7 +109,7 @@ class TestAgentRouter(unittest.TestCase):
         self.assertEqual(ref.reasoning_effort, "high")
 
     def test_fast_agents_use_fast_model_without_reasoning(self):
-        for agent in ("reviewer", "preparer", "light-translator"):
+        for agent in ("preparer", "light-translator"):
             with self.subTest(agent=agent):
                 transport = StubTransport()
                 router = _router(transport)
@@ -155,7 +155,9 @@ class TestAgentRouter(unittest.TestCase):
         router = AgentRouter(cfg, transports={"opencode-go": transport})
         router.complete([{"role": "user", "content": "x"}], agent="translator", operation="op")
         router.complete([{"role": "user", "content": "x"}], agent="editor", operation="op")
-        router.complete([{"role": "user", "content": "x"}], agent="reviewer", operation="op")
+        router.complete(
+            [{"role": "user", "content": "x"}], agent="light-translator", operation="op"
+        )
         primary, editor, fast = (call["model_ref"] for call in transport.calls)
         self.assertEqual(primary.model, "deepseek-v4-flash")
         self.assertFalse(primary.reasoning_enabled)
@@ -205,8 +207,8 @@ class TestAgentRouter(unittest.TestCase):
         self.assertEqual(
             router.complete_json(
                 [{"role": "user", "content": "x"}],
-                agent="reviewer",
-                operation="review.chapter",
+                agent="editor",
+                operation="polish.batch",
             ),
             {"ok": True},
         )
@@ -235,7 +237,7 @@ class TestAgentRouter(unittest.TestCase):
                 require_thinking_disabled=True,
             ),
         )
-        for agent in ("translator", "editor", "reviewer"):
+        for agent in ("translator", "editor", "preparer"):
             with self.subTest(agent=agent):
                 router.complete([{"role": "user", "content": "x"}], agent=agent, operation="op")
         self.assertEqual(len(transport.calls), 3)

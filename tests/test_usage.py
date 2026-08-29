@@ -259,10 +259,10 @@ class TestUsageDimensions(unittest.TestCase):
                 provider="deepseek",
                 model_ref=ModelRef("deepseek", "m1"),
                 agent="editor",
-                operation="naturalize.rewrite",
+                operation="polish.segment",
                 usage=usage,
             )
-        slot = tracker.summary()["by_operation"]["naturalize.rewrite"]
+        slot = tracker.summary()["by_operation"]["polish.segment"]
         self.assertEqual(slot["reasoning_tokens"], 11)
         self.assertEqual(slot["total_tokens"], 60)  # reasoning 不叠加进 total
         self.assertNotIn("reasoning_tokens", tracker.summary()["totals"])
@@ -325,14 +325,14 @@ class TestThinkingFlagWiring(unittest.TestCase):
         t.complete(
             msgs,
             ModelRef("deepseek", "deepseek-v4-flash", reasoning_enabled=True),
-            agent="reviewer",
-            operation="review.chapter",
+            agent="editor",
+            operation="polish.batch",
         )
         t.complete(
             msgs,
             ModelRef("deepseek", "deepseek-v4-flash", reasoning_enabled=False),
             agent="preparer",
-            operation="prescan.digest",
+            operation="terms.mine",
         )
         think, fast = t._client.chat.completions.calls
         self.assertEqual(think["model"], "deepseek-v4-flash")
@@ -408,12 +408,12 @@ class TestEmptyResponseAccounting(unittest.TestCase):
                     [{"role": "user", "content": "x"}],
                     ModelRef("deepseek", "m1"),
                     agent="preparer",
-                    operation="prescan.digest",
+                    operation="terms.mine",
                 ),
                 "visible",
             )
         self.assertEqual(len(t._client.chat.completions.calls), 2)
-        self.assertEqual(tracker.summary()["by_operation"]["prescan.digest"]["failed_attempts"], 1)
+        self.assertEqual(tracker.summary()["by_operation"]["terms.mine"]["failed_attempts"], 1)
 
     def test_exhaustion_raises_and_keeps_consumed_usage(self):
         tracker = UsageTracker()
@@ -725,14 +725,12 @@ class TestOperationTelemetry(unittest.TestCase):
 
         c = FakeClient(handler=_boom)
         with self.assertRaises(ValueError):
-            c.complete(
-                [{"role": "user", "content": "x"}], agent="reviewer", operation="review.chapter"
-            )
-        op = c.usage_summary()["by_operation"]["review.chapter"]
+            c.complete([{"role": "user", "content": "x"}], agent="editor", operation="polish.batch")
+        op = c.usage_summary()["by_operation"]["polish.batch"]
         self.assertEqual(op["attempts"], 1)
         self.assertEqual(op["failed_attempts"], 1)
         self.assertEqual(op["logical_calls"], 1)
-        self.assertEqual(c.usage_summary()["by_agent"]["reviewer"]["failed_attempts"], 1)
+        self.assertEqual(c.usage_summary()["by_agent"]["editor"]["failed_attempts"], 1)
 
     def test_outcome_and_fallback_counters(self):
         c = FakeClient()
@@ -758,17 +756,17 @@ class TestOperationTelemetry(unittest.TestCase):
 
         def _one(i):
             c.complete(
-                [{"role": "user", "content": str(i)}], agent="reviewer", operation="naturalize.pair"
+                [{"role": "user", "content": str(i)}], agent="editor", operation="polish.segment"
             )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             list(pool.map(_one, range(n)))
 
         self.assertEqual(len(c.calls), n)
-        op = c.usage_summary()["by_operation"]["naturalize.pair"]
+        op = c.usage_summary()["by_operation"]["polish.segment"]
         self.assertEqual(op["logical_calls"], n)
         self.assertEqual(op["attempts"], n)
-        self.assertEqual(c.usage_summary()["by_agent"]["reviewer"]["logical_calls"], n)
+        self.assertEqual(c.usage_summary()["by_agent"]["editor"]["logical_calls"], n)
 
 
 class TestUsageThreadSafety(unittest.TestCase):

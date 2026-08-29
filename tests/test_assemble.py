@@ -93,7 +93,6 @@ def _config(state_dir: str):
     config = Config.from_dict({"llm": fake_llm_dict(), "quality": "quality"})
     config.source_lang = "ja"
     config.state_dir = state_dir
-    config.pipeline.backtranslate_sample = 0
     return config
 
 
@@ -106,14 +105,11 @@ def _run(input_path, state_dir):
 
 
 def _stamp_formal_prereqs(store):
-    """直接 writer 单测的正式前置：GOAL_TRANSLATE 不跑 report/consistency，
-    正式 assemble goal 会执行它们——测试按“正式链路已完成”stamp titles/report。
-    backtranslate 抽样策略（sample=0）的 skipped 是 policy-authorized，无需 stamp。
-    """
-    from trans_novel.pipeline.state import NodeState
+    """Direct writer tests stamp title, deterministic QA, and report prerequisites."""
+    from trans_novel.pipeline.state import NODE_DETERMINISTIC_QA, NodeState
 
     state = store.load_state()
-    for node_id in ("titles", "report"):
+    for node_id in ("titles", NODE_DETERMINISTIC_QA, "report"):
         state.nodes.setdefault(node_id, NodeState(node_id=node_id, status="succeeded"))
     store.save_state(state)
     return store
@@ -535,41 +531,7 @@ class TestReport(unittest.TestCase):
             self.assertGreaterEqual(s["terms"], 1)
 
 
-class TestConsistency(unittest.TestCase):
-    def test_consistency_reports_issues(self):
-        from trans_novel.agents.consistency import ConsistencyChecker
-
-        with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            write_sample_txt(txt)
-            store, cfg = _run(txt, os.path.join(d, "state"))
-
-            def handler(messages, agent, operation, json_mode):
-                if "一致性审查员" in messages[0]["content"]:
-                    return json.dumps(
-                        {
-                            "issues": [
-                                {"type": "terminology", "detail": "X 译法不一致", "where": "第1章"}
-                            ]
-                        },
-                        ensure_ascii=False,
-                    )
-                return "{}"
-
-            g = GlossaryStore(store.glossary_path)
-            client = FakeClient(handler=handler)
-            checker = ConsistencyChecker(client, cfg)
-            issues = checker.check(store, g)
-            g.close()
-            self.assertEqual(len(issues), 1)
-            self.assertEqual(issues[0]["type"], "terminology")
-            self.assertEqual(client.calls[0]["agent"], "reviewer")
-            self.assertEqual(client.calls[0]["operation"], "consistency.check")
-
-
 class TestAssembleEpubPhysicalResourceGrouping(unittest.TestCase):
-    """schema 3：物理资源按 href 聚合渲染，覆盖“一文件多逻辑章”和“一章跨多文件”。"""
-
     def test_two_logical_chapters_sharing_one_physical_file_both_translated(self):
         with tempfile.TemporaryDirectory() as d:
             ep = os.path.join(d, "nested.epub")

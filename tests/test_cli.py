@@ -153,7 +153,6 @@ class TestCliConfig(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(captured["polish"])
-        self.assertIsNone(captured["run_all"]["do_qa"])
 
     def test_translate_flags_override_config_switches(self):
         cfg = Config.from_dict(
@@ -201,7 +200,6 @@ class TestCliConfig(unittest.TestCase):
                     "--quality",
                     "economy",
                     "--polish",
-                    "--qa",
                     "--source-language",
                     "en",
                     "--back-matter",
@@ -213,7 +211,6 @@ class TestCliConfig(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(captured["polish"])
-        self.assertTrue(captured["run_all"]["do_qa"])
         self.assertEqual(captured["quality"], "economy")
         self.assertEqual(captured["source_language"], "en")
         self.assertEqual(captured["back_matter"], "full")
@@ -233,17 +230,6 @@ class TestCliConfig(unittest.TestCase):
             @staticmethod
             def load_manifest():
                 return {"chapters": [{"index": 0}, {"index": 1}]}
-
-            @staticmethod
-            def load_analysis():
-                return {"book_synopsis": "overview"}
-
-            @staticmethod
-            def load_progress(index):
-                class PreparedProgress:
-                    source_digest = f"digest-{index}"
-
-                return PreparedProgress()
 
         class FakeOrchestrator:
             def __init__(self, loaded_config):
@@ -267,7 +253,8 @@ class TestCliConfig(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(captured["input_path"], "input.txt")
         self.assertIn("准备完成", result.output)
-        self.assertIn("预扫 2/2 章", result.output)
+        self.assertIn("解析 2 章", result.output)
+        self.assertNotIn("预扫 2/2 章", result.output)
 
     def test_translate_prepare_rejects_chapter(self):
         config = Config.from_dict(
@@ -330,7 +317,6 @@ class TestCliConfig(unittest.TestCase):
         self.assertEqual(captured["input_path"], "input.txt")
         self.assertEqual(captured["run_all"]["out_format"], "txt")
         self.assertIsNone(captured["run_all"]["out_path"])
-        self.assertIsNone(captured["run_all"]["do_qa"])
         self.assertTrue(captured["polish"])
 
     def test_translate_missing_input_exits_before_loading_config(self):
@@ -343,32 +329,6 @@ class TestCliConfig(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 1, result.output)
         self.assertIn("输入文件不存在", result.output)
-
-    def test_tools_naturalize_rejects_non_integer_chapters(self):
-        with tempfile.TemporaryDirectory() as d:
-            src = os.path.join(d, "novel.txt")
-            state_dir = os.path.join(d, "state")
-            with open(src, "w", encoding="utf-8") as f:
-                f.write("第一段。\n\n第二段。\n")
-            cfg = Config.from_dict({"llm": fake_llm_dict()})
-            cfg.source_lang = "ja"
-            cfg.state_dir = state_dir
-            run_dir = os.path.join(state_dir, "novel")
-            os.makedirs(run_dir, exist_ok=True)
-            with open(os.path.join(run_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"title": "novel", "chapters": []}')
-
-            with patch("trans_novel.cli._load_config", return_value=cfg):
-                result = CliRunner().invoke(
-                    app, ["tools", "naturalize", src, "--chapters", "1,x,3"]
-                )
-
-            self.assertNotEqual(result.exit_code, 0, result.output)
-            self.assertFalse(
-                isinstance(result.exception, ValueError),
-                "非法 --chapters 不应以未捕获的 ValueError 泄漏",
-            )
-            self.assertIn("--chapters", plain(result.output))
 
     def test_translate_rejects_unknown_output_format_before_loading_config(self):
         with (
@@ -438,6 +398,10 @@ class TestWindowsConsoleEncoding(unittest.TestCase):
 
         self.assertEqual(out.calls, [{"encoding": "utf-8", "errors": "replace"}])
         self.assertEqual(err.calls, [{"encoding": "utf-8", "errors": "replace"}])
+
+    def test_removed_qa_option_is_unknown(self):
+        result = CliRunner().invoke(app, ["translate", "input.txt", "--qa"])
+        self.assertEqual(result.exit_code, 2)
 
 
 if __name__ == "__main__":

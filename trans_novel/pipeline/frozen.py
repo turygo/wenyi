@@ -22,27 +22,15 @@ class FrozenBookPreparation:
     analysis: Mapping[str, Any]
     style: str
     style_brief: str
-    book_synopsis: str
-    chapter_digests: Mapping[str, str]
-    source_digests: tuple[tuple[int, str], ...]
     glossary: tuple[GlossaryTerm, ...]
     node_fingerprints: Mapping[str, str]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "analysis", MappingProxyType(dict(self.analysis)))
-        object.__setattr__(self, "chapter_digests", MappingProxyType(dict(self.chapter_digests)))
         object.__setattr__(
             self, "node_fingerprints", MappingProxyType(dict(self.node_fingerprints))
         )
-        object.__setattr__(self, "source_digests", tuple(self.source_digests))
         object.__setattr__(self, "glossary", tuple(self.glossary))
-
-    def chapter_digest(self, chapter_index: int, *, original_index: int | None = None) -> str:
-        resolved = chapter_index if original_index is None else original_index
-        try:
-            return self.chapter_digests[str(resolved)]
-        except KeyError as error:
-            raise ValueError(f"frozen preparation has no chapter digest: {resolved}") from error
 
 
 @runtime_checkable

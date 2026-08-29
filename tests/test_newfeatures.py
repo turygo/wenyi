@@ -6,7 +6,6 @@ import json
 import os
 import tempfile
 import unittest
-import zipfile
 
 from tests.fake_llm import fake_llm_dict, routing_handler
 from tests.sample_data import write_sample_txt
@@ -15,7 +14,7 @@ from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
 from trans_novel.ingest.models import Chapter, Segment
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.bootstrap import Application
-from trans_novel.pipeline.runstore import RunStore, stable_digest
+from trans_novel.pipeline.runstore import RunStore
 from trans_novel.pipeline.state import ChapterIndex, ChapterProgress, RunIdentity, RunState
 from trans_novel.postprocess.punct import normalize_heading_numbering, normalize_zh
 
@@ -45,7 +44,7 @@ class TestModelLanguageDetection(unittest.TestCase):
             store = Application(cfg, client=client).prepare(txt)
             # 解析后的源语言以运行状态（manifest/identity）为权威，不再改写全局 config
             self.assertEqual(store.load_manifest()["source_lang"], "ru")
-            self.assertEqual(captured["agent"], "reviewer")
+            self.assertEqual(captured["agent"], "preparer")
             self.assertEqual(captured["operation"], "language.detect")
 
     def test_auto_detection_failure_requires_user_source(self):
@@ -375,67 +374,6 @@ class TestGlossaryAudit(unittest.TestCase):
                 self.assertIn("after", e)
                 self.assertIn("term_source", e)
                 self.assertIn("term_target", e)
-
-
-class TestRunAll(unittest.TestCase):
-    def test_continuous_pipeline_outputs_epub(self):
-        with tempfile.TemporaryDirectory() as d:
-            txt = os.path.join(d, "novel.txt")
-            write_sample_txt(txt)
-            state = os.path.join(d, "state")
-            cfg = Config.from_dict({"llm": fake_llm_dict(), "quality": "quality"})
-            cfg.state_dir = state
-            cfg.pipeline.backtranslate_sample = 0
-            seen = []
-            orch = Application(cfg, client=FakeClient(handler=routing_handler))
-            result = orch.run_all(
-                txt,
-                progress=lambda done, total, label: seen.append((done, total)),
-                out_format="epub",
-            )
-            self.assertTrue(result["output"].endswith(".epub"))
-            self.assertTrue(zipfile.is_zipfile(result["output"]))
-            # 进度回调被触发，且最终 done==total
-            self.assertTrue(seen)
-            self.assertEqual(seen[-1][0], seen[-1][1])
-            # auto 通过模型检测把源语言定为 ja（以运行状态为权威，不改写全局 config）
-            self.assertEqual(result["store"].load_manifest()["source_lang"], "ja")
-            # 报告含一致性字段；术语审计不在连续流程中自动运行
-            self.assertIn("consistency_issues", result["report"])
-            with open(result["store"].event_log_path, encoding="utf-8") as f:
-                events = [json.loads(line) for line in f if line.strip()]
-            event_names = [e["event"] for e in events]
-            self.assertIn("run_initialized", event_names)
-            self.assertIn("batch_translated", event_names)
-            self.assertIn("report_saved", event_names)
-            self.assertIn("assembled", event_names)
-            self.assertNotIn("glossary_audit_finished", event_names)
-            # V2 事件：例行翻译不带任何明文，只带稳定摘要；所有事件行均带 schema 标记
-            self.assertTrue(all(e.get("event_schema") == 2 for e in events))
-            translated = [e for e in events if e["event"] == "batch_translated"]
-            self.assertTrue(translated)
-            for e in translated:
-                self.assertNotIn("segments", e)
-                self.assertNotIn("source", e)
-                self.assertNotIn("target", e)
-                self.assertIn("target_sha256", e)
-            # 润色批摘要必须对应当前落盘的 target（同一稳定载荷契约：稳定段号 + target）
-            polished = [e for e in events if e["event"] == "batch_polished"]
-            self.assertTrue(polished)
-            for e in polished:
-                ch = result["store"].load_chapter(e["chapter"])
-                segs = ch.text_segments[e["start_index"] : e["start_index"] + e["count"]]
-                self.assertEqual(
-                    e["target_sha256"],
-                    stable_digest([{"index": s.index, "target": s.target} for s in segs]),
-                )
-            # 一致性 QA 事件只带计数与 issue 摘要，不重复整份 issue 数组
-            qa = [e for e in events if e["event"] == "consistency_qa_finished"]
-            self.assertTrue(qa)
-            for e in qa:
-                self.assertNotIn("issues", e)
-                self.assertIn("issue_count", e)
-                self.assertIn("issues_sha256", e)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from typing import Any
 from trans_novel.benchmark.corpus import canonical_json, sha256_bytes
 from trans_novel.benchmark.pricing import CostQuote, load_price_snapshot, quote_usage
 from trans_novel.benchmark.review import ReviewArtifactError, validate_review
+from trans_novel.benchmark.runner import RUN_SCHEMA_VERSION
 from trans_novel.llm.usage import merge_usage_summaries
 
 __all__ = ["ReportError", "build_report", "validate_report"]
@@ -258,7 +259,10 @@ def build_report(
     run_manifest_path = run / "run.json"
     run_manifest = _read_json(run_manifest_path)
     run_state = _read_json(run / "run_state.json")
-    if run_manifest.get("schema_version") != 2 or run_state.get("status") != "completed":
+    if (
+        run_manifest.get("schema_version") != RUN_SCHEMA_VERSION
+        or run_state.get("status") != "completed"
+    ):
         raise ReportError("report requires a completed production benchmark")
     run_sha = sha256_bytes(run_manifest_path.read_bytes())
     review_manifest = _read_json(review / "review.json")

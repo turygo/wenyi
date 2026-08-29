@@ -54,17 +54,15 @@ class TestCastNamerConcurrency(unittest.TestCase):
             time.sleep((self.N - i) * 0.02)  # SURF0 最后完成
             return self._one_term_per_group(messages, agent, operation, json_mode)
 
-        out = self._namer(handler).name_terms(
-            _candidates(self.N), "brief", ["d1"], concurrency=self.N
-        )
+        out = self._namer(handler).name_terms(_candidates(self.N), "brief", concurrency=self.N)
         self.assertEqual([t.target for t in out], [f"译{i}" for i in range(self.N)])
 
     def test_concurrent_identical_to_serial(self):
         serial = self._namer(self._one_term_per_group).name_terms(
-            _candidates(self.N), "brief", ["d1"], concurrency=1
+            _candidates(self.N), "brief", concurrency=1
         )
         parallel = self._namer(self._one_term_per_group).name_terms(
-            _candidates(self.N), "brief", ["d1"], concurrency=self.N
+            _candidates(self.N), "brief", concurrency=self.N
         )
 
         def key(ts):
@@ -77,7 +75,6 @@ class TestCastNamerConcurrency(unittest.TestCase):
         self._namer(self._one_term_per_group).name_terms(
             _candidates(self.N),
             "brief",
-            ["d1"],
             concurrency=2,
             on_progress=lambda i, n: calls.append((i, n)),
         )
@@ -94,12 +91,12 @@ class TestCastNamerConcurrency(unittest.TestCase):
             return self._one_term_per_group(messages, agent, operation, json_mode)
 
         with self.assertRaises(ValueError):
-            self._namer(handler).name_terms(_candidates(self.N), "brief", ["d1"], concurrency=2)
+            self._namer(handler).name_terms(_candidates(self.N), "brief", concurrency=2)
 
     def test_empty_candidates_short_circuits(self):
         calls: list[tuple[int, int]] = []
         out = self._namer(self._one_term_per_group).name_terms(
-            [], "brief", ["d1"], concurrency=4, on_progress=lambda i, n: calls.append((i, n))
+            [], "brief", concurrency=4, on_progress=lambda i, n: calls.append((i, n))
         )
         self.assertEqual(out, [])
         self.assertEqual(calls, [])  # 无候选：不回调、不开线程池

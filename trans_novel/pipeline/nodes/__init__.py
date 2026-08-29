@@ -1,14 +1,11 @@
-"""Workflow 具体节点实现包。
+"""内置工作流节点说明：
 
-按独立输入/检查点/失败语义划分（不是每个 Agent 一个节点）：
-- prepare.py:   prepare（解析/语言/身份/暂存）与 analyze（风格分析+术语播种）；
-- prescan.py:   digest / mine_terms / name_terms / book_synopsis（全书预扫）;
-- translate.py: translate（批翻译+lint+修复+检查点）与 polish（章末排干润色）;
-- quality.py:   naturalize / review / backtranslate（章级质量环节）;
-- finish.py:    titles / consistency_qa / report / assemble（书级收尾）。
+- prepare.py：解析、语言检测、暂存与风格分析；
+- prescan.py：术语挖掘与全书定名；
+- translate.py：批翻译、确定性 lint、检查点与可选润色；
+- finish.py：标题、确定性 QA、报告与装配。
 
-组合根（bootstrap.py）是唯一 import/构造这些具体节点的生产位置；runner
-只通过契约 NodeFactory 拿到节点实例。
+组合根（bootstrap.py）是唯一 import/构造这些具体节点的生产位置。
 """
 
 from __future__ import annotations
@@ -17,12 +14,8 @@ import threading
 from typing import Any
 
 from trans_novel.agents.analyzer import Analyzer
-from trans_novel.agents.consistency import ConsistencyChecker
 from trans_novel.agents.namer import CastNamer
-from trans_novel.agents.naturalizer import Naturalizer
 from trans_novel.agents.polisher import Polisher
-from trans_novel.agents.reviewer import BackTranslator, Reviewer
-from trans_novel.agents.synopsis import Synopsizer
 from trans_novel.agents.translator import Translator
 from trans_novel.config import Config
 from trans_novel.glossary.extractor import GlossaryExtractor
@@ -34,7 +27,7 @@ __all__ = ["AgentBundle", "RunShared"]
 
 
 class AgentBundle:
-    """一组按已解析语言对构造的 Agent（语言一经解析即不可变）。"""
+    """一组按已解析语言对构造的生产 Agent。"""
 
     def __init__(self, *, client: LLMClient, config: Config, src: str, tgt: str):
         self.client = client
@@ -42,29 +35,12 @@ class AgentBundle:
         self.src = src
         self.tgt = tgt
         self.analyzer = Analyzer(client, config)
-        self.synopsizer = Synopsizer(client, config)
         self.translator = Translator(client, config)
-        self.reviewer = Reviewer(client, config)
-        self.backtrans = BackTranslator(client, config)
         self.polisher = Polisher(client, config)
         self.extractor = GlossaryExtractor(client, config)
         self.namer = CastNamer(client, config)
-        self.naturalizer = Naturalizer(client, config)
-        self.consistency = ConsistencyChecker(client, config)
-        for agent in (
-            self.analyzer,
-            self.synopsizer,
-            self.translator,
-            self.reviewer,
-            self.backtrans,
-            self.polisher,
-            self.extractor,
-            self.namer,
-            self.naturalizer,
-            self.consistency,
-        ):
-            agent.src = src
-            agent.tgt = tgt
+        for agent in (self.analyzer, self.translator, self.polisher, self.extractor, self.namer):
+            agent.src, agent.tgt = src, tgt
 
 
 class RunShared:

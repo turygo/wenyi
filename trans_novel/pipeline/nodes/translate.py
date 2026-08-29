@@ -99,28 +99,19 @@ class TranslateNode:
 
         if bm_mode:
             return self._translate_back_matter(bm_mode, ci, chapter, text_segs, store, request)
-        # full/正文路径：附属章照常翻译，但不抽术语（skip/light 已在上方旁路返回）。
         bm = is_back_matter(chapter.title, index=ci, total=n_ch)
+        # full/正文路径：附属章照常翻译，但不抽术语（skip/light 已在上方旁路返回）。
         chapter_progress.back_matter_mode = None
-        chapter_digest = chapter_progress.source_digest
         glossary = self.glossary
         context = self.rolling_context
         style = self.style_brief
-        book_synopsis = (store.load_analysis() or {}).get("book_synopsis", "")
 
         batches = resume_batches(text_segs, config.segment.max_chars_per_batch)
         label = f"第{ci}章 {chapter.title}"
         if request.progress:
             request.progress(request.shared.segments_done, request.shared.segments_total, label)
         term_snapshot = chapter_term_snapshot(glossary, text_segs, config)
-
-        # 保留历史审校项（不含 lint/length 层）；lint 项单独累积，章末并入。
-        review_issues: list[dict] = [
-            i
-            for i in chapter_progress.review_issue_dicts()
-            if i.get("stage") not in ("length", "lint")
-        ]
-        lint_review_issues: list[dict] = []
+        lint_issues: list[dict] = []
         polish_on = config.pipeline.polish
         seg_base = 0  # 当前批首段的章内段号
         for b in batches:
@@ -143,7 +134,7 @@ class TranslateNode:
                     locked_terms=locked,
                     src_lang=self.translator.src,
                 ):
-                    lint_review_issues.append(
+                    lint_issues.append(
                         {
                             "chapter": ci,
                             "index": seg_base + it.index,
@@ -173,9 +164,7 @@ class TranslateNode:
                 continue
 
             ctx_text = context.render(config.pipeline.rolling_context_segments)
-            raw_transports = self._process_batch(
-                b, term_snapshot, ctx_text, style, book_synopsis, chapter_digest
-            )
+            raw_transports = self._process_batch(b, term_snapshot, ctx_text, style)
             raw_targets: list[str] = []
             for segment, transport in zip(b, raw_transports, strict=True):
                 assign_segment_translation(segment, transport)
@@ -184,36 +173,36 @@ class TranslateNode:
             # 确定性 lint（零 LLM）：flag 段带审校意见定向重译，每段最多一轮。
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
             lint_refixed_entries: list[dict] = []
-            lint_issues = lint.lint_targets(
+            batch_issues = lint.lint_targets(
                 [s.source for s in b],
                 raw_targets,
                 locked_terms=locked,
                 src_lang=self.translator.src,
             )
-            if lint_issues:
+            if batch_issues:
                 lint_issues_payload = [
                     {"index": seg_base + it.index, "type": it.type, "detail": it.detail}
-                    for it in lint_issues
+                    for it in batch_issues
                 ]
                 type_counts: dict[str, int] = {}
-                for it in lint_issues:
+                for it in batch_issues:
                     type_counts[it.type] = type_counts.get(it.type, 0) + 1
                 store.log_event(
                     "batch_linted",
                     chapter=ci,
                     start_index=seg_base,
-                    issue_count=len(lint_issues),
+                    issue_count=len(batch_issues),
                     by_type={t: type_counts[t] for t in sorted(type_counts)},
                     issues_sha256=stable_digest(lint_issues_payload),
                 )
                 by_idx: dict[int, list] = {}
-                for it in lint_issues:
+                for it in batch_issues:
                     by_idx.setdefault(it.index, []).append(it)
                 actionable_idx: list[int] = []
                 for idx, seg_issues in sorted(by_idx.items()):
                     if not any(it.type in lint.ACTIONABLE_TYPES for it in seg_issues):
                         for it in seg_issues:
-                            lint_review_issues.append(
+                            lint_issues.append(
                                 {
                                     "chapter": ci,
                                     "index": seg_base + idx,
@@ -278,7 +267,7 @@ class TranslateNode:
                         )
                         remaining = seg_issues
                     for it in remaining:
-                        lint_review_issues.append(
+                        lint_issues.append(
                             {
                                 "chapter": ci,
                                 "index": seg_base + idx,
@@ -300,8 +289,6 @@ class TranslateNode:
                         operation="translate.lint_fix",
                         glossary_terms=term_snapshot,
                         style=style,
-                        book_synopsis=book_synopsis,
-                        chapter_digest=chapter_digest,
                         segments=b,
                     )
                     if len(merged) == len(actionable_idx):
@@ -326,8 +313,6 @@ class TranslateNode:
                             style=style,
                             context_before=before,
                             context_after=after,
-                            book_synopsis=book_synopsis,
-                            chapter_digest=chapter_digest,
                             segment=seg,
                         )
                         _apply_fix_result(idx, new_t)
@@ -359,14 +344,14 @@ class TranslateNode:
                 context.add_targets(final_targets)
                 event_targets = final_targets
                 punctuation_normalized = config.punctuation_normalize
-            chapter_progress.set_review_issue_dicts(review_issues)
+            chapter_progress.lint_issues = lint_issues
             if polish_on:
                 checkpoint.begin_translate(store, ci, batch_start, len(b))
             store.save_chapter(chapter)
             store.save_progress(ci, chapter_progress)
             checkpoint.clear(store)
 
-            # 增量持久化：本批译文（+ pending_polish / review_issues 标记）立即落盘。
+            # 增量持久化：本批译文（+ pending_polish / lint_issues 标记）立即落盘。
             # 崩溃一致性（polish_on 时）：译文在章节文件、标记在 manifest，两次独立
             # 已采纳的 lint 修复，避免事件先于持久化结果出现。
             event_payload = {
@@ -432,13 +417,9 @@ class TranslateNode:
             self.extractor.extract_and_store(glossary, src_text, tgt_text, ci)
             store.log_event("chapter_glossary_extracted", chapter=ci)
 
-        # 审校项：review 开启时由 review 节点替换（只保留 lint 项）；关闭时保留历史非 lint 项。
         # 正文已按翻译批次增量保存完整（续跑时直接复用译文的批次不会修改正文），
         # 这里只保存进度和上下文，不再冗余写入整章。
-        if config.pipeline.review:
-            chapter_progress.set_review_issue_dicts(lint_review_issues)
-        else:
-            chapter_progress.set_review_issue_dicts(review_issues + lint_review_issues)
+        chapter_progress.lint_issues = lint_issues
         store.save_progress(ci, chapter_progress)
         store.save_context(context.to_dict())
         fp = self._fingerprint(
@@ -470,12 +451,10 @@ class TranslateNode:
                 punctuation_normalize=self.config.punctuation_normalize,
                 model=fast_model_profile(self.config),
             )
-        book_synopsis = (store.load_analysis() or {}).get("book_synopsis", "") or ""
         return translate_input_fingerprint(
             source_text,
             self.translator.src,
             self.translator.tgt,
-            book_synopsis=book_synopsis,
             style_brief=self.style_brief,
             punctuation_normalize=self.config.punctuation_normalize,
             honorific_strategy=self.config.honorific_strategy,
@@ -491,8 +470,6 @@ class TranslateNode:
         return None
 
     def _reopen_if_upgraded(self, ci: int, chapter, store, n_ch: int) -> None:
-        """附属章档位升档时重开已完成的附属章（旁路档 target 非空，会被批级续跑
-        当成已译整批复用——不清掉就升档形同虚设）。降档不回退。"""
         progress = store.load_progress(ci)
         prev = progress.back_matter_mode
         if prev not in _BM_RANK:
@@ -500,22 +477,14 @@ class TranslateNode:
         cur = self._back_matter_mode(chapter.title, ci, n_ch) or "full"
         if _BM_RANK[cur] <= _BM_RANK[prev]:
             return
-        for s in chapter.segments:
-            reset_segment_translation(s)
+        for segment in chapter.segments:
+            reset_segment_translation(segment)
         progress.back_matter_mode = None
         progress.pending_polish = []
-        progress.set_review_issue_dicts([])
-        progress.set_backtranslation_issue_dicts([])
+        progress.lint_issues = []
         store.save_progress(ci, progress)
         store.save_chapter(chapter)
         store.set_chapter_status(ci, STATUS_PENDING)
-        store.log_event(
-            "back_matter_reopened",
-            chapter=ci,
-            title=chapter.title,
-            prev_mode=prev,
-            mode=cur,
-        )
 
     def _translate_back_matter(self, mode, ci, chapter, text_segs, store, request) -> NodeOutcome:
         """附属章旁路：skip=原文直通；light=快速粗翻（走 translate.back_matter）。
@@ -548,13 +517,11 @@ class TranslateNode:
                     continue
                 raw = self.translator.translate_batch(
                     [s.source for s in b],
+                    agent="light-translator",
+                    operation="translate.back_matter",
                     glossary_terms=[],
                     style="",
                     context="",
-                    book_synopsis="",
-                    chapter_digest="",
-                    agent="light-translator",
-                    operation="translate.back_matter",
                     segments=b,
                 )
                 for s, t in zip(b, raw, strict=True):
@@ -585,13 +552,10 @@ class TranslateNode:
                     request.progress(
                         request.shared.segments_done, request.shared.segments_total, label
                     )
-        # 记录旁路档位 + 清陈旧润色/审校标记；旁路章由本节点收尾。
-        # skip 模式直接写入译文，light 模式逐批保存译文，这里不再做冗余的整章写盘。
         bm_progress = store.load_progress(ci)
         bm_progress.back_matter_mode = mode
         bm_progress.pending_polish = []
-        bm_progress.set_review_issue_dicts([])
-        bm_progress.set_backtranslation_issue_dicts([])
+        bm_progress.lint_issues = []
         store.save_progress(ci, bm_progress)
         store.set_chapter_status(ci, STATUS_DONE)
         store.log_event(
@@ -599,8 +563,6 @@ class TranslateNode:
             chapter=ci,
             title=chapter.title,
             segment_count=len(text_segs),
-            review_issue_count=0,
-            backtranslation_issue_count=0,
             back_matter=True,
             mode=mode,
         )
@@ -609,24 +571,13 @@ class TranslateNode:
         )
         return NodeOutcome(chapter_finalized=True, fingerprint=fp)
 
-    def _process_batch(
-        self,
-        batch,
-        terms,
-        ctx_text: str,
-        style: str,
-        book_synopsis: str = "",
-        chapter_digest: str = "",
-    ) -> list:
-        sources = [s.source for s in batch]
+    def _process_batch(self, batch, terms, ctx_text: str, style: str) -> list:
         return self.translator.translate_batch(
-            sources,
+            [s.source for s in batch],
             agent="translator",
             glossary_terms=terms,
             style=style,
             context=ctx_text,
-            book_synopsis=book_synopsis,
-            chapter_digest=chapter_digest,
             segments=batch,
         )
 
@@ -875,6 +826,7 @@ class PolishNode:
                     ]
                 ),
             )
+        return None
 
 
 __all__ = ["PolishNode", "TranslateNode"]

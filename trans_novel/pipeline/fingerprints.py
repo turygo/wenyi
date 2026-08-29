@@ -1,16 +1,7 @@
 """节点输入指纹的纯函数公式：planner 对账与节点记录共用同一套。
 
-指纹只覆盖影响该节点的稳定输入（config/持久化产物），刻意排除两类输入：
-- 术语表全文/上下文等翻译期持续增长的输入（防中途失效，见 book_synopsis 先例）；
-- 与节点无关的质量档位与批次预算（改 polish/review/naturalize/consistency_qa/
-  backtranslate_sample/max_chars_per_batch 不得清空已确认译文，见
-  ``translate_input_fingerprint`` 的输入集合）。
-
-LLM 节点的模型指纹按其实际使用的角色组合计算（`provider` + `primary`/`editor`/`fast`）：
-换模型续跑必须失效对应节点及其后代，不能复用旧模型产物。翻译 target 是权威
-续跑标记：translate 指纹包含 source/语言/全书概览/风格/标点/敬称/术语作用域/
-模型配置，但不含批次预算与质量档位；附属章旁路不消费概览/风格，指纹相应收缩
-（升档重开由 planner 的 back_matter 重开扫描负责，不靠指纹）。
+指纹只覆盖影响节点的稳定输入，排除翻译期持续增长的术语上下文及批次预算。
+换模型续跑必须失效对应节点及其后代；附属章旁路指纹仅覆盖源文、语言与标点。
 """
 
 from __future__ import annotations
@@ -123,28 +114,31 @@ def analyze_input_fingerprint(sample: str, model: str = "") -> str:
     return input_fingerprint(sample, model)
 
 
+def name_terms_input_fingerprint(
+    mine_fingerprint: str,
+    style_brief: str,
+    concurrency: int,
+    model: str = "",
+) -> str:
+    """定名节点：稳定的术语挖掘输入 + 风格/并发/模型配置。"""
+    return input_fingerprint(mine_fingerprint, style_brief, concurrency, model)
+
+
 def translate_input_fingerprint(
     source_text: str,
     src_lang: str,
     tgt_lang: str,
     *,
-    book_synopsis: str,
     style_brief: str,
     punctuation_normalize: bool,
     honorific_strategy: str,
     glossary_scope: str,
     model: str = "",
 ) -> str:
-    """正文翻译：源文 + 语言 + 全书概览 + 风格 + 模型 + 直接改变译文/提示的配置。
-
-    不含：批次预算（max_chars_per_batch）、质量档位（polish/review/naturalize/
-    backtranslate_sample/consistency_qa）——这些变化不得清空已确认译文。
-    """
     return input_fingerprint(
         source_text,
         normalize_lang_code(src_lang),
         normalize_lang_code(tgt_lang),
-        book_synopsis,
         style_brief,
         punctuation_normalize,
         honorific_strategy,
@@ -189,53 +183,25 @@ def polish_input_fingerprint(
     )
 
 
-def naturalize_input_fingerprint(
-    source_text: str, *, punctuation_normalize: bool, model: str = ""
-) -> str:
-    return input_fingerprint(source_text, punctuation_normalize, model)
-
-
-def review_input_fingerprint(
-    source_text: str,
-    *,
-    autofix_severe: bool,
-    review_output_retries: int,
-    model: str = "",
-) -> str:
-    return input_fingerprint(source_text, autofix_severe, review_output_retries, model)
-
-
-def backtranslate_input_fingerprint(
-    source_text: str, *, backtranslate_sample: float, model: str = ""
-) -> str:
-    return input_fingerprint(source_text, backtranslate_sample, model)
-
-
 def titles_input_fingerprint(
-    titles: list[str], src_lang: str, tgt_lang: str, book_synopsis: str, model: str = ""
+    titles: list[str], src_lang: str, tgt_lang: str, model: str = ""
 ) -> str:
     return input_fingerprint(
-        titles, normalize_lang_code(src_lang), normalize_lang_code(tgt_lang), book_synopsis, model
+        titles, normalize_lang_code(src_lang), normalize_lang_code(tgt_lang), model
     )
 
 
-def consistency_input_fingerprint(
-    targets_text: str, glossary_semantic: str, model: str = ""
-) -> str:
-    """跨章一致性：全书译文摘要 + 术语语义 + 模型路由（两者变化都需重扫）。"""
-    return input_fingerprint(targets_text, glossary_semantic, model)
+def deterministic_qa_input_fingerprint(targets_text: str, glossary_semantic: str) -> str:
+    return input_fingerprint(targets_text, glossary_semantic)
 
 
 def report_input_fingerprint(
-    review_issues: list[dict],
-    backtranslation_issues: list[dict],
-    consistency_issues: list[dict],
+    lint_issues: list[dict],
+    deterministic_issues: list[dict],
     glossary_terms: list[str],
     titles: list[str],
 ) -> str:
-    return input_fingerprint(
-        review_issues, backtranslation_issues, consistency_issues, glossary_terms, titles
-    )
+    return input_fingerprint(lint_issues, deterministic_issues, glossary_terms, titles)
 
 
 def assemble_input_fingerprint(

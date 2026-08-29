@@ -23,13 +23,17 @@ def _write_run(root: Path) -> tuple[Path, dict[str, object]]:
     run = root / "run"
     run.mkdir()
     run_manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_mode": "full",
         "benchmark_id": "review-test",
         "book_spec_sha256": "a" * 64,
         "candidate_spec_sha256": "b" * 64,
         "generation": {},
-        "quality": "quality",
+        "pipeline_variants": {
+            "candidate-a": "minimal",
+            "candidate-b": "minimal",
+            "candidate-c": "polish",
+        },
         "book_ids": [f"formal-{index:02d}" for index in range(1, 7)],
         "replicates": 1,
     }
@@ -62,10 +66,8 @@ def _write_run(root: Path) -> tuple[Path, dict[str, object]]:
                         "kind": "paragraph",
                         "source": source,
                         "target": f"{labels[candidate]}译文{book_index}-{segment_index}",
-                        "review_findings": (
-                            [{"index": segment_index}] if segment_index == 4 else []
-                        ),
-                        "backtranslation_findings": [],
+                        "lint_findings": [{"index": segment_index}] if segment_index == 4 else [],
+                        "deterministic_findings": [],
                         "source_sha256": sha256_bytes(source.encode()),
                         "target_sha256": "c" * 64,
                     }
@@ -76,6 +78,11 @@ def _write_run(root: Path) -> tuple[Path, dict[str, object]]:
             artifacts.append(
                 {
                     "candidate_id": candidate,
+                    "pipeline_variant": {
+                        "candidate-a": "minimal",
+                        "candidate-b": "minimal",
+                        "candidate-c": "polish",
+                    }[candidate],
                     "book_id": book_id,
                     "replicate": 1,
                     "segments_path": str(relative),

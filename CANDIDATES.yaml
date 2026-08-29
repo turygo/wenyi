@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 benchmark_id: wenyi-benchmark
 provider: opencode-go
 fast_model: mimo-v2.5:off
@@ -6,12 +6,27 @@ temperature: 0.1
 seed: null
 replicates: 1
 candidates:
-  - candidate_id: deepseek-v4-flash
+  - candidate_id: deepseek-v4-flash-minimal
     primary_model: deepseek-v4-flash:off
     editor_model: deepseek-v4-flash:off
-  - candidate_id: muse-spark-1.2-contributor
+    pipeline_variant: minimal
+  - candidate_id: deepseek-v4-flash-polish
+    primary_model: deepseek-v4-flash:off
+    editor_model: deepseek-v4-flash:off
+    pipeline_variant: polish
+  - candidate_id: muse-spark-1.2-contributor-minimal
     primary_model: muse-spark-1.2-contributor:low
     editor_model: muse-spark-1.2-contributor:low
-  - candidate_id: mimo-v2.5
+    pipeline_variant: minimal
+  - candidate_id: muse-spark-1.2-contributor-polish
+    primary_model: muse-spark-1.2-contributor:low
+    editor_model: muse-spark-1.2-contributor:low
+    pipeline_variant: polish
+  - candidate_id: mimo-v2.5-minimal
     primary_model: mimo-v2.5:off
     editor_model: mimo-v2.5:off
+    pipeline_variant: minimal
+  - candidate_id: mimo-v2.5-polish
+    primary_model: mimo-v2.5:off
+    editor_model: mimo-v2.5:off
+    pipeline_variant: polish

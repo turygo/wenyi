@@ -98,12 +98,6 @@ def routing_handler(messages, agent, operation, json_mode):
             )
         return json.dumps({"polished": [f"润{i}" for i in range(n)]}, ensure_ascii=False)
 
-    if "译文审校" in system:
-        n = _count_numbered(user)
-        return json.dumps(
-            {"issues": [], "reviewed_segments": n, "complete": True}, ensure_ascii=False
-        )
-
     if "术语候选挖掘" in system:
         return json.dumps({"candidates": ["堀北"]}, ensure_ascii=False)
 
@@ -124,26 +118,5 @@ def routing_handler(messages, agent, operation, json_mode):
             {"terms": [{"source": "堀北", "target": "堀北", "type": "人物", "gender": "女"}]},
             ensure_ascii=False,
         )
-
-    if "全书一致性审查员" in system:
-        # consistency.check：必需节点 strict schema 要求显式 issues 键（空列表合法）。
-        return json.dumps({"issues": []}, ensure_ascii=False)
-
-    if "书稿的母语审读编辑" in system:
-        # naturalize.screen：必需节点 strict schema 要求显式 issues 键（空列表合法）。
-        return json.dumps({"issues": []}, ensure_ascii=False)
-
-    if "回译译者" in system:
-        n = _count_numbered(user)
-        return json.dumps({"backtranslations": [f"逆{i}" for i in range(n)]}, ensure_ascii=False)
-
-    if "保真度" in system:
-        return json.dumps({"issues": []}, ensure_ascii=False)
-
-    if "章节梗概员" in system:
-        return "本章梗概：人物登场，情节推进。"
-
-    if "全书概览员" in system:
-        return "全书概览：主线与人物关系，整体基调。"
 
     return "{}" if json_mode else ""

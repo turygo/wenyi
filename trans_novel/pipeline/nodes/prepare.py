@@ -119,7 +119,7 @@ class PrepareNode:
         data = self.client.complete_json(
             [{"role": "system", "content": system}, {"role": "user", "content": sample}],
             stage="language_detect",
-            agent="reviewer",
+            agent="preparer",
             operation="language.detect",
         )
         code = (data.get("language") if isinstance(data, dict) else "") or ""
@@ -210,12 +210,8 @@ class AnalyzeNode:
             target_lang=doc.target_lang,
             chapters=len(doc.chapters),
             config={
-                "review": self.config.pipeline.review,
-                "autofix_severe": self.config.pipeline.autofix_severe,
                 "polish": self.config.pipeline.polish,
-                "backtranslate_sample": self.config.pipeline.backtranslate_sample,
-                "consistency_qa": self.config.pipeline.consistency_qa,
-                "book_understanding": self.config.pipeline.book_understanding,
+                "back_matter": self.config.pipeline.back_matter,
             },
         )
         fp = analyze_input_fingerprint(sample, primary_model_profile(self.config))

@@ -16,6 +16,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trans_novel.benchmark.corpus import canonical_json, count_words, sha256_bytes
+from trans_novel.benchmark.runner import RUN_SCHEMA_VERSION
 
 _ERROR_TYPES = (
     "omission",
@@ -156,7 +157,7 @@ def _rank(seed: int, purpose: str, value: str) -> str:
 
 
 def _category(row: dict[str, Any]) -> str:
-    if row.get("review_findings") or row.get("backtranslation_findings"):
+    if row.get("lint_findings") or row.get("deterministic_findings"):
         return "risk"
     source = str(row["source"])
     if any(mark in source for mark in ('"', "“", "”", "‘", "’")):
@@ -248,7 +249,7 @@ def prepare_review(
     run_manifest_path = run / "run.json"
     run_manifest = _read_json(run_manifest_path)
     if (
-        run_manifest.get("schema_version") != 2
+        run_manifest.get("schema_version") != RUN_SCHEMA_VERSION
         or run_manifest.get("run_mode") != "full"
         or run_manifest.get("benchmark_id") != spec.benchmark_id
         or sha256_bytes(run_manifest_path.read_bytes()) != spec.run_sha256
@@ -288,13 +289,13 @@ def prepare_review(
             raise ReviewArtifactError("candidate source text mismatch")
         category_row = {
             **baseline,
-            "review_findings": [
-                finding for row in values.values() for finding in row.get("review_findings", [])
+            "lint_findings": [
+                finding for row in values.values() for finding in row.get("lint_findings", [])
             ],
-            "backtranslation_findings": [
+            "deterministic_findings": [
                 finding
                 for row in values.values()
-                for finding in row.get("backtranslation_findings", [])
+                for finding in row.get("deterministic_findings", [])
             ],
         }
         by_book[book_id].append(

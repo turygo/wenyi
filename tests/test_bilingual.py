@@ -38,14 +38,11 @@ def _run(input_path, state_dir, output=None):
 
 
 def _stamp_formal_prereqs(store):
-    """直接 writer 单测的正式前置：GOAL_TRANSLATE 不跑 report/consistency，
-    正式 assemble goal 会执行它们——测试按“正式链路已完成”stamp titles/report。
-    backtranslate 抽样策略（sample=0）的 skipped 是 policy-authorized，无需 stamp。
-    """
-    from trans_novel.pipeline.state import NodeState
+    """Direct writer tests stamp title, deterministic QA, and report prerequisites."""
+    from trans_novel.pipeline.state import NODE_DETERMINISTIC_QA, NodeState
 
     state = store.load_state()
-    for node_id in ("titles", "report"):
+    for node_id in ("titles", NODE_DETERMINISTIC_QA, "report"):
         state.nodes.setdefault(node_id, NodeState(node_id=node_id, status="succeeded"))
     store.save_state(state)
     return store
@@ -67,7 +64,7 @@ class TestBuildEpubFromChaptersBilingual(unittest.TestCase):
                 bodies = {n: z.read(n).decode("utf-8") for n in xhtml_names}
             all_html = "\n".join(bodies.values())
             self.assertIn("tn-source", all_html)
-            self.assertIn("润0", all_html)  # balanced preset applies the fake editor output
+            self.assertIn("译0", all_html)
             some_head_has_style = any(
                 "tn-bilingual-style" in html
                 and "@media (prefers-color-scheme: dark)" in html
@@ -86,9 +83,9 @@ class TestAssembleTextBilingual(unittest.TestCase):
             out = assemble(store, txt, out_format="txt", bilingual=True, order="target_first")
             with open(out, encoding="utf-8") as f:
                 content = f.read()
-            self.assertIn("润1", content)  # polished paragraph (segment 0 is the title)
+            self.assertIn("译1", content)
             self.assertIn("綾小路は教室の窓際に座っていた", content)  # 原文
-            tgt_pos = content.index("润1")
+            tgt_pos = content.index("译1")
             src_pos = content.index("綾小路は教室の窓際に座っていた")
             self.assertLess(tgt_pos, src_pos)  # target_first：译文先于原文
 
@@ -100,7 +97,7 @@ class TestAssembleTextBilingual(unittest.TestCase):
             out = assemble(store, txt, out_format="txt", bilingual=True, order="source_first")
             with open(out, encoding="utf-8") as f:
                 content = f.read()
-            tgt_pos = content.index("润1")
+            tgt_pos = content.index("译1")
             src_pos = content.index("綾小路は教室の窓際に座っていた")
             self.assertLess(src_pos, tgt_pos)  # source_first：原文先于译文
 

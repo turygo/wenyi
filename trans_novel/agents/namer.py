@@ -16,7 +16,7 @@ from trans_novel.agents.base import Agent
 from trans_novel.glossary.miner import Candidate
 from trans_novel.glossary.store import TYPE_PERSON, GlossaryTerm
 
-# 候选分组的字符预算：组内一次模型调用，量级参考 agents/synopsis.py 的 _REDUCE_BUDGET。
+# 候选按固定字符预算分组，每组一次模型调用。
 _GROUP_CHAR_BUDGET = 6000
 
 
@@ -35,7 +35,6 @@ class CastNamer(Agent):
         self,
         candidates: list[Candidate],
         analysis_brief: str,
-        digests: list[str],
         existing: list[GlossaryTerm] | None = None,
         *,
         concurrency: int = 1,
@@ -54,14 +53,11 @@ class CastNamer(Agent):
         """
         if not candidates:
             return []
-        digest_text = "\n".join(d for d in digests if d and d.strip())
-        if len(digest_text) > _GROUP_CHAR_BUDGET:
-            digest_text = digest_text[:_GROUP_CHAR_BUDGET]
         glossary_text = prompts.render_glossary(existing or [])
         groups = self._group(candidates, _GROUP_CHAR_BUDGET)
 
         def name_one(group: list[Candidate]) -> list[GlossaryTerm]:
-            return self._name_group(group, analysis_brief, digest_text, glossary_text)
+            return self._name_group(group, analysis_brief, glossary_text)
 
         if on_progress:
             on_progress(0, len(groups))
@@ -93,7 +89,7 @@ class CastNamer(Agent):
         return groups
 
     def _name_group(
-        self, group: list[Candidate], analysis_brief: str, digest_text: str, glossary_text: str
+        self, group: list[Candidate], analysis_brief: str, glossary_text: str
     ) -> list[GlossaryTerm]:
         system = prompts.render("cast_naming_system", src=self.src, tgt=self.tgt)
         user = prompts.render(
@@ -102,7 +98,6 @@ class CastNamer(Agent):
             tgt=self.tgt,
             glossary=glossary_text,
             brief=analysis_brief or "（无）",
-            digests=digest_text or "（无）",
             candidates=_render_candidates(group),
         )
         # 不设 default：一次模型调用失败若被兜成空列表，term_mining_done 会静默永久落盘，

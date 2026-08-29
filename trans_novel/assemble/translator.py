@@ -18,11 +18,7 @@ import json
 from trans_novel.agents import langprofile, prompts
 from trans_novel.agents.base import Agent, WorkflowProtocolError
 from trans_novel.glossary.store import GlossaryTerm
-from trans_novel.ingest.models import (
-    Segment,
-    slot_transport,
-    validate_slot_transport,
-)
+from trans_novel.ingest.models import Segment, slot_transport, validate_slot_transport
 from trans_novel.llm.errors import JSONParseError
 
 
@@ -54,8 +50,6 @@ class Translator(Agent):
         glossary_terms: list[GlossaryTerm],
         style: str,
         context: str,
-        book_synopsis: str = "",
-        chapter_digest: str = "",
         *,
         agent: str,
         operation: str = "translate.batch",
@@ -74,9 +68,7 @@ class Translator(Agent):
             src=self.src,
             tgt=self.tgt,
             style=style or "（无）",
-            book_synopsis=book_synopsis or "（无）",
             glossary=prompts.render_glossary(glossary_terms),
-            chapter_digest=chapter_digest or "（无）",
             context=context or "（无）",
             n=n,
             n_minus_1=n - 1,
@@ -112,8 +104,6 @@ class Translator(Agent):
         glossary_terms,
         style,
         context,
-        book_synopsis,
-        chapter_digest,
         *,
         agent: str,
         operation: str = "translate.batch",
@@ -124,8 +114,6 @@ class Translator(Agent):
             glossary_terms,
             style,
             context,
-            book_synopsis,
-            chapter_digest,
             agent=agent,
             operation=operation,
             segments=[segment] if segment else None,
@@ -142,8 +130,6 @@ class Translator(Agent):
         style: str = "",
         context_before: str = "",
         context_after: str = "",
-        book_synopsis: str = "",
-        chapter_digest: str = "",
         segment: Segment | None = None,
     ) -> object:
         system = prompts.render(
@@ -158,9 +144,7 @@ class Translator(Agent):
             src=self.src,
             tgt=self.tgt,
             style=style or "（无）",
-            book_synopsis=book_synopsis or "（无）",
             glossary=prompts.render_glossary(glossary_terms or []),
-            chapter_digest=chapter_digest or "（无）",
             context_before=context_before or "（无）",
             context_after=context_after or "（无）",
             feedback=feedback or "（无）",
@@ -185,8 +169,6 @@ class Translator(Agent):
         operation: str,
         glossary_terms: list[GlossaryTerm] | None = None,
         style: str = "",
-        book_synopsis: str = "",
-        chapter_digest: str = "",
         segments: list[Segment] | None = None,
     ) -> list:
         if not items:
@@ -204,9 +186,7 @@ class Translator(Agent):
             src=self.src,
             tgt=self.tgt,
             style=style or "（无）",
-            book_synopsis=book_synopsis or "（无）",
             glossary=prompts.render_glossary(glossary_terms or []),
-            chapter_digest=chapter_digest or "（无）",
             batch_targets=prompts.numbered(batch_targets),
             n=n,
             items=prompts.numbered_feedback(items),
@@ -243,8 +223,6 @@ class Translator(Agent):
         glossary_terms: list[GlossaryTerm] | None = None,
         style: str = "",
         context: str = "",
-        book_synopsis: str = "",
-        chapter_digest: str = "",
         segments: list[Segment] | None = None,
     ) -> list:
         glossary_terms = glossary_terms or []
@@ -284,8 +262,6 @@ class Translator(Agent):
                     glossary_terms,
                     style,
                     context,
-                    book_synopsis,
-                    chapter_digest,
                     agent=agent,
                     operation=operation,
                     segments=translated_segments,
@@ -302,8 +278,6 @@ class Translator(Agent):
                     glossary_terms,
                     style,
                     context,
-                    book_synopsis,
-                    chapter_digest,
                     agent=agent,
                     operation=operation,
                     segment=segments[index] if segments else None,

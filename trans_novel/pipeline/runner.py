@@ -24,7 +24,6 @@ from trans_novel.pipeline.contracts import (
     RunRepository,
     WorkflowNode,
     classify_failure,
-    failure_reason,
 )
 from trans_novel.pipeline.definition import WorkflowDefinition
 from trans_novel.pipeline.planner import PlannedStage, WorkflowPlan
@@ -67,13 +66,11 @@ class WorkflowRunner:
     """执行已规划好的 WorkflowPlan。
 
     职责边界：
-    - 持 store.lock()（进入即触发 V1 迁移与 running→pending 中断恢复）；
+    - 持 store.lock()（进入即触发迁移与中断恢复）；
     - 每个计划项：mark_node_running → execute → succeeded/skipped/failed 落盘；
     - 必需节点失败中止计划（失败状态已落盘）；尽力而为失败记录后继续；
-    - 业务异常（IdentityMismatch/Readiness/ValueError）失败落盘后按原样抛出，
-      不走 RequiredNodeFailed 包装（CLI 据此干净退出）；
+    - 业务异常失败落盘后按原样抛出，不走 RequiredNodeFailed 包装；
     - 成功产物的 artifacts 按节点键并入共享 map，供同轮后续节点消费；
-    - 异步节点（异步审校）机会性/收尾排干，排干失败记录 chapter_review_failed；
     - 章链收尾：最后一节章节点执行完成后标 done + 发 chapter_done 事件；
     - 收尾统一落盘用量增量。
     """
@@ -137,15 +134,9 @@ class WorkflowRunner:
             for stage in plan.stages
             for e in stage.entries
         )
-        executor: ThreadPoolExecutor | None = None
-        review_executor: ThreadPoolExecutor | None = None
-        if needs_executors:
-            # 与旧 run() 相同的双池结构：worker 只做 LLM 调用，RunStore/术语库
-            # 读写全部留在主线程；review_executor 专供 review chunk 并发，避免
-            # 审校任务与它自己等待的 chunk 调用抢同一个池造成嵌套死锁。
-            executor = ThreadPoolExecutor(max_workers=_CHAPTER_WORKERS)
-            review_executor = ThreadPoolExecutor(max_workers=_CHAPTER_WORKERS)
-        pending_async: list[tuple[str, int, WorkflowNode, Future, str | None]] = []
+        executor: ThreadPoolExecutor | None = (
+            ThreadPoolExecutor(max_workers=_CHAPTER_WORKERS) if needs_executors else None
+        )
         artifacts: dict[str, Any] = {}
         try:
             for stage in plan.stages:
@@ -158,9 +149,7 @@ class WorkflowRunner:
                         shared=shared,
                         total_chapters=total_chapters,
                         artifacts=artifacts,
-                        pending_async=pending_async,
                         executor=executor,
-                        review_executor=review_executor,
                         result=result,
                     )
                 else:
@@ -173,36 +162,12 @@ class WorkflowRunner:
                             shared=shared,
                             total_chapters=total_chapters,
                             artifacts=artifacts,
-                            pending_async=pending_async,
                             executor=executor,
-                            review_executor=review_executor,
                             result=result,
                         )
-                        self._drain_async(
-                            pending_async,
-                            store=store,
-                            input_path=input_path,
-                            progress=progress,
-                            shared=shared,
-                            total_chapters=total_chapters,
-                            artifacts=artifacts,
-                            blocking=False,
-                        )
-            self._drain_async(
-                pending_async,
-                store=store,
-                input_path=input_path,
-                progress=progress,
-                shared=shared,
-                total_chapters=total_chapters,
-                artifacts=artifacts,
-                blocking=True,
-            )
         finally:
             if executor is not None:
                 executor.shutdown(wait=True)
-            if review_executor is not None:
-                review_executor.shutdown(wait=True)
             if self.usage_flush is not None and usage_scope is not None:
                 self.usage_flush(store, usage_scope)
         return result
@@ -218,19 +183,18 @@ class WorkflowRunner:
         shared: Any,
         total_chapters: int,
         artifacts: dict[str, Any],
-        pending_async,
         executor,
-        review_executor,
         result: RunResult,
     ) -> NodeOutcome | None:
         if entry.action == "skip":
             if store.exists():
                 store.mark_node_skipped(entry.key)
+                if entry.finalize_chapter and entry.ci is not None:
+                    self._finalize_chapter(entry.ci, store)
             else:
                 self._buffer_skip(entry.key)
             return None
         node = self.node_factory(entry.node_id, entry.ci)
-        self._mark_running(entry.key, store)
         request = self._request(
             entry,
             store=store,
@@ -240,8 +204,8 @@ class WorkflowRunner:
             total_chapters=total_chapters,
             artifacts=artifacts,
             executor=executor,
-            review_executor=review_executor,
         )
+        self._mark_running(entry.key, store)
         try:
             outcome = node.execute(request)
         except Exception as exc:
@@ -251,7 +215,7 @@ class WorkflowRunner:
             if classify_failure(exc) == FAILURE_BUSINESS:
                 raise
             raise RequiredNodeFailed(f"节点 {entry.key} 失败：{exc}") from exc
-        self._record_success(entry, node, outcome, store, pending_async)
+        self._record_success(entry, node, outcome, store)
         result.outcomes[entry.key] = outcome
         artifacts[entry.key] = outcome.artifacts
         if store.exists():
@@ -270,9 +234,7 @@ class WorkflowRunner:
         shared: Any,
         total_chapters: int,
         artifacts: dict[str, Any],
-        pending_async,
         executor,
-        review_executor,
         result: RunResult,
     ) -> None:
         """并行层：worker 线程只跑 node.execute（LLM 调用），全部 RunStore 读写留在
@@ -295,7 +257,6 @@ class WorkflowRunner:
                     total_chapters=total_chapters,
                     artifacts=artifacts,
                     executor=executor,
-                    review_executor=review_executor,
                 )
                 futs[pool.submit(node.execute, request)] = (entry, node)
             failures: list[BaseException] = []
@@ -316,9 +277,8 @@ class WorkflowRunner:
                         failures.append(failed)
                     continue
                 finished.append((entry, outcome))
-            # 主线程按 key 确定顺序处理：commit（产物落盘）先于成功记录——
-            # commit 失败则节点落失败态（digest 未持久化时不得显示 succeeded），
-            # 并按 execute 异常同等分类处理。
+            # 主线程按 key 确定顺序处理：commit（产物落盘）先于成功记录；
+            # commit 失败则节点落失败态，并按 execute 异常同等分类处理。
             for entry, outcome in sorted(finished, key=lambda t: t[0].key):
                 if outcome.commit is not None:
                     try:
@@ -331,7 +291,6 @@ class WorkflowRunner:
                             total_chapters=total_chapters,
                             artifacts=artifacts,
                             executor=executor,
-                            review_executor=review_executor,
                         )
                         outcome.commit(commit_request)
                     except Exception as exc:
@@ -345,7 +304,7 @@ class WorkflowRunner:
                             failed.__cause__ = exc
                             failures.append(failed)
                         continue
-                self._record_success(entry, node, outcome, store, pending_async)
+                self._record_success(entry, node, outcome, store)
                 result.outcomes[entry.key] = outcome
                 artifacts[entry.key] = outcome.artifacts
             if store.exists():
@@ -411,7 +370,6 @@ class WorkflowRunner:
         total_chapters: int,
         artifacts: dict[str, Any],
         executor,
-        review_executor,
     ) -> NodeRequest:
         return NodeRequest(
             store=store,
@@ -422,7 +380,6 @@ class WorkflowRunner:
             input_path=input_path,
             progress=progress,
             executor=executor,
-            review_executor=review_executor,
             artifacts=dict(artifacts),
             shared=shared,
             finalize_chapter=entry.finalize_chapter,
@@ -435,16 +392,8 @@ class WorkflowRunner:
         node: WorkflowNode,
         outcome: NodeOutcome,
         store: RunRepository,
-        pending_async,
     ) -> None:
-        if outcome.async_handle is not None:
-            # 异步节点保持 running，排干（finish）后再落成功。
-            pending_async.append(
-                (entry.key, entry.ci, node, outcome.async_handle, outcome.fingerprint)
-            )
-            return
         if not store.exists():
-            # 全新运行：manifest 落盘前无可持久化位置；缓冲成功态，analyze 后合并。
             self._buffer_success(entry.key, outcome.fingerprint)
             return
         if outcome.fingerprint:
@@ -452,119 +401,37 @@ class WorkflowRunner:
         else:
             store.mark_node_succeeded(entry.key)
 
-    def _buffer_success(self, key: str, fingerprint: str | None) -> None:
-        node = self._lifecycle_buffer.get(key)
-        if node is None:
-            node = NodeState(node_id=key)
-            self._lifecycle_buffer[key] = node
-        node.status = NODE_SUCCEEDED
-        if fingerprint:
-            node.input_fingerprint = fingerprint
-        node.finished_at = now_iso()
-
     def _record_failure(self, entry, store: RunRepository, exc: BaseException) -> None:
         if not store.exists():
             return  # 未初始化运行：失败直接冒泡，续跑整段重来
         kind = classify_failure(exc)
         store.fail_node(entry.key, kind, str(exc))
 
+    def _buffer_success(self, key: str, fingerprint: str | None) -> None:
+        node = self._lifecycle_buffer.get(key)
+        if node is None:
+            node = NodeState(node_id=key)
+            self._lifecycle_buffer[key] = node
+        node.status = NODE_SUCCEEDED
+        node.finished_at = now_iso()
+        if fingerprint:
+            node.input_fingerprint = fingerprint
+
     def _finalize_chapter(self, ci: int, store: RunRepository) -> None:
         progress = store.load_progress(ci)
         if progress.status == STATUS_DONE:
             return
         chapter = store.load_chapter(ci)
-        payload = {
-            "chapter": ci,
-            "title": chapter.title,
-            "segment_count": len(chapter.text_segments),
-            "review_issue_count": len(progress.review_issues),
-            "backtranslation_issue_count": len(progress.backtranslation_issues),
-        }
-        if progress.back_matter_mode:
-            payload.update({"back_matter": True, "mode": progress.back_matter_mode})
-        store.log_event("chapter_done", **payload)
-        store.set_chapter_status(ci, STATUS_DONE)
-
-    # ── 异步排干 ──────────────────────────────────────────────────────────
-    def _drain_async(
-        self,
-        pending_async,
-        *,
-        store: RunRepository,
-        input_path: str,
-        progress,
-        shared: Any,
-        total_chapters: int,
-        artifacts: dict[str, Any],
-        blocking: bool,
-    ) -> None:
-        remaining = []
-        for key, ci, node, handle, fingerprint in pending_async:
-            if not blocking and not handle.done():
-                remaining.append((key, ci, node, handle, fingerprint))
-                continue
-            try:
-                handle.result()
-                request = self._request_for_drain(
-                    key,
-                    ci,
-                    store=store,
-                    input_path=input_path,
-                    progress=progress,
-                    shared=shared,
-                    total_chapters=total_chapters,
-                    artifacts=artifacts,
-                )
-                node.finish(request, handle)
-            except Exception as exc:
-                # 审校 worker 出错（handle.result）或结果写回（finish）失败走同一
-                # 失败记录路径：记 chapter_review_failed、节点落失败态、保持
-                # review_pending（就绪门禁拦截正式产出，下次 run 补跑）。
-                chapter = store.load_chapter(ci)
-                store.log_event(
-                    "chapter_review_failed",
-                    chapter=ci,
-                    reason=failure_reason(exc),
-                    segment_count=len(chapter.text_segments),
-                )
-                kind = classify_failure(exc)
-                store.fail_node(key, kind, str(exc))
-                store.set_review_pending(ci, True)
-                continue
-            if fingerprint:
-                store.record_node_fingerprint(key, fingerprint)
-            else:
-                store.mark_node_succeeded(key)
-        pending_async[:] = remaining
-
-    def _request_for_drain(
-        self,
-        key: str,
-        ci: int,
-        *,
-        store: RunRepository,
-        input_path: str,
-        progress,
-        shared: Any,
-        total_chapters: int,
-        artifacts: dict[str, Any],
-    ) -> NodeRequest:
-        base = key.split(":", 1)[0]
-        return NodeRequest(
-            store=store,
-            node_id=base,
-            key=key,
-            ci=ci,
-            scope=SCOPE_CHAPTER,
-            input_path=input_path,
-            progress=progress,
-            executor=None,
-            review_executor=None,
-            artifacts=dict(artifacts),
-            shared=shared,
-            finalize_chapter=False,
-            total_chapters=total_chapters,
+        store.log_event(
+            "chapter_done",
+            chapter=ci,
+            title=chapter.title,
+            segment_count=len(chapter.text_segments),
+            lint_issue_count=len(progress.lint_issues),
+            back_matter=bool(progress.back_matter_mode),
+            mode=progress.back_matter_mode,
         )
+        store.set_chapter_status(ci, STATUS_DONE)
 
 
 __all__ = ["RequiredNodeFailed", "RunResult", "WorkflowRunner"]

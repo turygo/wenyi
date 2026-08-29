@@ -367,7 +367,7 @@ def _validate_restart_prefixes(
         digest=first_telemetry_digest,
     )
     canary_count = state_entry["canary_telemetry_count"]
-    if canary_count != 3 or len(telemetry_rows) < canary_count:
+    if canary_count != 2 or len(telemetry_rows) < canary_count:
         raise IntegrationError("canary telemetry prefix is incomplete")
     routes = _canary_routes(telemetry_rows[:canary_count])
     if state_entry.get("canary_telemetry_routes") != routes:
@@ -486,7 +486,6 @@ def _telemetry_evidence(
         "translator": _normalized_model(candidate.primary_model),
         "analyst": _normalized_model(candidate.primary_model),
         "editor": _normalized_model(candidate.editor_model),
-        "reviewer": _normalized_model(candidate_spec.fast_model),
         "preparer": _normalized_model(candidate_spec.fast_model),
         "light-translator": _normalized_model(candidate_spec.fast_model),
     }
@@ -495,29 +494,12 @@ def _telemetry_evidence(
             "translate.batch",
             "translate.back_matter",
             "translate.lint_fix",
-            "translate.review_fix",
             "title.translate",
             "integration.canary.translate",
         },
         "analyst": {"analyzer.analyze", "prescan.name_terms", "glossary.audit"},
-        "preparer": {
-            "prescan.digest",
-            "prescan.book_synopsis",
-            "prescan.term_mine",
-            "glossary.extract",
-        },
-        "editor": {"polish.batch", "naturalize.rewrite", "integration.canary.polish"},
-        "reviewer": {
-            "language.detect",
-            "review.chapter",
-            "backtranslate.check",
-            "consistency.check",
-            "naturalize.screen",
-            "naturalize.pair",
-            "naturalize.fidelity",
-            "integration.canary.review",
-        },
-        "light-translator": {"backtranslate.translate", "translate.back_matter"},
+        "preparer": {"language.detect", "prescan.term_mine", "glossary.extract"},
+        "editor": {"polish.batch", "polish.segment", "integration.canary.polish"},
     }
     mismatches = 0
     unknown = 0
@@ -762,6 +744,7 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
         raise IntegrationError("integration completion manifest is invalid")
     candidates: dict[str, dict[str, Any]] = {}
     candidate_fields = (
+        "pipeline_variant",
         "provider",
         "primary_model",
         "editor_model",
@@ -773,6 +756,8 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
         if (
             not isinstance(candidate, dict)
             or any(key not in candidate for key in candidate_fields)
+            or not isinstance(candidate.get("pipeline_variant"), str)
+            or candidate.get("pipeline_variant") not in {"minimal", "polish"}
             or not isinstance(candidate.get("provider"), str)
             or not isinstance(candidate.get("primary_model"), str)
             or not isinstance(candidate.get("fast_model"), str)
@@ -803,7 +788,7 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
     try:
         candidate_spec = CandidateSpec.model_validate(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "benchmark_id": request["benchmark_id"],
                 "provider": provider,
                 "fast_model": next(iter(fast_models)),
@@ -815,6 +800,7 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
                         "candidate_id": cid,
                         "primary_model": request["candidates"][cid]["primary_model"],
                         "editor_model": request["candidates"][cid]["editor_model"],
+                        "pipeline_variant": request["candidates"][cid]["pipeline_variant"],
                     }
                     for cid in request["candidate_ids"]
                 ],
@@ -878,6 +864,134 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
     }
 
 
+def _validate_present_failed_evidence(value: dict[str, Any], out: Path) -> None:
+    """Validate artifacts a failed candidate managed to persist.
+
+    A failure may happen before any physical evidence exists, but once a path
+    and digest are recorded they are part of the terminal contract too.
+    """
+    output_paths = value.get("output_paths")
+    output_hashes = value.get("output_sha256")
+    if "output_paths" in value or "output_sha256" in value:
+        if not isinstance(output_paths, dict) or not isinstance(output_hashes, dict):
+            raise IntegrationIntegrityError("integration output evidence is invalid")
+        for key in set(output_paths) | set(output_hashes):
+            relative = output_paths.get(key)
+            digest = output_hashes.get(key)
+            if (
+                not isinstance(relative, str)
+                or not isinstance(digest, str)
+                or not re.fullmatch(_HEX64, digest)
+            ):
+                raise IntegrationIntegrityError("integration output evidence is invalid")
+            path = (out / relative).resolve()
+            try:
+                safe = _safe_relative(path, out)
+            except IntegrationError as error:
+                raise IntegrationIntegrityError(
+                    "integration output evidence is missing or tampered"
+                ) from error
+            if safe != relative or not path.is_file():
+                raise IntegrationIntegrityError(
+                    "integration output evidence is missing or tampered"
+                )
+            if _sha(path) != digest:
+                raise IntegrationIntegrityError(
+                    "integration output evidence is missing or tampered"
+                )
+
+    evidence_paths = (
+        ("telemetry_path", "telemetry_sha256"),
+        ("first_telemetry_path", "first_telemetry_sha256"),
+        ("resume_telemetry_path", "resume_telemetry_sha256"),
+        ("usage_path", "usage_sha256"),
+    )
+    physical: dict[str, Path] = {}
+    for evidence_key, hash_key in evidence_paths:
+        if evidence_key not in value and hash_key not in value:
+            continue
+        relative = value.get(evidence_key)
+        digest = value.get(hash_key)
+        if (
+            not isinstance(relative, str)
+            or not isinstance(digest, str)
+            or not re.fullmatch(_HEX64, digest)
+        ):
+            raise IntegrationIntegrityError("integration physical evidence is invalid")
+        path = (out / relative).resolve()
+        try:
+            safe = _safe_relative(path, out)
+        except IntegrationError as error:
+            raise IntegrationIntegrityError(
+                "integration physical evidence is missing or tampered"
+            ) from error
+        if safe != relative or not path.is_file():
+            raise IntegrationIntegrityError("integration physical evidence is missing or tampered")
+        if _sha(path) != digest:
+            raise IntegrationIntegrityError("integration physical evidence is missing or tampered")
+        physical[evidence_key] = path
+
+    telemetry_records: dict[str, list[CallAttemptTelemetry]] = {}
+    for key in ("telemetry_path", "first_telemetry_path", "resume_telemetry_path"):
+        if key not in physical:
+            continue
+        try:
+            telemetry_records[key] = _telemetry_records(physical[key])
+        except Exception as error:
+            raise IntegrationIntegrityError("integration telemetry evidence is invalid") from error
+    count_keys = (
+        ("first_telemetry_path", "first_telemetry_count"),
+        ("resume_telemetry_path", "resume_telemetry_count"),
+        ("resume_telemetry_path", "resume_attempt_telemetry_count"),
+    )
+    for path_key, count_key in count_keys:
+        if path_key in telemetry_records and count_key in value:
+            count = value[count_key]
+            if type(count) is not int or count < 0 or count != len(telemetry_records[path_key]):
+                raise IntegrationIntegrityError("integration telemetry record count mismatch")
+    telemetry = telemetry_records.get("telemetry_path")
+    if telemetry is not None and isinstance(value.get("telemetry_counts"), dict):
+        counts = value["telemetry_counts"]
+        expected = {
+            "logical_call_count": len({record.logical_call_id for record in telemetry}),
+            "attempt_count": len(telemetry),
+            "operation_count": len({record.operation for record in telemetry}),
+            "agent_count": len({record.agent for record in telemetry}),
+            "retry_count": sum(
+                1
+                for record in telemetry
+                if record.attempt_index > 1 or record.retry_class is not None
+            ),
+            "translate_call_count": sum(
+                1 for record in telemetry if record.operation == "translate.batch"
+            ),
+        }
+        if any(counts.get(key) != expected_value for key, expected_value in expected.items()):
+            raise IntegrationIntegrityError("integration telemetry count mismatch")
+    if "usage_path" in physical:
+        usage = _usage_evidence(physical["usage_path"])
+        if not usage.get("valid") or usage.get("unknown_required_usage_count") != 0:
+            raise IntegrationIntegrityError("integration usage evidence is invalid")
+
+    for key in ("before_target_hashes", "final_target_hashes"):
+        if key not in value:
+            continue
+        rows = value[key]
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict)
+            or type(row.get("chapter")) is not int
+            or row["chapter"] < 0
+            or type(row.get("start")) is not int
+            or row["start"] < 0
+            or type(row.get("count")) is not int
+            or row["count"] < 0
+            or not isinstance(row.get("target_sha256"), str)
+            or not re.fullmatch(_HEX64, row["target_sha256"])
+            for row in rows
+        ):
+            raise IntegrationIntegrityError("integration slice evidence is invalid")
+
+
 def _validate_result_contract(
     value: dict[str, Any],
     *,
@@ -923,6 +1037,7 @@ def _validate_result_contract(
     if status == "failed":
         if value["passed"]:
             raise IntegrationError("failed integration result pass predicate is invalid")
+        _validate_present_failed_evidence(value, out)
         return
     if status != "completed":
         raise IntegrationError("integration result status is invalid")
@@ -1061,17 +1176,9 @@ def _node_phase_timings(store: RunStore) -> dict[str, int]:
     totals = {"prepare": 0, "translate": 0, "quality": 0}
     seen = {"prepare": False, "translate": False, "quality": False}
     phases = {
-        "prepare": {"prepare", "analyze", "digest", "mine_terms", "name_terms", "book_synopsis"},
+        "prepare": {"prepare", "analyze", "mine_terms", "name_terms"},
         "translate": {"translate", "titles"},
-        "quality": {
-            "polish",
-            "naturalize",
-            "review",
-            "backtranslate",
-            "consistency_qa",
-            "report",
-            "assemble",
-        },
+        "quality": {"polish", "deterministic_qa", "report", "assemble"},
     }
     phase_by_node = {node: phase for phase, nodes in phases.items() for node in nodes}
     for node_id, node in state.nodes.items():
@@ -1097,12 +1204,12 @@ def _node_phase_timings(store: RunStore) -> dict[str, int]:
 
 
 def _quality_config(spec: CandidateSpec, candidate: Candidate, state_dir: Path) -> Config:
-    """Reuse FullRunner's production quality configuration, not a second profile."""
+    """Reuse FullRunner's production configuration, not a second profile."""
     config = FullRunner._config(
         spec,
         candidate.primary_model,
         candidate.editor_model,
-        quality=True,
+        pipeline_variant=candidate.pipeline_variant,
         state_dir=str(state_dir),
     )
     config.source_lang = "en"
@@ -1178,13 +1285,6 @@ class IntegrationRunner:
                 "synthetic canary target",
                 candidate.editor_model,
             ),
-            (
-                "reviewer",
-                "integration.canary.review",
-                "译文审校",
-                "synthetic canary target",
-                spec.fast_model,
-            ),
         )
         try:
             for agent, operation, marker, text, _model in calls:
@@ -1213,13 +1313,12 @@ class IntegrationRunner:
                 "model_mismatch_count": 0,
                 "unknown_required_usage_count": 1,
             }
-        records = sink.records[-3:]
+        records = sink.records[-2:]
         expected_models = [
             _normalized_model(candidate.primary_model),
             _normalized_model(candidate.editor_model),
-            _normalized_model(spec.fast_model),
         ]
-        if len(records) != 3:
+        if len(records) != 2:
             return {
                 "schema_version": 1,
                 "passed": False,
@@ -1398,6 +1497,7 @@ class IntegrationRunner:
             "candidate_ids": list(spec.candidate_ids),
             "candidates": {
                 candidate.candidate_id: {
+                    "pipeline_variant": candidate.pipeline_variant,
                     "provider": candidate_spec.provider,
                     "primary_model": candidate.primary_model,
                     "editor_model": candidate.editor_model,
@@ -1429,7 +1529,6 @@ class IntegrationRunner:
             raise IntegrationError("integration immutable request mismatch")
         if request_created:
             _atomic_json(request_path, request)
-        state_path = out / "integration_state.json"
         if not state_path.exists() and not request_created:
             raise IntegrationError("integration state missing for existing request")
         state = (
@@ -1665,7 +1764,7 @@ class IntegrationRunner:
                 )
                 result["canary_passed"] = bool(canary.get("passed"))
                 if not result["canary_passed"]:
-                    raise IntegrationError("synthetic three-role canary failed")
+                    raise IntegrationError("synthetic canary failed")
                 first_client = self._client(candidate_spec, candidate, options, sink)
                 hook = _CommitHook(spec.interrupt_after_committed_batches)
                 state["candidates"][cid] = {

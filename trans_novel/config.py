@@ -19,7 +19,6 @@ from trans_novel.model_profiles import ReasoningEffort, validate_model_selection
 PRODUCTION_AGENT_IDS: tuple[str, ...] = (
     "translator",
     "editor",
-    "reviewer",
     "analyst",
     "preparer",
     "light-translator",
@@ -133,15 +132,8 @@ class SegmentConfig(BaseModel):
 class PipelineConfig(BaseModel):
     """由质量档位展开的内部流水线策略。"""
 
-    review: bool
-    autofix_severe: bool
     polish: bool
-    backtranslate_sample: float
-    consistency_qa: bool
-    book_understanding: bool
-    naturalize: bool
     align_retry_limit: int = 2
-    review_output_retries: int = 2
     rolling_context_segments: int = 6
     prescan_concurrency: int = 4
     glossary_scope: Literal["chapter", "full"] = "chapter"
@@ -152,7 +144,6 @@ class PipelineConfig(BaseModel):
     def for_quality(cls, quality: QualityPreset) -> PipelineConfig:
         common = {
             "align_retry_limit": 2,
-            "review_output_retries": 2,
             "rolling_context_segments": 6,
             "prescan_concurrency": 4,
             "glossary_scope": "chapter",
@@ -160,33 +151,9 @@ class PipelineConfig(BaseModel):
             "inflight_glossary": False,
         }
         profiles: dict[str, dict[str, Any]] = {
-            "economy": {
-                "review": False,
-                "autofix_severe": False,
-                "polish": False,
-                "backtranslate_sample": 0,
-                "consistency_qa": False,
-                "book_understanding": False,
-                "naturalize": False,
-            },
-            "balanced": {
-                "review": True,
-                "autofix_severe": True,
-                "polish": True,
-                "backtranslate_sample": 0,
-                "consistency_qa": False,
-                "book_understanding": True,
-                "naturalize": True,
-            },
-            "quality": {
-                "review": True,
-                "autofix_severe": True,
-                "polish": True,
-                "backtranslate_sample": 0.05,
-                "consistency_qa": True,
-                "book_understanding": True,
-                "naturalize": True,
-            },
+            "economy": {"polish": False, "back_matter": "light"},
+            "balanced": {"polish": False, "back_matter": "full"},
+            "quality": {"polish": True, "back_matter": "full"},
         }
         return cls.model_validate({**common, **profiles[quality]})
 

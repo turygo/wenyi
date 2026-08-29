@@ -1,18 +1,14 @@
-"""运行态持久化：支持断点续跑（V2 类型化状态）。
+"""运行态持久化：支持断点续跑与状态迁移。
 
 目录结构（state_dir/<book-slug>/）：
-  manifest.json         V2 根状态（run_state_schema 标记；迁移时最后原子切换）
-  chapters_v2/ch{n}.json  各章（含 source/target 的 Segment；meta 只含 ingest 元数据）
-  chapters/             迁移前的 V1 章节文件（切换后仅作恢复备份，不再读取）
-  context.json          滚动上下文（梗概 + 前文尾段）
-  analysis.json         全局分析产物（book_synopsis 等；完成标志在 V2 状态里）
-  glossary.db           术语库
-  report.json           QA 报告
-  usage.json            本书跨 translate/resume 累计的 LLM token 用量
-  events.jsonl          追加式行为 / 改写 / 翻译结果日志
-
-V1 状态在首次打开（持运行锁）时一次性迁移为 V2：先写新路径、校验，最后原子
-切换根 manifest。切换后运行时只读 V2，不存在双 schema 分支。
+  manifest.json         根状态；
+  chapters_v2/ch{n}.json  各章；
+  context.json          滚动上下文；
+  analysis.json         全局分析产物；
+  glossary.db            术语库；
+  report.json            QA 报告；
+  usage.json             本书跨续跑累计的 LLM token 用量；
+  events.jsonl           追加式行为日志。
 """
 
 from __future__ import annotations
@@ -29,12 +25,11 @@ from datetime import datetime
 from typing import Any
 
 from trans_novel.ingest.models import Chapter, Document, reset_segment_translation
-from trans_novel.pipeline.migration import migrate_v1_to_v2
+from trans_novel.pipeline.migration import migrate_v1_to_v2, migrate_v2_to_v3
 from trans_novel.pipeline.state import (
     NODE_FAILED_PERMANENT,
     NODE_FAILED_RETRYABLE,
     NODE_POLISH,
-    NODE_REVIEW,
     NODE_RUNNING,
     NODE_SKIPPED,
     NODE_SUCCEEDED,
@@ -221,7 +216,7 @@ class RunStore:
             )
 
     def _migrate_if_needed(self) -> None:
-        """已持锁时调用：V1 迁移 → V2 中断恢复 → 检查点日志恢复。幂等。"""
+        """已持锁时调用：迁移、恢复中断节点及检查点日志。"""
         if self._v2_ready:
             return
         if not os.path.isfile(self.manifest_path):
@@ -229,16 +224,18 @@ class RunStore:
             return
         data = self._read_json(self.manifest_path)
         self._validate_epub_manifest(data)
-        if isinstance(data, dict) and data.get("run_state_schema") == RUN_STATE_SCHEMA_VERSION:
+        version = data.get("run_state_schema") if isinstance(data, dict) else None
+        if version == RUN_STATE_SCHEMA_VERSION:
+            self._v2_ready = True
+        elif version == 2:
+            migrate_v2_to_v3(self)
             self._v2_ready = True
         else:
             migrate_v1_to_v2(self)
             self._v2_ready = True
-        # 进程崩溃遗留的 running 节点：恢复为 pending 并记录中断。
         state = self.load_state()
         if state.recover_interrupted():
             self.save_state(state)
-        # 崩溃一致性检查点：补齐/清除在途翻译·润色批次的标记（幂等）。
         from trans_novel.pipeline import checkpoint
 
         checkpoint.recover(self)
@@ -401,28 +398,6 @@ class RunStore:
         state = self.load_state()
         return [ci for ci, pg in state.progress.items() if pg.status != STATUS_DONE]
 
-    def set_review_pending(self, ci: int, pending: bool) -> None:
-        """标记/清除某章的异步审校待办（随章进度持久化）。
-
-        异步审校（review 且非 autofix_severe）在章标 done 前打标；结果写回后清标。
-        崩溃在两者之间时标记残留在磁盘，续跑据此补跑，异步审校结果不静默丢失。
-        """
-        state = self.load_state()
-        progress = state.progress.setdefault(ci, ChapterProgress())
-        progress.review_pending = pending
-        self.save_state(state)
-
-    def review_pending_chapters(self) -> list[int]:
-        state = self.load_state()
-        return [ci for ci, pg in state.progress.items() if pg.review_pending]
-
-    def set_naturalized(self, ci: int, value: bool = True) -> None:
-        """记录本章去翻译腔已完成（续跑幂等标记，随进度持久化）。"""
-        state = self.load_state()
-        progress = state.progress.setdefault(ci, ChapterProgress())
-        progress.naturalized = value
-        self.save_state(state)
-
     # ── 节点状态 / 指纹 ────────────────────────────────────────────────────
     def mark_node_running(self, key: str) -> None:
         state = self.load_state()
@@ -473,15 +448,6 @@ class RunStore:
         self.save_state(state)
 
     def mark_node_skipped(self, key: str) -> None:
-        """策略性禁用的可选节点：持久化为 skipped（覆盖上一次运行的 succeeded/skipped）。
-
-        保留既有 input_fingerprint —— 它是“上次成功产出时的输入描述”，策略改回
-        启用后节点重跑会重新计算；不清空它即可在状态里区分“本轮按策略跳过”与
-        从未执行过。
-        同时原子清除该节点对应的恢复标记（skip polish → 清 pending_polish；
-        skip review → 清 review_pending）：策略显式禁用后，残留标记不得让章永远
-        卡在“未完成”或让就绪门禁永久拒绝。
-        """
         state = self.load_state()
         node = state.nodes.get(key)
         if node is None:
@@ -490,13 +456,8 @@ class RunStore:
         node.status = NODE_SKIPPED
         node.finished_at = now_iso()
         base, sep, suffix = key.partition(":")
-        if sep and suffix.isdigit():
-            ci = int(suffix)
-            progress = state.progress.setdefault(ci, ChapterProgress())
-            if base == NODE_POLISH:
-                progress.pending_polish = []
-            elif base == NODE_REVIEW:
-                progress.review_pending = False
+        if sep and suffix.isdigit() and base == NODE_POLISH:
+            state.progress.setdefault(int(suffix), ChapterProgress()).pending_polish = []
         self.save_state(state)
 
     def fail_node(self, key: str, kind: str, message: str = "") -> None:
@@ -518,15 +479,7 @@ class RunStore:
         self.save_state(state)
 
     def reconcile_fingerprints(self, computed: dict[str, str]) -> set[str]:
-        """按最新计算的输入指纹失效失配节点及其后代（见 RunState.reconcile_fingerprints）。
-
-        - 只对“已记录过指纹”的节点做对账：空指纹（V1 迁移合成的 legacy 成功态）
-          不参与失效，避免迁移后的存量书被整体重跑；
-        - 失效 translate 节点时清除该章译文并重开（pending），
-          失效 titles 时清除已译标题 —— 这两类产物在章节文件/manifest，
-          由本层在状态级失效之外一并清理（同一 state 对象上完成，避免互相覆盖）；
-        - book_synopsis 产物在 analysis.json，一并清除。返回失效节点键集合。
-        """
+        """按最新输入指纹失效失配节点及其后代。"""
         state = self.load_state()
         invalidated = state.reconcile_fingerprints(computed)
         for key in list(invalidated):
@@ -536,24 +489,12 @@ class RunStore:
                 self._clear_translation_targets(ci, state)
             elif base == "titles":
                 self._clear_translated_titles(state)
-        if "book_synopsis" in invalidated:
-            analysis = self.load_analysis() or {}
-            if "book_synopsis" in analysis:
-                analysis.pop("book_synopsis")
-                self.save_analysis(analysis)
         if "analyze" in invalidated and os.path.isfile(self.analysis_path):
-            # 风格分析输入（模型路由等）变化：清空 analysis.json 让 AnalyzeNode
-            # 真正重新分析（幂等分支以“文件不存在”为准，不会跳过）。
             os.remove(self.analysis_path)
         self.save_state(state)
         return invalidated
 
     def _clear_translation_targets(self, ci: int, state) -> None:
-        """translate 输入失配：清除该章译文与全部下游标记，章重开为 pending。
-
-        只动目标章（“只失效该节点及其后代”）；其它章译文原样保留。
-        在调用方持有的 state 对象上改进度字段（与节点失效同一次保存）。
-        """
         chapter = self.load_chapter(ci)
         for seg in chapter.text_segments:
             reset_segment_translation(seg)
@@ -561,15 +502,9 @@ class RunStore:
         progress = state.progress.setdefault(ci, ChapterProgress())
         progress.status = STATUS_PENDING
         progress.pending_polish = []
-        progress.naturalized = False
-        progress.review_issues = []
-        progress.backtranslation_issues = []
+        progress.lint_issues = []
         state.progress[ci] = progress
-        self.log_event(
-            "translate_invalidated",
-            chapter=ci,
-            reason="input_fingerprint_mismatch",
-        )
+        self.log_event("translate_invalidated", chapter=ci, reason="input_fingerprint_mismatch")
 
     def _clear_translated_titles(self, state) -> None:
         """titles 输入失配：清除已译标题（manifest 章条目与 TOC entry）。"""
@@ -584,11 +519,6 @@ class RunStore:
         self.log_event("titles_invalidated", reason="input_fingerprint_mismatch")
 
     def reopen_back_matter_chapter(self, ci: int, *, prev_mode: str, mode: str, title: str) -> None:
-        """附属章档位升档（skip→light/full、light→full）：重开已完成章重译。
-
-        清除原文副本/快速粗翻译文与全部下游标记，章状态回 pending；降档不回退。
-        由 planner 在目标筛选前对全部已完成附属章执行（only_chapter 场景也不漏）。
-        """
         chapter = self.load_chapter(ci)
         for seg in chapter.segments:
             reset_segment_translation(seg)
@@ -596,18 +526,12 @@ class RunStore:
         progress = state.progress.setdefault(ci, ChapterProgress())
         progress.back_matter_mode = None
         progress.pending_polish = []
-        progress.set_review_issue_dicts([])
-        progress.set_backtranslation_issue_dicts([])
+        progress.lint_issues = []
         progress.status = STATUS_PENDING
         state.progress[ci] = progress
         self.save_state(state)
-        self.save_chapter(chapter)
         self.log_event(
-            "back_matter_reopened",
-            chapter=ci,
-            title=title,
-            prev_mode=prev_mode,
-            mode=mode,
+            "back_matter_reopened", chapter=ci, previous_mode=prev_mode, mode=mode, title=title
         )
 
     # ── 运行身份 ───────────────────────────────────────────────────────────

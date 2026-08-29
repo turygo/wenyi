@@ -1,6 +1,4 @@
-"""命令行入口（typer + rich）。
-
-日常只需 `translate` 一个命令：连续全流程（分析→翻译→审校→一致性 QA→报告→回填 EPUB），
+"""日常只需 `translate` 一个命令：连续全流程（分析→翻译→确定性 QA→报告→回填 EPUB），
 中断后再次运行自动续跑。其余 `resume` / `status` 为常用辅助；
 细粒度/调试工具收敛到 `tools`：glossary / assemble / qa / report。
 """
@@ -167,7 +165,6 @@ def _translate_impl(
     back_matter: str | None = None,
     honorifics: str | None = None,
     polish: bool | None = None,
-    qa: bool | None = None,
     mono: bool | None = None,
     bilingual: bool | None = None,
     prepare: bool = False,
@@ -226,15 +223,7 @@ def _translate_impl(
                 raise typer.Exit(2) from error
             manifest = store.load_manifest()
             chapters = manifest.get("chapters", [])
-            analysis = store.load_analysis() or {}
-            digests = sum(
-                bool(store.load_progress(item["index"]).source_digest) for item in chapters
-            )
-            console.print(
-                f"[bold green]准备完成[/]：解析 {len(chapters)} 章，"
-                f"预扫 {digests}/{len(chapters)} 章，"
-                f"全书概览{'已生成' if analysis.get('book_synopsis') else '未生成'}。"
-            )
+            console.print(f"[bold green]准备完成[/]：解析 {len(chapters)} 章。")
             console.print(f"状态目录：[bold]{store.run_dir}[/]")
             console.print("再次运行 translate 命令（不带 --prepare）即可开始翻译。")
             _print_usage({"usage": store.load_usage() or {}})
@@ -259,25 +248,24 @@ def _translate_impl(
                 progress=cb,
                 out_format=fmt,
                 out_path=out,
-                do_qa=qa,
             )
         except (IdentityMismatchError, ReadinessError, ValueError) as error:
             console.print(f"[red]{error}[/]")
             raise typer.Exit(2) from error
 
     s = result["report"]["summary"]
-    console.print(
-        f"[bold green]完成[/]：{s['chapters_done']}/{s['chapters_total']} 章，"
-        f"术语 {s['terms']}，一致性问题 {len(result['qa_issues'])} 项。"
-    )
+    console.print(f"术语 {s['terms']}，确定性 QA 问题 {len(result['qa_issues'])} 项。")
     _print_usage({"usage": result["store"].load_usage() or {}})
     _print_back_matter(result["report"])
     for path in result.get("outputs") or [result["output"]]:
         console.print(f"译文：[bold]{path}[/]")
+    console.print(
+        f"[bold green]完成[/]：{s['chapters_done']}/{s['chapters_total']} 章，"
+        f"术语 {s['terms']}，确定性 QA 问题 {len(result['qa_issues'])} 项。"
+    )
 
 
 def _print_back_matter(report: dict) -> None:
-    """列出被简化处理的附属章供人工复核——误伤正文章会静默降质，必须可见。"""
     bm = report.get("back_matter_chapters") or []
     if not bm:
         return
@@ -358,11 +346,6 @@ def translate(
         "--polish/--no-polish",
         help="覆盖质量档位中的润色策略",
     ),
-    qa: bool | None = typer.Option(
-        None,
-        "--qa/--no-qa",
-        help="覆盖质量档位中的一致性 QA 策略",
-    ),
     mono: bool | None = typer.Option(
         None,
         "--mono/--no-mono",
@@ -390,7 +373,6 @@ def translate(
         back_matter=back_matter,
         honorifics=honorifics,
         polish=polish,
-        qa=qa,
         mono=mono,
         bilingual=bilingual,
         prepare=prepare,
@@ -542,7 +524,7 @@ def assemble(
 
 @tools_app.command()
 def qa(input: str = typer.Argument(..., help="输入文件")):
-    """全书跨章一致性扫描。"""
+    """全书确定性检查。"""
     from trans_novel.pipeline.bootstrap import Application
 
     config = _load_config()
@@ -570,57 +552,11 @@ def report(input: str = typer.Argument(..., help="输入文件")):
     s = rep["summary"]
     console.print(f"QA 报告已写入 {store.report_path}")
     console.print(
-        f"  章节 {s['chapters_done']}/{s['chapters_total']}  术语 {s['terms']}  "
-        f"待裁决冲突 {s['open_conflicts']}  审校问题 {s['review_issues']}  "
-        f"回译疑点 {s['backtranslation_issues']}  附属章旁路 {s.get('back_matter_chapters', 0)}"
+        f"  章节 {s['chapters_done']}/{s['chapters_total']}  术语 {s['terms']} "
+        f"lint 问题 {s['lint_issues']}  确定性 QA {s['deterministic_issues']} "
+        f"附属章旁路 {s.get('back_matter_chapters', 0)}"
     )
     _print_back_matter(rep)
-
-
-@tools_app.command()
-def naturalize(
-    input: str = typer.Argument(..., help="输入文件"),
-    chapters: str | None = typer.Option(
-        None, "--chapters", help="逗号分隔章 index，缺省=全部正文章"
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="只跑审读+改写+三道关卡，打印结果但不落盘、不写事件"
-    ),
-    limit: int | None = typer.Option(None, "--limit", help="最多采纳写回 N 段（缺省无限）"),
-):
-    """去翻译腔：单语审读 → 单语改写 → 三道关卡（lint/忠实度/成对）→ 写回。
-
-    主流水线已内置同名环节（pipeline.naturalize）；本命令用于对存量已译书手动补跑。
-    """
-    from trans_novel.pipeline.bootstrap import Application
-
-    config = _load_config()
-    store = _runstore_for(config, input)
-    if not store.exists():
-        console.print("[yellow]尚无进度。先运行 translate。[/]")
-        raise typer.Exit(1)
-    chapter_indices: list[int] | None = None
-    if chapters:
-        try:
-            chapter_indices = [int(x) for x in chapters.split(",") if x.strip()]
-        except ValueError as e:
-            raise typer.BadParameter(
-                f"--chapters 含非法片段：{chapters!r}（须为逗号分隔整数）"
-            ) from e
-    stats = Application(config).naturalize(
-        store, chapters=chapter_indices, dry_run=dry_run, limit=limit
-    )
-    console.print(
-        f"审读 {stats['screened']} 段  嫌疑 {stats['suspects']}  改写 {stats['rewritten']}  "
-        f"lint拒 {stats['lint_rejected']}  忠实拒 {stats['fidelity_rejected']}  "
-        f"成对拒 {stats['pairwise_rejected']}  采纳 {stats['applied']}"
-        + ("（dry-run，未落盘）" if dry_run else "")
-    )
-    if dry_run:
-        for e in stats["applied_entries"]:
-            console.print(f"[dim]第{e['chapter']}章 #{e['index']}[/]")
-            console.print(f"  before: {e['before']}")
-            console.print(f"  after:  {e['after']}")
 
 
 def _corpus_error(error: Exception) -> typer.NoReturn:

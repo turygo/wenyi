@@ -237,7 +237,6 @@ class TestConfigValidation(unittest.TestCase):
         )
         self.assertEqual(cfg.llm.models.primary, "gpt-5")
         self.assertTrue(cfg.pipeline.polish)
-        self.assertTrue(cfg.pipeline.consistency_qa)
 
     def test_openai_compatible_requires_base_url(self):
         with self.assertRaisesRegex(ValidationError, "base_url"):
@@ -263,14 +262,14 @@ class TestConfigValidation(unittest.TestCase):
                 Config.from_dict(raw)
 
     def test_quality_profiles(self):
-        economy = PipelineConfig.for_quality("economy")
-        balanced = PipelineConfig.for_quality("balanced")
-        quality = PipelineConfig.for_quality("quality")
-        self.assertFalse(economy.review)
-        self.assertTrue(balanced.review)
-        self.assertTrue(balanced.polish)
-        self.assertTrue(quality.polish)
-        self.assertEqual(quality.backtranslate_sample, 0.05)
+        expected = {
+            "economy": (False, "light"),
+            "balanced": (False, "full"),
+            "quality": (True, "full"),
+        }
+        for name, values in expected.items():
+            profile = PipelineConfig.for_quality(name)
+            self.assertEqual((profile.polish, profile.back_matter), values)
 
     def test_fake_provider_usable_without_credentials(self):
         cfg = Config.from_dict({"llm": fake_llm_dict()})
@@ -280,7 +279,7 @@ class TestConfigValidation(unittest.TestCase):
             router.complete(
                 [{"role": "user", "content": "x"}],
                 agent="preparer",
-                operation="prescan.digest",
+                operation="terms.mine",
             ),
             "",
         )

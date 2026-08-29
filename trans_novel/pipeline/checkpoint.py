@@ -37,38 +37,27 @@ def begin_polish(store, ci: int, start: int, count: int, polished: list[str]) ->
     )
 
 
-def begin_naturalize(store, ci: int, applied: list[tuple[int, str]]) -> None:
-    """去翻译腔提交前记录在途改写（改写将写入章节文件、naturalized 标记将写入 manifest）。"""
-    store.save_journal(
-        {
-            "kind": "naturalize",
-            "chapter": ci,
-            "entries": [[idx, after] for idx, after in applied],
-        }
-    )
-
-
 def clear(store) -> None:
     """两处写都完成后清除在途记录。"""
     store.clear_journal()
 
 
 def recover(store) -> None:
-    """在运行锁内重放在途记录：补齐缺失标记或清除已提交标记。幂等。"""
+    """Recover only translation and polish journals."""
     record = store.load_journal()
     if record is None:
         return
     kind = record.get("kind")
-    ci = record.get("chapter")
-    start = record.get("start")
-    count = record.get("count")
-    if kind not in ("translate", "polish", "naturalize") or not isinstance(ci, int):
+    if kind not in ("translate", "polish"):
         store.clear_journal()
         return
-    if kind == "naturalize":
-        _recover_naturalize(store, ci, record)
-        return
-    if not isinstance(start, int) or not isinstance(count, int) or count <= 0:
+    ci, start, count = record.get("chapter"), record.get("start"), record.get("count")
+    if (
+        not isinstance(ci, int)
+        or not isinstance(start, int)
+        or not isinstance(count, int)
+        or count <= 0
+    ):
         store.clear_journal()
         return
     progress = store.load_progress(ci)
@@ -151,44 +140,4 @@ def recover(store) -> None:
     store.clear_journal()
 
 
-def _recover_naturalize(store, ci: int, record: dict) -> None:
-    """naturalize 记录：改写写章节文件、标记写 manifest，两次独立原子写。
-
-    崩溃窗口在 save_chapter（改写）之后、set_naturalized（标记）之前：章节里的
-    改写已落盘但标记缺失 → 恢复补标记（完成事务，不再重复去翻译腔）；改写未落盘
-    （与记录不一致）→ 回滚，下次 run 重新自然化。
-    """
-    progress = store.load_progress(ci)
-    if progress.naturalized:
-        store.log_event("checkpoint_recovered", kind="naturalize", chapter=ci, action="committed")
-        store.clear_journal()
-        return
-    raw_entries = record.get("entries")
-    if isinstance(raw_entries, list) and raw_entries:
-        chapter = store.load_chapter(ci)
-        segs = chapter.text_segments
-        if all(
-            isinstance(e, list)
-            and len(e) == 2
-            and isinstance(e[0], int)
-            and 0 <= e[0] < len(segs)
-            and (segs[e[0]].target or "") == e[1]
-            for e in raw_entries
-        ):
-            # 全部改写已落盘：补标记（完成事务），不重放改写。
-            progress.naturalized = True
-            store.save_progress(ci, progress)
-            store.log_event(
-                "checkpoint_recovered",
-                kind="naturalize",
-                chapter=ci,
-                action="repaired_marker",
-            )
-            store.clear_journal()
-            return
-    # 改写未落盘：回滚，保持未自然化，下次 run 重跑。
-    store.log_event("checkpoint_recovered", kind="naturalize", chapter=ci, action="rolled_back")
-    store.clear_journal()
-
-
-__all__ = ["begin_naturalize", "begin_polish", "begin_translate", "clear", "recover"]
+__all__ = ["begin_polish", "begin_translate", "clear", "recover"]

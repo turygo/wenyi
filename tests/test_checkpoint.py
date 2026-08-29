@@ -1,12 +1,4 @@
-"""崩溃一致性检查点测试：翻译/润色批次的二阶段提交恢复（reviewer finding 7）。
-
-守护两条不变量：
-  (a) 已落盘的译文必须有对应的 pending_polish 标记 —— 崩溃窗口在
-      save_chapter（译文）之后、save_progress（标记）之前时，恢复补齐标记；
-  (b) 已落盘的润色结果不能残留活标记 —— 崩溃窗口在 save_chapter（润色结果）
-      之后、save_progress（清标记）之前时，恢复清除标记，避免同一段润色两次。
-每个方向都有“未提交即回滚”的反向用例与幂等重放用例。
-"""
+"""Crash-consistency tests for translation and polish checkpoint recovery."""
 
 from __future__ import annotations
 
@@ -182,50 +174,6 @@ class TestCheckpointIdempotence(unittest.TestCase):
             store = _store(d)
             reopened = _reopen(store.run_dir)
             self.assertEqual(reopened.load_progress(0).pending_polish, [])
-            self.assertFalse(os.path.isfile(reopened.journal_path))
-
-
-class TestNaturalizeCheckpoint(unittest.TestCase):
-    """去翻译腔的崩溃一致性：改写写章节文件、naturalized 标记写 manifest。
-    崩溃在两者之间 → 恢复补标记（不重放改写）；改写未落盘 → 回滚重跑。"""
-
-    def test_crash_after_rewrite_before_marker_completes_marker(self):
-        with tempfile.TemporaryDirectory() as d:
-            store = _store(d, segments=2)
-            ch = store.load_chapter(0)
-            ch.text_segments[0].target = "自然的表达"
-            store.save_chapter(ch)  # 改写已落盘
-            checkpoint.begin_naturalize(store, 0, [(0, "自然的表达")])
-
-            reopened = _reopen(store.run_dir)
-            self.assertTrue(reopened.load_progress(0).naturalized, "恢复应补标记")
-            self.assertFalse(os.path.isfile(reopened.journal_path))
-            self.assertEqual(reopened.load_chapter(0).text_segments[0].target, "自然的表达")
-
-    def test_crash_before_rewrite_rolls_back(self):
-        with tempfile.TemporaryDirectory() as d:
-            store = _store(d, segments=2)
-            ch = store.load_chapter(0)
-            ch.text_segments[0].target = "原译文"
-            store.save_chapter(ch)
-            checkpoint.begin_naturalize(store, 0, [(0, "自然的表达")])
-
-            reopened = _reopen(store.run_dir)
-            self.assertFalse(reopened.load_progress(0).naturalized, "改写未落盘 → 保持未自然化")
-            self.assertFalse(os.path.isfile(reopened.journal_path))
-            self.assertEqual(reopened.load_chapter(0).text_segments[0].target, "原译文")
-
-    def test_committed_naturalize_just_clears_journal(self):
-        with tempfile.TemporaryDirectory() as d:
-            store = _store(d, segments=2)
-            ch = store.load_chapter(0)
-            ch.text_segments[0].target = "自然的表达"
-            store.save_chapter(ch)
-            store.set_naturalized(0)
-            checkpoint.begin_naturalize(store, 0, [(0, "自然的表达")])
-
-            reopened = _reopen(store.run_dir)
-            self.assertTrue(reopened.load_progress(0).naturalized)
             self.assertFalse(os.path.isfile(reopened.journal_path))
 
 

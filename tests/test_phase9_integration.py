@@ -67,7 +67,7 @@ class _InstrumentedFakeClient(FakeClient):
             self.models[1]
             if agent == "editor"
             else self.models[2]
-            if agent in {"reviewer", "preparer", "light-translator"}
+            if agent in {"preparer", "light-translator"}
             else self.models[0]
         )
         request_hash = hashlib.sha256(
@@ -127,7 +127,6 @@ def _config(state: Path) -> Config:
     config.source_lang = "en"
     config.target_lang = "zh"
     config.state_dir = str(state)
-    config.pipeline.backtranslate_sample = 0
     return config
 
 
@@ -241,21 +240,53 @@ class TestPhase9Integration(unittest.TestCase):
                 sum(call["operation"] == "translate.batch" for call in resumed.calls), 0
             )
 
-    def test_hook_does_not_fire_for_already_translated_batches(self):
+    def test_hook_does_not_fire_for_already_translated_quality_run(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "book.txt"
             _source(source)
-            Application(_config(root / "state"), client=FakeClient(handler=routing_handler)).run(
-                str(source)
-            )
+            first = Application(
+                _config(root / "state"), client=FakeClient(handler=routing_handler)
+            ).run_all(str(source), out_format="txt")
+            target_before = Path(first["store"].chapter_path(0)).read_bytes()
             hook = _StopAfterBatch()
-            Application(
+            resumed = FakeClient(handler=routing_handler)
+            second = Application(
                 _config(root / "state"),
-                client=FakeClient(handler=routing_handler),
+                client=resumed,
                 batch_commit_hook=hook,
-            ).run(str(source))
+            ).run_all(str(source), out_format="txt")
             self.assertEqual(hook.commits, [])
+            self.assertEqual(Path(second["store"].chapter_path(0)).read_bytes(), target_before)
+            self.assertEqual(
+                sum(call["operation"] == "translate.batch" for call in resumed.calls), 0
+            )
+
+    def test_primary_model_change_invalidates_naming_and_translation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "book.txt"
+            _source(source)
+            first = Application(
+                _config(root / "state"), client=FakeClient(handler=routing_handler)
+            ).run(str(source))
+            old_name_fingerprint = first.load_state().nodes["name_terms"].input_fingerprint
+            changed = _config(root / "state")
+            changed.llm.models.primary = "different-primary"
+            client = FakeClient(handler=routing_handler)
+            second = Application(changed, client=client).run(str(source))
+            self.assertNotEqual(
+                second.load_state().nodes["name_terms"].input_fingerprint,
+                old_name_fingerprint,
+            )
+            self.assertGreater(
+                sum(call["operation"] == "translate.batch" for call in client.calls), 0
+            )
+            events_path = next((root / "state").rglob("events.jsonl"))
+            events = [
+                json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertTrue(any(event.get("event") == "translate_invalidated" for event in events))
 
     def test_unexpected_exception_is_not_treated_as_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -363,7 +394,7 @@ class TestPhase9Integration(unittest.TestCase):
         write_sample_epub(str(source))
         candidate_spec = CandidateSpec.model_validate(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "benchmark_id": "phase9",
                 "provider": "bailian",
                 "fast_model": "qwen3.7-flash:off",
@@ -375,11 +406,13 @@ class TestPhase9Integration(unittest.TestCase):
                         "candidate_id": "candidate-a-polished",
                         "primary_model": "qwen3.8-max:off",
                         "editor_model": "deepseek-v4-pro:off",
+                        "pipeline_variant": "polish",
                     },
                     {
                         "candidate_id": "candidate-b-polished",
                         "primary_model": "deepseek-v4-flash:off",
                         "editor_model": "qwen3.7-plus:off",
+                        "pipeline_variant": "polish",
                     },
                 ],
             }
@@ -452,6 +485,13 @@ class TestPhase9Integration(unittest.TestCase):
             self.assertEqual(sorted(first["failed_candidates"]), [])
             self.assertTrue(first["resumed"] is False)
             self.assertEqual(len(clients), 6)
+            request = json.loads(
+                (root / "out" / "integration_request.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                {item["pipeline_variant"] for item in request["candidates"].values()},
+                {"polish"},
+            )
             for cid in ("candidate-a-polished", "candidate-b-polished"):
                 result = json.loads((root / "out" / "candidates" / cid / "result.json").read_text())
                 self.assertTrue(result["expected_interruption_observed"])
@@ -1153,7 +1193,7 @@ class TestPhase9Integration(unittest.TestCase):
             candidate_path.write_text(
                 yaml.safe_dump(
                     {
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "benchmark_id": "phase9",
                         "provider": "bailian",
                         "fast_model": "qwen3.7-flash:off",
@@ -1165,11 +1205,13 @@ class TestPhase9Integration(unittest.TestCase):
                                 "candidate_id": "a-polished",
                                 "primary_model": "qwen3.8-max:off",
                                 "editor_model": "deepseek-v4-pro:off",
+                                "pipeline_variant": "polish",
                             },
                             {
                                 "candidate_id": "b-polished",
                                 "primary_model": "deepseek-v4-flash:off",
                                 "editor_model": "qwen3.7-plus:off",
+                                "pipeline_variant": "polish",
                             },
                         ],
                     },

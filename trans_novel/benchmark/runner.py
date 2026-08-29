@@ -29,11 +29,12 @@ from trans_novel.config import Config, LLMConfig, ModelRoles, PipelineConfig
 from trans_novel.ingest.epub_reader import read_epub
 from trans_novel.llm import GenerationOptions, build_client
 from trans_novel.llm.telemetry import CallAttemptTelemetry, CallTelemetrySink
+from trans_novel.llm.usage import usage_delta
 from trans_novel.model_profiles import capabilities_for, validate_model_selection
 from trans_novel.pipeline.bootstrap import Application
-from trans_novel.pipeline.runstore import RunStore
+from trans_novel.pipeline.runstore import RunStore, clone_closed_runstore
 
-RUN_SCHEMA_VERSION = 2
+RUN_SCHEMA_VERSION = 3
 PROMPT_VERSION = "production-translator-v1"
 _GENERATION_FIELDS = {
     "temperature": 0.1,
@@ -263,12 +264,22 @@ def _candidate_store(state_dir: Path) -> RunStore:
     return RunStore(str(stores[0]))
 
 
+def _target_hash(rows: list[dict[str, Any]]) -> str:
+    ordered = [
+        {"chapter": row["chapter_index"], "index": row["segment_index"], "target": row["target"]}
+        for row in rows
+    ]
+    return sha256_bytes(canonical_json(ordered).encode("utf-8"))
+
+
 def _segment_rows(store: RunStore, source_sha256: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for chapter in store.load_state().chapters:
+    state = store.load_state()
+    qa_node = state.nodes.get("deterministic_qa")
+    qa_findings = (qa_node.output or {}).get("issues", []) if qa_node else []
+    for chapter in state.chapters:
         progress = store.load_progress(chapter.index)
-        review = progress.review_issue_dicts()
-        backtranslation = progress.backtranslation_issue_dicts()
+        lint_findings = progress.lint_issues
         for segment in store.load_chapter(chapter.index).text_segments:
             target = segment.target or ""
             if not target.strip():
@@ -284,13 +295,14 @@ def _segment_rows(store: RunStore, source_sha256: str) -> list[dict[str, Any]]:
                     "kind": segment.kind,
                     "source": segment.source,
                     "target": target,
-                    "review_findings": [
-                        item for item in review if item.get("index") in {None, segment.index}
+                    "lint_findings": [
+                        item for item in lint_findings if item.get("index") in {None, segment.index}
                     ],
-                    "backtranslation_findings": [
+                    "deterministic_findings": [
                         item
-                        for item in backtranslation
-                        if item.get("index") in {None, segment.index}
+                        for item in qa_findings
+                        if item.get("chapter") == chapter.index
+                        and item.get("index") == segment.index
                     ],
                     "source_sha256": sha256_bytes(segment.source.encode("utf-8")),
                     "target_sha256": sha256_bytes(target.encode("utf-8")),
@@ -321,10 +333,10 @@ class FullRunner:
         primary: str,
         editor: str,
         *,
-        quality: bool,
+        pipeline_variant: str = "minimal",
         state_dir: str,
     ) -> Config:
-        preset = "quality" if quality else "economy"
+        preset = "quality" if pipeline_variant == "polish" else "balanced"
         return Config(
             llm=LLMConfig(
                 provider=spec.provider,
@@ -379,19 +391,30 @@ class FullRunner:
                     "candidate": candidate.model_dump(mode="python"),
                     "fast_model": spec.fast_model,
                     "generation": _GENERATION_FIELDS,
-                    "quality": "quality",
-                    "book_id": book_id,
+                    "pipeline_variant": candidate.pipeline_variant,
+                    "quality": candidate.pipeline_variant,
                     "source_sha256": source_sha256,
                     "replicate": replicate,
                 }
             ).encode("utf-8")
         )
 
-    @staticmethod
-    def _validate_artifact(out: Path, row: dict[str, Any]) -> None:
+    def _validate_artifact(
+        self,
+        out: Path,
+        row: dict[str, Any],
+        *,
+        spec: CandidateSpec,
+        candidate: Candidate,
+        book_id: str,
+        source_sha256: str,
+        replicate: int,
+        minimal_row: dict[str, Any] | None = None,
+    ) -> None:
         required = {
             "artifact_key",
             "candidate_id",
+            "pipeline_variant",
             "book_id",
             "replicate",
             "source_sha256",
@@ -402,7 +425,10 @@ class FullRunner:
             "telemetry_sha256",
             "outputs",
             "output_hashes",
+            "initial_targets_sha256",
+            "final_targets_sha256",
             "usage",
+            "polish_incremental_usage",
             "provider",
             "primary_model",
             "editor_model",
@@ -410,6 +436,21 @@ class FullRunner:
         }
         if set(row) != required:
             raise BenchmarkError("candidate artifact fields invalid")
+        expected_key = self._artifact_key(spec, candidate, book_id, source_sha256, replicate)
+        expected_values = {
+            "artifact_key": expected_key,
+            "candidate_id": candidate.candidate_id,
+            "pipeline_variant": candidate.pipeline_variant,
+            "book_id": book_id,
+            "replicate": replicate,
+            "source_sha256": source_sha256,
+            "provider": spec.provider,
+            "primary_model": candidate.primary_model,
+            "editor_model": candidate.editor_model,
+            "fast_model": spec.fast_model,
+        }
+        if any(row.get(field) != value for field, value in expected_values.items()):
+            raise BenchmarkError("candidate artifact identity mismatch")
         for field, digest_field in (
             ("segments_path", "segments_sha256"),
             ("telemetry_path", "telemetry_sha256"),
@@ -417,12 +458,38 @@ class FullRunner:
             path = out / row[field]
             if not path.is_file() or sha256_bytes(path.read_bytes()) != row[digest_field]:
                 raise BenchmarkError(f"candidate artifact {field} is missing or changed")
+        segments_path = out / row["segments_path"]
+        try:
+            segment_rows = [
+                json.loads(line)
+                for line in segments_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except Exception as error:
+            raise BenchmarkError("candidate segments artifact is invalid") from error
+        if _target_hash(segment_rows) != row["final_targets_sha256"]:
+            raise BenchmarkError("candidate final target hash mismatch")
+        if minimal_row is None:
+            if row["initial_targets_sha256"] != row["final_targets_sha256"]:
+                raise BenchmarkError("minimal candidate initial target hash mismatch")
+        elif row["initial_targets_sha256"] != minimal_row["final_targets_sha256"]:
+            raise BenchmarkError("polish candidate initial target hash mismatch")
+        state_root = out / row["state_path"]
+        store = _candidate_store(state_root)
+        usage = store.load_usage() or {}
+        if usage != row["usage"]:
+            raise BenchmarkError("candidate usage metadata mismatch")
+        expected_increment = (
+            usage_delta(usage, minimal_row["usage"])
+            if minimal_row is not None
+            else usage_delta({}, {})
+        )
+        if row["polish_incremental_usage"] != expected_increment:
+            raise BenchmarkError("candidate polish usage metadata mismatch")
         for relative, digest in row["output_hashes"].items():
             path = out / relative
             if not path.is_file() or sha256_bytes(path.read_bytes()) != digest:
                 raise BenchmarkError("candidate output is missing or changed")
-        state_root = out / row["state_path"]
-        _candidate_store(state_root)
 
     def _run(
         self,
@@ -449,7 +516,9 @@ class FullRunner:
                 canonical_json(spec.model_dump(mode="python")).encode("utf-8")
             ),
             "generation": dict(_GENERATION_FIELDS),
-            "quality": "quality",
+            "pipeline_variants": {
+                candidate.candidate_id: candidate.pipeline_variant for candidate in spec.candidates
+            },
             "book_ids": [book.book_id for book, _, _ in selected_books],
             "replicates": replicate_count,
         }
@@ -470,11 +539,54 @@ class FullRunner:
             raise BenchmarkError("candidate artifact index must be a list")
         by_key = {row["artifact_key"]: row for row in existing_rows}
         expected = len(selected_books) * len(spec.candidates) * replicate_count
+        candidate_by_id = {candidate.candidate_id: candidate for candidate in spec.candidates}
+        book_by_id = {
+            book.book_id: (book, sha256_bytes(source_bytes))
+            for book, _source_path, source_bytes in selected_books
+        }
+        ordered_candidates = sorted(
+            spec.candidates,
+            key=lambda candidate: (candidate.pipeline_variant != "minimal", candidate.candidate_id),
+        )
+        minimal_by_pair = {
+            (candidate.primary_model, candidate.editor_model): candidate
+            for candidate in ordered_candidates
+            if candidate.pipeline_variant == "minimal"
+        }
         if state.get("status") == "completed":
             if len(by_key) != expected:
                 raise BenchmarkError("completed benchmark candidate count mismatch")
             for row in by_key.values():
-                self._validate_artifact(out, row)
+                candidate = candidate_by_id.get(row.get("candidate_id"))
+                book_id = row.get("book_id")
+                if candidate is None or book_id not in book_by_id:
+                    raise BenchmarkError("completed benchmark candidate identity mismatch")
+                minimal_row = None
+                if candidate.pipeline_variant == "polish":
+                    minimal = minimal_by_pair.get((candidate.primary_model, candidate.editor_model))
+                    minimal_row = next(
+                        (
+                            value
+                            for value in by_key.values()
+                            if value.get("candidate_id")
+                            == (minimal.candidate_id if minimal else None)
+                            and value.get("book_id") == book_id
+                            and value.get("replicate") == row.get("replicate")
+                        ),
+                        None,
+                    )
+                    if minimal_row is None:
+                        raise BenchmarkError("polish candidate is missing its minimal arm")
+                self._validate_artifact(
+                    out,
+                    row,
+                    spec=spec,
+                    candidate=candidate,
+                    book_id=book_id,
+                    source_sha256=book_by_id[book_id][1],
+                    replicate=row.get("replicate"),
+                    minimal_row=minimal_row,
+                )
             return immutable | {"status": "completed", "branch_count": len(by_key)}
         _atomic_json(
             state_path,
@@ -484,12 +596,41 @@ class FullRunner:
             for book, source_path, source_bytes in selected_books:
                 source_sha = sha256_bytes(source_bytes)
                 for replicate in range(1, replicate_count + 1):
-                    for candidate in spec.candidates:
+                    for candidate in ordered_candidates:
                         key = self._artifact_key(
                             spec, candidate, book.book_id, source_sha, replicate
                         )
                         if key in by_key:
-                            self._validate_artifact(out, by_key[key])
+                            minimal_row = None
+                            if candidate.pipeline_variant == "polish":
+                                minimal = minimal_by_pair.get(
+                                    (candidate.primary_model, candidate.editor_model)
+                                )
+                                minimal_row = next(
+                                    (
+                                        value
+                                        for value in by_key.values()
+                                        if minimal is not None
+                                        and value.get("candidate_id") == minimal.candidate_id
+                                        and value.get("book_id") == book.book_id
+                                        and value.get("replicate") == replicate
+                                    ),
+                                    None,
+                                )
+                                if minimal_row is None:
+                                    raise BenchmarkError(
+                                        "polish candidate is missing its minimal arm"
+                                    )
+                            self._validate_artifact(
+                                out,
+                                by_key[key],
+                                spec=spec,
+                                candidate=candidate,
+                                book_id=book.book_id,
+                                source_sha256=source_sha,
+                                replicate=replicate,
+                                minimal_row=minimal_row,
+                            )
                             continue
                         root = (
                             out
@@ -499,16 +640,87 @@ class FullRunner:
                             / f"r{replicate}"
                         )
                         state_root = root / "state"
+                        minimal_row = None
+                        if candidate.pipeline_variant == "polish":
+                            minimal = minimal_by_pair.get(
+                                (candidate.primary_model, candidate.editor_model)
+                            )
+                            if minimal is None:
+                                raise BenchmarkError(
+                                    "polish candidate requires a matching minimal candidate"
+                                )
+                            minimal_key = self._artifact_key(
+                                spec, minimal, book.book_id, source_sha, replicate
+                            )
+                            minimal_row = by_key.get(minimal_key)
+                            if minimal_row is None:
+                                raise BenchmarkError(
+                                    "minimal arm must complete before polish arm is created"
+                                )
+                            self._validate_artifact(
+                                out,
+                                minimal_row,
+                                spec=spec,
+                                candidate=minimal,
+                                book_id=book.book_id,
+                                source_sha256=source_sha,
+                                replicate=replicate,
+                            )
+                            minimal_root = (
+                                out
+                                / "candidates"
+                                / minimal.candidate_id
+                                / _safe_book_id(book.book_id)
+                                / f"r{replicate}"
+                                / "state"
+                            )
+                            minimal_store = _candidate_store(minimal_root)
+                            destination_store = state_root / Path(minimal_store.run_dir).name
+                            if (
+                                destination_store.is_dir()
+                                and (destination_store / "manifest.json").is_file()
+                            ):
+                                cloned = _candidate_store(state_root)
+                            else:
+                                state_root.mkdir(parents=True, exist_ok=True)
+                                clone_closed_runstore(minimal_store.run_dir, str(destination_store))
+                                cloned = RunStore(str(destination_store))
+                                cloned_state = cloned.load_state()
+                                for node_key in list(cloned_state.nodes):
+                                    if node_key.split(":", 1)[0] in {
+                                        "polish",
+                                        "titles",
+                                        "deterministic_qa",
+                                        "report",
+                                        "assemble",
+                                    }:
+                                        from trans_novel.pipeline.state import NodeState
+
+                                        cloned_state.nodes[node_key] = NodeState(node_id=node_key)
+                                cloned.save_state(cloned_state)
                         telemetry_path = root / "telemetry.jsonl"
                         telemetry_path.parent.mkdir(parents=True, exist_ok=True)
                         telemetry_path.touch(exist_ok=True)
                         sink = _JsonlTelemetrySink(telemetry_path)
+                        if candidate.pipeline_variant == "polish":
+                            minimal_segments = out / minimal_row["segments_path"]
+                            initial_rows = [
+                                json.loads(line)
+                                for line in minimal_segments.read_text(
+                                    encoding="utf-8"
+                                ).splitlines()
+                                if line.strip()
+                            ]
+                            usage_before = minimal_row["usage"]
+                        else:
+                            initial_rows = None
+                            usage_before = {}
                         client = self._client(spec, candidate, options, sink)
                         config = self._config(
                             spec,
                             candidate.primary_model,
                             candidate.editor_model,
-                            quality=True,
+                            pipeline_variant=candidate.pipeline_variant,
                             state_dir=str(state_root),
                         )
                         output_path = root / "outputs" / f"{book.book_id}.epub"
@@ -517,8 +729,11 @@ class FullRunner:
                             str(source_path), out_format="epub", out_path=str(output_path)
                         )
                         store = _candidate_store(state_root)
+                        final_rows = _segment_rows(store, source_sha)
+                        if initial_rows is None:
+                            initial_rows = final_rows
                         segments_path = root / "segments.jsonl"
-                        _write_jsonl(segments_path, _segment_rows(store, source_sha))
+                        _write_jsonl(segments_path, final_rows)
                         outputs = [
                             Path(value).expanduser().resolve()
                             for value in result.get("outputs", [])
@@ -527,9 +742,11 @@ class FullRunner:
                         if not outputs or any(not path.is_file() for path in outputs):
                             raise BenchmarkError("production benchmark did not create output EPUBs")
                         relative_outputs = [str(path.relative_to(out)) for path in outputs]
+                        usage = store.load_usage() or {}
                         row = {
                             "artifact_key": key,
                             "candidate_id": candidate.candidate_id,
+                            "pipeline_variant": candidate.pipeline_variant,
                             "book_id": book.book_id,
                             "replicate": replicate,
                             "source_sha256": source_sha,
@@ -543,13 +760,29 @@ class FullRunner:
                                 relative: sha256_bytes((out / relative).read_bytes())
                                 for relative in relative_outputs
                             },
-                            "usage": _usage_of(client),
+                            "initial_targets_sha256": _target_hash(initial_rows),
+                            "final_targets_sha256": _target_hash(final_rows),
+                            "usage": usage,
+                            "polish_incremental_usage": (
+                                usage_delta(usage, usage_before)
+                                if candidate.pipeline_variant == "polish"
+                                else usage_delta({}, {})
+                            ),
                             "provider": spec.provider,
                             "primary_model": candidate.primary_model,
                             "editor_model": candidate.editor_model,
                             "fast_model": spec.fast_model,
                         }
-                        self._validate_artifact(out, row)
+                        self._validate_artifact(
+                            out,
+                            row,
+                            spec=spec,
+                            candidate=candidate,
+                            book_id=book.book_id,
+                            source_sha256=source_sha,
+                            replicate=replicate,
+                            minimal_row=minimal_row,
+                        )
                         by_key[key] = row
                         _atomic_json(
                             rows_path, sorted(by_key.values(), key=lambda x: x["artifact_key"])
@@ -557,14 +790,11 @@ class FullRunner:
                         artifacts = dict(state.get("artifacts", {}))
                         artifacts[key] = {
                             "candidate_id": candidate.candidate_id,
+                            "pipeline_variant": candidate.pipeline_variant,
                             "book_id": book.book_id,
                             "replicate": replicate,
                         }
-                        state = {
-                            "schema_version": 1,
-                            "status": "running",
-                            "artifacts": artifacts,
-                        }
+                        state = {"schema_version": 1, "status": "running", "artifacts": artifacts}
                         _atomic_json(state_path, state)
             if len(by_key) != expected:
                 raise BenchmarkError("benchmark candidate count mismatch")
