@@ -2,7 +2,7 @@
 
 专注于将多语言 EPUB、FB2 或 TXT 小说翻译成中文，并尽量保留 EPUB 原排版、图片、目录和跳转。
 
-项目的日常入口只有一个命令：`translate`。它会完成预扫、分析、翻译、可选润色、章末审校、标点规范化和 EPUB 导出；中断后可以继续跑。
+项目的日常入口只有一个命令：`translate`。它会完成预扫、分析、翻译、可选润色、确定性 QA、报告和 EPUB 导出；中断后可以继续跑。
 
 ## 快速开始
 
@@ -69,15 +69,13 @@ trans-novel translate book.epub --chapter 3
 trans-novel translate book.epub --quality economy
 trans-novel translate book.epub --quality quality
 trans-novel translate book.epub --polish
-trans-novel translate book.epub --no-qa
 trans-novel translate book.epub --source-language ja
 trans-novel translate book.epub --back-matter full
 ```
 
-`--quality` 只覆盖本次运行。`balanced` 默认开启全书预扫、章末审校、严重问题自动重译和
-去翻译腔；`economy` 关闭这些额外模型阶段；`quality` 额外开启全文润色、跨章一致性 QA
-和 5% 回译抽检。`--polish/--no-polish` 与 `--qa/--no-qa` 可以继续覆盖单个高成本阶段。
-已经翻译完成的批次会被断点续跑跳过，后来改变档位不会自动重跑旧译文。
+`--quality` 只覆盖本次运行：`economy` 不润色且附属章走轻量路径，`balanced` 不润色但完整处理
+附属章，`quality` 开启润色并完整处理附属章。`--polish` 和 `--back-matter` 可以覆盖当前运行。
+确定性 QA 始终执行，不提供关闭开关；已经翻译完成的批次会被断点续跑跳过。
 
 ## 配置
 
@@ -97,8 +95,8 @@ quality: balanced
 ```
 
 - `primary`：正文翻译、全局分析和定名；默认 thinking 级别为 `high`。
-- `editor`：润色和自然化改写；省略时继承 `primary`，默认 thinking 级别为 `high`。
-- `fast`：审校、预扫、梗概、术语抽取、回译和附属章粗翻；默认 thinking 级别为 `off`。
+- `editor`：润色；省略时继承 `primary`，默认 thinking 级别为 `high`。
+- `fast`：术语挖掘、术语抽取和附属章轻量翻译；默认 thinking 级别为 `off`。
 - `quality`：`economy`、`balanced` 或 `quality`。
 
 模型规格可在模型 ID 最右侧追加 `:off`、`:low`、`:medium`、`:high` 或 `:max`。
@@ -159,13 +157,11 @@ quality: balanced
 → 解析章节、正文段落和 EPUB 目录
 → 模型识别源语言（或使用配置指定语言）
 → 分析样章，建立风格指南与初始术语表
-→ 预扫整本书：逐章梗概 → 源文侧术语候选挖掘 → 一次性全书定名 → 全书概览
-→ 按章、按批翻译（批后确定性 lint：引号/数字/锁定专名/未译，命中即带反馈定向重译）
+→ 源文侧术语候选挖掘 → 一次性全书定名
+→ 按章、按批翻译（批后确定性 lint，命中即定向重译）
 → 可选润色（润色若引入 lint 回归，该段回退润色前译文）
 → 标点规范化
-→ 章末 review
-→ 可选严重项自动重译
-→ 可选一致性 QA
+→ 确定性全书 QA → 报告
 → 回填导出 EPUB/TXT
 ```
 
@@ -173,12 +169,11 @@ quality: balanced
 
 ## 一致性机制
 
-- **术语库**：翻译前从源文挖掘专名候选（英文走确定性统计，其他语言走 LLM 挖掘），由定名 Agent 一次性统一定名后写入 SQLite 术语库，翻译期只读；人物条目锁定后由 lint 硬校验。
-- **全书理解**：翻译前预扫源文，生成全书概览和章节梗概，让早期章节也能参考全书走向。
+- **术语库**：翻译前从源文挖掘专名候选，由定名 Agent 一次性统一定名后写入 SQLite 术语库，翻译期只读。
 - **滚动上下文**：章内批次串行处理，后一个批次能看到前面最近几段译文。
 - **段数对齐**：每批输入 N 段，要求模型输出 N 段 JSON；段数不符会重试，仍失败则逐段兜底。
-- **确定性 lint**：零成本机器校验直接引语引号保留、数字一致、锁定专名命中、整段未译；翻译后与润色后各跑一遍，命中即定向重译或回退，其余记录进报告。
-- **章末 review**：`balanced` 和 `quality` 档位按章检查漏译、误译、专名、人称等语义问题，并自动重译严重项。
+- **确定性 lint**：零成本机器校验直接引语、数字、锁定专名和未译内容；命中即定向重译或回退，其余记录进报告。
+- **确定性全书 QA**：扫描每个完成章节的每个源文/译文段落，不调用 LLM，也不修改译文。
 - **标点规范化**：译文统一为简体中文大陆常用全角标点。
 
 ## 常用工具
@@ -202,10 +197,9 @@ OpenRouter 时走各自官方地址；Ollama 与 vLLM 使用本地默认地址�
 
 内部 Agent 固定映射到三个用户模型角色：
 
-- `primary`：正文翻译、定向重译、标题翻译、全局分析、定名和术语审计。
-- `editor`：润色和自然化改写；省略时继承 `primary`。
-- `fast`：章末审校、一致性检查、语言识别、预扫、梗概、术语抽取、回译和附属章粗翻。
-
+- `primary`：正文翻译、定向重译、标题翻译、全局分析和定名。
+- `editor`：润色；省略时继承 `primary`。
+- `fast`：语言识别、术语挖掘、术语抽取和附属章粗翻。
 thinking 级别由模型规格最右侧的后缀决定。请求字段由内置的逐 Provider/模型能力表
 生成：OpenCode Go 的 `deepseek-v4-flash:high` 下发 `thinking=enabled` 与
 `reasoning_effort=high`，`:off` 下发 `thinking=disabled`。该模型不支持 `low`，
@@ -219,14 +213,12 @@ trans_novel/
   ingest/       输入解析、EPUB/FB2/TXT 切分
   llm/          LLM 抽象接口、provider factory、内置 providers、FakeClient
   glossary/     SQLite 术语库、源文候选挖掘、译后抽取（可选）、冲突处理
-  agents/       分析、翻译、审校、润色、定名、一致性、提示词
-  pipeline/     workflow（声明式节点/planner/runner）、断点状态、滚动上下文、确定性 lint、校验
+  agents/       分析、翻译、润色、定名、提示词
+  pipeline/     workflow（节点/planner/runner）、断点状态、滚动上下文、确定性 lint/QA、校验
   postprocess/  标点规范化
   assemble/     EPUB/TXT 回填导出、QA 报告
 tests/          离线测试
 ```
-
-## 测试
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest discover -s tests

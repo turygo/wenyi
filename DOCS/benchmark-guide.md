@@ -5,10 +5,10 @@
 ## 核心不变量
 
 - benchmark 直接调用生产 `Application.run_all()`，输入是 `BOOK_SPEC.yaml` 指向的原始章节 EPUB。
-- 每个候选、章节和 replicate 使用独立状态目录；不共享分析、术语库、翻译或润色结果。
-- 不存在 benchmark 专用翻译 prompt、共享 preparation、未润色 control 或 attribution 路径。
-- `economy` 不润色；`balanced`、`quality` 和 benchmark 始终润色。
-- 每个候选必须同时配置 `primary_model`、`editor_model` 和 thinking 级别；支持关闭时使用 `:off`，无法关闭的 Muse Spark 使用最低 `:low`。
+- 每个候选、章节和 replicate 使用独立状态目录；polish arm 只从同模型对的已关闭 minimal arm 克隆初译状态。
+- 不存在 benchmark 专用翻译 prompt、共享 preparation 或独立重译的 polish control。
+- minimal 使用 `balanced`（不润色），polish 使用 `quality`（仅新增润色及必要收尾）。
+- 每个候选必须配置 `pipeline_variant: minimal|polish`、`primary_model`、`editor_model` 和 thinking 级别。
 - canary 使用一个真实 `screen` 章节；full 只使用全部 6 个 `formal` 章节。
 - 自动评审只接受带原文和译文真实子串证据的严格 JSON，不接收人工表单或后编辑计时。
 
@@ -68,10 +68,10 @@ books:
 
 ## 2. 配置候选
 
-`CANDIDATES.yaml` 决定实际 Provider 和三角色模型，不继承本地 `config.yaml`。当前正式比较包含三套始终润色的 OpenCode Go 候选；每套候选都使用自身模型完成初译和编辑：
+`CANDIDATES.yaml` 决定实际 Provider、模型和 minimal/polish 变体，不继承本地 `config.yaml`：
 
 ```yaml
-schema_version: 1
+schema_version: 2
 benchmark_id: wenyi-benchmark
 provider: opencode-go
 fast_model: mimo-v2.5:off
@@ -79,15 +79,14 @@ temperature: 0.1
 seed: null
 replicates: 1
 candidates:
-  - candidate_id: deepseek-v4-flash
+  - candidate_id: deepseek-v4-flash-minimal
     primary_model: deepseek-v4-flash:off
     editor_model: deepseek-v4-flash:off
-  - candidate_id: muse-spark-1.2-contributor
-    primary_model: muse-spark-1.2-contributor:low
-    editor_model: muse-spark-1.2-contributor:low
-  - candidate_id: mimo-v2.5
-    primary_model: mimo-v2.5:off
-    editor_model: mimo-v2.5:off
+    pipeline_variant: minimal
+  - candidate_id: deepseek-v4-flash-polish
+    primary_model: deepseek-v4-flash:off
+    editor_model: deepseek-v4-flash:off
+    pipeline_variant: polish
 ```
 
 运行前在当前 shell 设置凭据，并在 OpenCode Go workspace 中为
@@ -163,7 +162,7 @@ uv run trans-novel tools benchmark evaluate prepare \
 
 抽样对每本 formal 章节独立执行，优先覆盖：
 
-- 生产审校或回译发现过问题的风险段；
+- lint 或确定性 QA 发现过问题的风险段；
 - 对话；
 - 专名和术语；
 - 长句；
