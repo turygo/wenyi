@@ -15,10 +15,8 @@ from trans_novel.pipeline.runstore import clone_closed_runstore
 
 def _spec(*, candidates=None):
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "benchmark_id": "offline",
-        "provider": "fake",
-        "fast_model": "fast:off",
         "temperature": 0.1,
         "seed": None,
         "replicates": 1,
@@ -26,14 +24,18 @@ def _spec(*, candidates=None):
         or [
             {
                 "candidate_id": "same-minimal",
-                "primary_model": "same:high",
-                "editor_model": "same:high",
+                "translator_model": "fake/same:high",
+                "analyst_model": "fake/analysis:off",
+                "editor_model": "fake/same:high",
+                "fast_model": "fake/fast:off",
                 "pipeline_variant": "minimal",
             },
             {
                 "candidate_id": "same-polish",
-                "primary_model": "same:high",
-                "editor_model": "same:high",
+                "translator_model": "fake/same:high",
+                "analyst_model": "fake/analysis:off",
+                "editor_model": "fake/same:high",
+                "fast_model": "fake/fast:off",
                 "pipeline_variant": "polish",
             },
         ],
@@ -41,15 +43,15 @@ def _spec(*, candidates=None):
 
 
 class TestBenchmarkSchema(unittest.TestCase):
-    def test_candidate_spec_v2_allows_same_model_pair_across_variants(self):
+    def test_candidate_spec_v3_allows_same_model_roles_across_variants(self):
         parsed = CandidateSpec.model_validate(_spec())
-        self.assertEqual(parsed.schema_version, 2)
+        self.assertEqual(parsed.schema_version, 3)
         self.assertEqual(
             {candidate.pipeline_variant for candidate in parsed.candidates}, {"minimal", "polish"}
         )
 
     def test_loader_rejects_missing_pipeline_variant(self):
-        value = _spec(candidates=[{"candidate_id": "x", "primary_model": "p", "editor_model": "e"}])
+        value = _spec(candidates=[{"candidate_id": "x"}])
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "candidates.yaml"
             path.write_text(yaml.safe_dump(value), encoding="utf-8")

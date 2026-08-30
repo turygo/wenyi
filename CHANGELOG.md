@@ -12,6 +12,7 @@
 - 模型路由拆分为显式的 `translator`、`analyst`、`editor`、`fast` 四角色；默认由 Hy-MT2 30B 负责纯文本翻译，Muse Spark Contributor 负责分析、边界对齐、润色和快速任务。
 - EPUB 翻译改为“完整纯文本翻译后通用边界对齐”：模型不再接收 EPUB 槽位 ID 或路径，程序严格校验边界数量与译文内容后再回填原结构。
 - benchmark 候选 schema 升级为四角色完整模型 ID，并横向比较 Hy-MT2 30B、GLM-5.3-Flash 与 Muse Spark 1.2 Contributor 的 minimal/polish 两臂。
+- Benchmark validation now accepts independent translator, analyst, editor, and fast model IDs per candidate.
 
 
 ### Fixed

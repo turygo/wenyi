@@ -50,6 +50,8 @@ RUNNER_FORBIDDEN_KEYS = frozenset(
         "model",
         "model_id",
         "primary_model",
+        "translator_model",
+        "analyst_model",
         "editor_model",
         "fast_model",
         "candidate_id",

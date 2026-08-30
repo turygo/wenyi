@@ -230,8 +230,10 @@ class Candidate(StrictModel):
     candidate_id: str = Field(
         min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
     )
-    primary_model: _NONEMPTY
+    translator_model: _NONEMPTY
+    analyst_model: _NONEMPTY
     editor_model: _NONEMPTY
+    fast_model: _NONEMPTY
     pipeline_variant: Literal["minimal", "polish"]
 
     @field_validator("candidate_id")
@@ -243,20 +245,8 @@ class Candidate(StrictModel):
 
 
 class CandidateSpec(StrictModel):
-    schema_version: Literal[2]
+    schema_version: Literal[3]
     benchmark_id: _NONEMPTY
-    provider: Literal[
-        "deepseek",
-        "opencode-go",
-        "bailian",
-        "openai",
-        "openrouter",
-        "openai-compatible",
-        "ollama",
-        "vllm",
-        "fake",
-    ]
-    fast_model: _NONEMPTY
     temperature: float
     seed: Literal[None]
     replicates: int = Field(ge=1, le=3)
@@ -269,11 +259,9 @@ class CandidateSpec(StrictModel):
             raise ValueError("temperature must be exactly 0.1")
         return value
 
-    @field_validator("fast_model", "seed", mode="before")
+    @field_validator("seed", mode="before")
     @classmethod
     def explicit_values(cls, value):
-        if value is None:
-            return value
         return value
 
     @model_validator(mode="after")
@@ -281,19 +269,28 @@ class CandidateSpec(StrictModel):
         ids = [candidate.candidate_id for candidate in self.candidates]
         if len(set(ids)) != len(ids):
             raise ValueError("candidate_id values must be unique")
-        if not self.fast_model.endswith(":off"):
-            raise ValueError("fast_model must explicitly disable thinking with ':off'")
         thinking_suffixes = tuple(f":{level}" for level in ("off", "low", "medium", "high", "max"))
-        seen_pairs: set[tuple[str, str, str]] = set()
+        seen: set[tuple[str, str, str, str, str]] = set()
         for candidate in self.candidates:
-            for field_name in ("primary_model", "editor_model"):
+            for field_name in (
+                "translator_model",
+                "analyst_model",
+                "editor_model",
+                "fast_model",
+            ):
                 value = getattr(candidate, field_name)
                 if not value.endswith(thinking_suffixes):
                     raise ValueError(f"{field_name} must explicitly select a thinking level")
-            pair = (candidate.primary_model, candidate.editor_model, candidate.pipeline_variant)
-            if pair in seen_pairs:
-                raise ValueError("duplicate model pair and pipeline_variant")
-            seen_pairs.add(pair)
+            identity = (
+                candidate.translator_model,
+                candidate.analyst_model,
+                candidate.editor_model,
+                candidate.fast_model,
+                candidate.pipeline_variant,
+            )
+            if identity in seen:
+                raise ValueError("duplicate model roles and pipeline_variant")
+            seen.add(identity)
         return self
 
 

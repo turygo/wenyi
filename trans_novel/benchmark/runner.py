@@ -30,7 +30,11 @@ from trans_novel.ingest.epub_reader import read_epub
 from trans_novel.llm import GenerationOptions, build_client
 from trans_novel.llm.telemetry import CallAttemptTelemetry, CallTelemetrySink
 from trans_novel.llm.usage import usage_delta
-from trans_novel.model_profiles import capabilities_for, validate_model_selection
+from trans_novel.model_profiles import (
+    capabilities_for,
+    parse_provider_model,
+    validate_model_selection,
+)
 from trans_novel.pipeline.bootstrap import Application
 from trans_novel.pipeline.runstore import RunStore, clone_closed_runstore
 
@@ -116,11 +120,21 @@ def load_candidate_spec(path: str | os.PathLike[str]) -> CandidateSpec:
         raise BenchmarkError(f"invalid CandidateSpec: {error}") from error
 
 
-def _validate_model(provider: str, value: str, options: GenerationOptions) -> None:
+def _candidate_models(candidate: Candidate) -> tuple[str, str, str, str]:
+    return (
+        candidate.translator_model,
+        candidate.analyst_model,
+        candidate.editor_model,
+        candidate.fast_model,
+    )
+
+
+def _validate_model(value: str, options: GenerationOptions) -> None:
     try:
-        selection = validate_model_selection(provider, value)
+        provider, model = parse_provider_model(value)
+        selection = validate_model_selection(provider, model)
     except Exception as error:
-        raise BenchmarkError(f"invalid model selection {provider}:{value}: {error}") from error
+        raise BenchmarkError(f"invalid model selection {value}: {error}") from error
     capabilities = capabilities_for(provider, selection.model)
     if options.require_catalogued_model and not capabilities.catalogued:
         raise BenchmarkError(f"model is not catalogued: {provider}:{selection.model}")
@@ -139,10 +153,9 @@ def validate_candidate_capabilities(spec: CandidateSpec) -> GenerationOptions:
         require_catalogued_model=True,
         require_thinking_disabled=False,
     )
-    _validate_model(spec.provider, spec.fast_model, options)
     for candidate in spec.candidates:
-        _validate_model(spec.provider, candidate.primary_model, options)
-        _validate_model(spec.provider, candidate.editor_model, options)
+        for role in ("translator", "analyst", "editor", "fast"):
+            _validate_model(getattr(candidate, f"{role}_model"), options)
     return options
 
 
@@ -181,35 +194,37 @@ def _model_client(
     *,
     roles: ModelRoles | None = None,
 ) -> Any:
+    provider, provider_model = parse_provider_model(model)
     models = roles or ModelRoles(
-        primary=[f"{spec.provider}/{model}"],
-        editor=[f"{spec.provider}/{model}"],
-        fast=[f"{spec.provider}/{spec.fast_model}"],
+        translator=[model],
+        analyst=[model],
+        editor=[model],
+        fast=[model],
     )
     if factory is not None:
         attempts = (
             {
-                "provider": spec.provider,
-                "model": model,
+                "provider": provider,
+                "model": provider_model,
                 "role": role,
                 "models": models,
                 "generation_options": options,
                 "telemetry_sink": telemetry_sink,
             },
             {
-                "provider": spec.provider,
-                "model": model,
+                "provider": provider,
+                "model": provider_model,
                 "role": role,
                 "generation_options": options,
                 "telemetry_sink": telemetry_sink,
             },
             {
-                "provider": spec.provider,
-                "model": model,
+                "provider": provider,
+                "model": provider_model,
                 "role": role,
                 "generation_options": options,
             },
-            {"provider": spec.provider, "model": model, "role": role},
+            {"provider": provider, "model": provider_model, "role": role},
         )
         for kwargs in attempts:
             try:
@@ -219,10 +234,10 @@ def _model_client(
             except TypeError:
                 continue
         for args in (
-            (spec.provider, model, role, options, telemetry_sink),
-            (spec.provider, model, role, options),
-            (model, role),
-            (model,),
+            (provider, provider_model, role, options, telemetry_sink),
+            (provider, provider_model, role, options),
+            (provider_model, role),
+            (provider_model,),
         ):
             try:
                 client = factory(*args)
@@ -333,9 +348,7 @@ class FullRunner:
 
     @staticmethod
     def _config(
-        spec: CandidateSpec,
-        primary: str,
-        editor: str,
+        candidate: Candidate,
         *,
         pipeline_variant: str = "minimal",
         state_dir: str,
@@ -344,9 +357,10 @@ class FullRunner:
         return Config(
             llm=LLMConfig(
                 models=ModelRoles(
-                    primary=[f"{spec.provider}/{primary}"],
-                    editor=[f"{spec.provider}/{editor}"],
-                    fast=[f"{spec.provider}/{spec.fast_model}"],
+                    translator=[candidate.translator_model],
+                    analyst=[candidate.analyst_model],
+                    editor=[candidate.editor_model],
+                    fast=[candidate.fast_model],
                 )
             ),
             quality=preset,
@@ -367,13 +381,14 @@ class FullRunner:
             _attach_sink(self.client, sink, required=True)
             return self.client
         roles = ModelRoles(
-            primary=[f"{spec.provider}/{candidate.primary_model}"],
-            editor=[f"{spec.provider}/{candidate.editor_model}"],
-            fast=[f"{spec.provider}/{spec.fast_model}"],
+            translator=[candidate.translator_model],
+            analyst=[candidate.analyst_model],
+            editor=[candidate.editor_model],
+            fast=[candidate.fast_model],
         )
         return _model_client(
             spec,
-            candidate.primary_model,
+            candidate.translator_model,
             "translator",
             options,
             self.client_factory,
@@ -394,9 +409,7 @@ class FullRunner:
                 {
                     "schema_version": RUN_SCHEMA_VERSION,
                     "benchmark_id": spec.benchmark_id,
-                    "provider": spec.provider,
                     "candidate": candidate.model_dump(mode="python"),
-                    "fast_model": spec.fast_model,
                     "generation": _GENERATION_FIELDS,
                     "pipeline_variant": candidate.pipeline_variant,
                     "quality": candidate.pipeline_variant,
@@ -436,8 +449,8 @@ class FullRunner:
             "final_targets_sha256",
             "usage",
             "polish_incremental_usage",
-            "provider",
-            "primary_model",
+            "translator_model",
+            "analyst_model",
             "editor_model",
             "fast_model",
         }
@@ -451,10 +464,10 @@ class FullRunner:
             "book_id": book_id,
             "replicate": replicate,
             "source_sha256": source_sha256,
-            "provider": spec.provider,
-            "primary_model": candidate.primary_model,
+            "translator_model": candidate.translator_model,
+            "analyst_model": candidate.analyst_model,
             "editor_model": candidate.editor_model,
-            "fast_model": spec.fast_model,
+            "fast_model": candidate.fast_model,
         }
         if any(row.get(field) != value for field, value in expected_values.items()):
             raise BenchmarkError("candidate artifact identity mismatch")
@@ -556,7 +569,7 @@ class FullRunner:
             key=lambda candidate: (candidate.pipeline_variant != "minimal", candidate.candidate_id),
         )
         minimal_by_pair = {
-            (candidate.primary_model, candidate.editor_model): candidate
+            _candidate_models(candidate): candidate
             for candidate in ordered_candidates
             if candidate.pipeline_variant == "minimal"
         }
@@ -570,7 +583,7 @@ class FullRunner:
                     raise BenchmarkError("completed benchmark candidate identity mismatch")
                 minimal_row = None
                 if candidate.pipeline_variant == "polish":
-                    minimal = minimal_by_pair.get((candidate.primary_model, candidate.editor_model))
+                    minimal = minimal_by_pair.get(_candidate_models(candidate))
                     minimal_row = next(
                         (
                             value
@@ -610,9 +623,7 @@ class FullRunner:
                         if key in by_key:
                             minimal_row = None
                             if candidate.pipeline_variant == "polish":
-                                minimal = minimal_by_pair.get(
-                                    (candidate.primary_model, candidate.editor_model)
-                                )
+                                minimal = minimal_by_pair.get(_candidate_models(candidate))
                                 minimal_row = next(
                                     (
                                         value
@@ -649,9 +660,7 @@ class FullRunner:
                         state_root = root / "state"
                         minimal_row = None
                         if candidate.pipeline_variant == "polish":
-                            minimal = minimal_by_pair.get(
-                                (candidate.primary_model, candidate.editor_model)
-                            )
+                            minimal = minimal_by_pair.get(_candidate_models(candidate))
                             if minimal is None:
                                 raise BenchmarkError(
                                     "polish candidate requires a matching minimal candidate"
@@ -724,9 +733,7 @@ class FullRunner:
                             usage_before = {}
                         client = self._client(spec, candidate, options, sink)
                         config = self._config(
-                            spec,
-                            candidate.primary_model,
-                            candidate.editor_model,
+                            candidate,
                             pipeline_variant=candidate.pipeline_variant,
                             state_dir=str(state_root),
                         )
@@ -775,10 +782,10 @@ class FullRunner:
                                 if candidate.pipeline_variant == "polish"
                                 else usage_delta({}, {})
                             ),
-                            "provider": spec.provider,
-                            "primary_model": candidate.primary_model,
+                            "translator_model": candidate.translator_model,
+                            "analyst_model": candidate.analyst_model,
                             "editor_model": candidate.editor_model,
-                            "fast_model": spec.fast_model,
+                            "fast_model": candidate.fast_model,
                         }
                         self._validate_artifact(
                             out,

@@ -41,7 +41,7 @@ from trans_novel.benchmark.schema import Candidate, CandidateSpec, StrictModel
 from trans_novel.config import Config, ModelRoles
 from trans_novel.llm.generation import GenerationOptions
 from trans_novel.llm.telemetry import CallAttemptTelemetry
-from trans_novel.model_profiles import parse_model_selection
+from trans_novel.model_profiles import parse_model_selection, parse_provider_model
 from trans_novel.pipeline.bootstrap import Application
 from trans_novel.pipeline.readiness import assemble_readiness_problems
 from trans_novel.pipeline.runstore import RunStore
@@ -400,6 +400,7 @@ def _batches(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "chapter": int(row["chapter"]),
             "start": int(row["start_index"]),
             "count": int(row["count"]),
+            "translate_call_count": int(row.get("translate_call_count", 1)),
             "target_sha256": str(row["target_sha256"]),
         }
         for row in rows
@@ -439,6 +440,12 @@ def _normalized_model(value: Any) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     return parse_model_selection(value).model
+
+
+def _model_identity(value: str) -> tuple[str, str, bool]:
+    provider, model = parse_provider_model(value)
+    selection = parse_model_selection(model)
+    return provider, selection.model, selection.thinking != "off"
 
 
 def _telemetry_evidence(
@@ -483,21 +490,26 @@ def _telemetry_evidence(
             "valid": False,
         }
     expected = {
-        "translator": _normalized_model(candidate.primary_model),
-        "analyst": _normalized_model(candidate.primary_model),
-        "editor": _normalized_model(candidate.editor_model),
-        "preparer": _normalized_model(candidate_spec.fast_model),
-        "light-translator": _normalized_model(candidate_spec.fast_model),
+        "translator": _model_identity(candidate.translator_model),
+        "analyst": _model_identity(candidate.analyst_model),
+        "editor": _model_identity(candidate.editor_model),
+        "preparer": _model_identity(candidate.fast_model),
+        "light-translator": _model_identity(candidate.fast_model),
     }
     expected_operations = {
         "translator": {
             "translate.batch",
             "translate.back_matter",
             "translate.lint_fix",
-            "title.translate",
             "integration.canary.translate",
         },
-        "analyst": {"analyzer.analyze", "prescan.name_terms", "glossary.audit"},
+        "analyst": {
+            "analyzer.analyze",
+            "prescan.name_terms",
+            "glossary.audit",
+            "title.translate",
+            "align.boundaries",
+        },
         "preparer": {"language.detect", "prescan.term_mine", "glossary.extract"},
         "editor": {"polish.batch", "polish.segment", "integration.canary.polish"},
     }
@@ -506,21 +518,25 @@ def _telemetry_evidence(
     reasoning = 0
     for record in records:
         expected_model = expected.get(record.agent)
+        if expected_model is None:
+            mismatches += 1
+            continue
+        expected_provider, expected_name, expected_reasoning = expected_model
         if (
-            expected_model is None
-            or record.operation not in expected_operations.get(record.agent, set())
-            or record.provider != candidate_spec.provider
-            or _normalized_model(record.requested_model) != expected_model
-            or _normalized_model(record.resolved_model) != expected_model
-            or record.reasoning_enabled
+            record.operation not in expected_operations.get(record.agent, set())
+            or record.provider != expected_provider
+            or _normalized_model(record.requested_model) != expected_name
+            or _normalized_model(record.resolved_model) != expected_name
+            or record.reasoning_enabled != expected_reasoning
             or record.status != "success"
-            or record.temperature != 0.1
+            or record.temperature != candidate_spec.temperature
             or record.seed is not None
         ):
             mismatches += 1
         if record.billed_usage_unknown:
             unknown += 1
-        reasoning += record.reasoning_tokens
+        if not expected_reasoning:
+            reasoning += record.reasoning_tokens
     return {
         "reasoning_tokens": reasoning,
         "model_mismatch_count": mismatches,
@@ -745,8 +761,8 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
     candidates: dict[str, dict[str, Any]] = {}
     candidate_fields = (
         "pipeline_variant",
-        "provider",
-        "primary_model",
+        "translator_model",
+        "analyst_model",
         "editor_model",
         "fast_model",
         "temperature",
@@ -758,10 +774,10 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
             or any(key not in candidate for key in candidate_fields)
             or not isinstance(candidate.get("pipeline_variant"), str)
             or candidate.get("pipeline_variant") not in {"minimal", "polish"}
-            or not isinstance(candidate.get("provider"), str)
-            or not isinstance(candidate.get("primary_model"), str)
-            or not isinstance(candidate.get("fast_model"), str)
+            or not isinstance(candidate.get("translator_model"), str)
+            or not isinstance(candidate.get("analyst_model"), str)
             or not isinstance(candidate.get("editor_model"), str)
+            or not isinstance(candidate.get("fast_model"), str)
             or isinstance(candidate.get("temperature"), bool)
             or not isinstance(candidate.get("temperature"), int | float)
             or (
@@ -773,13 +789,6 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
             )
         ):
             raise IntegrationError(f"integration request candidate {candidate_id} is invalid")
-    providers = {candidate["provider"] for candidate in request["candidates"].values()}
-    if len(providers) != 1:
-        raise IntegrationError("integration candidates must share one provider")
-    fast_models = {candidate["fast_model"] for candidate in request["candidates"].values()}
-    if len(fast_models) != 1:
-        raise IntegrationError("integration candidates must share one fast model")
-    provider = next(iter(providers))
     if any(
         candidate["temperature"] != 0.1 or candidate["seed"] is not None
         for candidate in request["candidates"].values()
@@ -788,18 +797,18 @@ def validate_terminal_artifacts(root: Path | str) -> dict[str, Any]:
     try:
         candidate_spec = CandidateSpec.model_validate(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "benchmark_id": request["benchmark_id"],
-                "provider": provider,
-                "fast_model": next(iter(fast_models)),
                 "temperature": 0.1,
                 "seed": None,
                 "replicates": 1,
                 "candidates": [
                     {
                         "candidate_id": cid,
-                        "primary_model": request["candidates"][cid]["primary_model"],
+                        "translator_model": request["candidates"][cid]["translator_model"],
+                        "analyst_model": request["candidates"][cid]["analyst_model"],
                         "editor_model": request["candidates"][cid]["editor_model"],
+                        "fast_model": request["candidates"][cid]["fast_model"],
                         "pipeline_variant": request["candidates"][cid]["pipeline_variant"],
                     }
                     for cid in request["candidate_ids"]
@@ -1206,9 +1215,7 @@ def _node_phase_timings(store: RunStore) -> dict[str, int]:
 def _quality_config(spec: CandidateSpec, candidate: Candidate, state_dir: Path) -> Config:
     """Reuse FullRunner's production configuration, not a second profile."""
     config = FullRunner._config(
-        spec,
-        candidate.primary_model,
-        candidate.editor_model,
+        candidate,
         pipeline_variant=candidate.pipeline_variant,
         state_dir=str(state_dir),
     )
@@ -1240,9 +1247,10 @@ class IntegrationRunner:
         sink: _JsonlTelemetrySink,
     ) -> Any:
         roles = ModelRoles(
-            primary=[f"{spec.provider}/{candidate.primary_model}"],
-            editor=[f"{spec.provider}/{candidate.editor_model}"],
-            fast=[f"{spec.provider}/{spec.fast_model}"],
+            translator=[candidate.translator_model],
+            analyst=[candidate.analyst_model],
+            editor=[candidate.editor_model],
+            fast=[candidate.fast_model],
         )
         if self.client is not None:
             raise IntegrationError(
@@ -1250,7 +1258,7 @@ class IntegrationRunner:
             )
         client = _model_client(
             spec,
-            candidate.primary_model,
+            candidate.translator_model,
             "translator",
             options,
             self.client_factory,
@@ -1276,7 +1284,7 @@ class IntegrationRunner:
                 "integration.canary.translate",
                 "文学翻译",
                 "synthetic canary source",
-                candidate.primary_model,
+                candidate.translator_model,
             ),
             (
                 "editor",
@@ -1303,10 +1311,10 @@ class IntegrationRunner:
                 "passed": False,
                 "reason": type(error).__name__,
                 "roles": [row[0] for row in calls],
-                "provider": spec.provider,
-                "primary_model": candidate.primary_model,
+                "translator_model": candidate.translator_model,
+                "analyst_model": candidate.analyst_model,
                 "editor_model": candidate.editor_model,
-                "fast_model": spec.fast_model,
+                "fast_model": candidate.fast_model,
                 "temperature": spec.temperature,
                 "seed": spec.seed,
                 "reasoning_tokens": 0,
@@ -1315,8 +1323,8 @@ class IntegrationRunner:
             }
         records = sink.records[-2:]
         expected_models = [
-            _normalized_model(candidate.primary_model),
-            _normalized_model(candidate.editor_model),
+            _model_identity(candidate.translator_model),
+            _model_identity(candidate.editor_model),
         ]
         if len(records) != 2:
             return {
@@ -1337,15 +1345,17 @@ class IntegrationRunner:
                 unknown += 1
                 continue
             expected_agent, expected_operation = calls[index][0], calls[index][1]
-            reasoning += value.reasoning_tokens
+            expected_provider, expected_model, expected_reasoning = expected
+            if not expected_reasoning:
+                reasoning += value.reasoning_tokens
             unknown += int(value.billed_usage_unknown)
             mismatch += int(
                 value.agent != expected_agent
                 or value.operation != expected_operation
-                or value.provider != spec.provider
-                or _normalized_model(value.requested_model) != expected
-                or _normalized_model(value.resolved_model) != expected
-                or value.reasoning_enabled
+                or value.provider != expected_provider
+                or _normalized_model(value.requested_model) != expected_model
+                or _normalized_model(value.resolved_model) != expected_model
+                or value.reasoning_enabled != expected_reasoning
                 or value.status != "success"
                 or value.temperature != spec.temperature
                 or value.seed is not None
@@ -1355,10 +1365,10 @@ class IntegrationRunner:
             "schema_version": 1,
             "passed": passed,
             "roles": [row[0] for row in calls],
-            "provider": spec.provider,
-            "primary_model": candidate.primary_model,
+            "translator_model": candidate.translator_model,
+            "analyst_model": candidate.analyst_model,
             "editor_model": candidate.editor_model,
-            "fast_model": spec.fast_model,
+            "fast_model": candidate.fast_model,
             "temperature": spec.temperature,
             "seed": spec.seed,
             "reasoning_tokens": reasoning,
@@ -1498,10 +1508,10 @@ class IntegrationRunner:
             "candidates": {
                 candidate.candidate_id: {
                     "pipeline_variant": candidate.pipeline_variant,
-                    "provider": candidate_spec.provider,
-                    "primary_model": candidate.primary_model,
+                    "translator_model": candidate.translator_model,
+                    "analyst_model": candidate.analyst_model,
                     "editor_model": candidate.editor_model,
-                    "fast_model": candidate_spec.fast_model,
+                    "fast_model": candidate.fast_model,
                     "temperature": candidate_spec.temperature,
                     "seed": candidate_spec.seed,
                 }
@@ -2105,9 +2115,13 @@ class IntegrationRunner:
             ) + int(usage["unknown_required_usage_count"])
             result["reasoning_tokens"] = telemetry["reasoning_tokens"]
             result["model_mismatch_count"] = telemetry["model_mismatch_count"]
+            expected_resume_translate_calls = sum(
+                row["translate_call_count"] for row in _batches(post_events)
+            )
             if (
                 current_resume_telemetry["valid"]
-                and current_resume_telemetry["translate_call_count"] != remaining_batches
+                and current_resume_telemetry["translate_call_count"]
+                != expected_resume_translate_calls
             ):
                 raise IntegrationError("resume translation call attribution mismatch")
             outputs = result_value.get("outputs", [])
