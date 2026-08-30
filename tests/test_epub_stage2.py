@@ -462,6 +462,50 @@ class TestEpubStage2(unittest.TestCase):
         )
         self.assertIn("source_node_order", {item["code"] for item in failures})
 
+    def test_repeated_source_blocks_match_distinct_adjacent_targets(self) -> None:
+        source = etree.fromstring(
+            b"<html><head></head><body><p>Same</p><p>Middle</p><p>Same</p></body></html>"
+        )
+        output = etree.fromstring(etree.tostring(source))
+        paths = ((1, 0), (1, 1), (1, 2))
+        segments = [
+            SimpleNamespace(
+                kind="text",
+                source=text,
+                target=target,
+                epub_state=SimpleNamespace(block_path=path, slots=[]),
+            )
+            for path, text, target in zip(
+                paths, ("Same", "Middle", "Same"), ("同一", "中间", "同一"), strict=True
+            )
+        ]
+        blocks = source.xpath(".//p")
+        output_blocks = output.xpath(".//p")
+        _add_bilingual_sources(
+            output,
+            segments,
+            order="target_first",
+            source_blocks={
+                path: etree.fromstring(etree.tostring(block))
+                for path, block in zip(paths, blocks, strict=True)
+            },
+            block_refs=dict(zip(paths, output_blocks, strict=True)),
+        )
+        style = etree.Element("style", id="tn-bilingual-style")
+        style.text = _BILINGUAL_CSS
+        output.find("head").append(style)
+        failures: list[dict[str, str]] = []
+        _bilingual_proof(
+            source,
+            output,
+            segments,
+            source_lang="en",
+            order="target_first",
+            resource="chapter.xhtml",
+            failures=failures,
+        )
+        self.assertEqual(failures, [])
+
     def test_container_direct_br_uses_one_nested_source_div_in_both_orders(self) -> None:
         source = etree.fromstring(b"<html><head></head><body><li>One<br/>Two</li></body></html>")
         block = source.xpath(".//li")[0]

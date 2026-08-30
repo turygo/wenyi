@@ -2441,6 +2441,7 @@ def _bilingual_proof(
                 _item("bilingual_source", "source_target_pair_mismatch", resource, "pair_mismatch")
             )
             continue
+        matched.add(chosen[0])
         source_block = _resolve_path_lxml(root_source, chosen[2])
         if source_block is not None and not (
             _local_name(node.tag).lower() == "span"
