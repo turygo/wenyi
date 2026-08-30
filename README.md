@@ -85,22 +85,25 @@ trans-novel translate book.epub --back-matter full
 ```yaml
 llm:
   models:
-    primary:
-      - opencode-go/deepseek-v4-flash:high
-    # editor 省略时继承 primary 的完整候选列表
+    translator:
+      - openrouter/tencent/hy-mt2-30b-a3b-20260521:off
+    analyst:
+      - opencode-go/muse-spark-1.2-contributor:low
     editor:
-      - opencode-go/deepseek-v4-flash:high
+      - opencode-go/muse-spark-1.2-contributor:low
     fast:
-      - opencode-go/deepseek-v4-flash:off
+      - opencode-go/muse-spark-1.2-contributor:low
 
 quality: balanced
 ```
 
-- `primary`：正文翻译、全局分析和定名；候选按顺序尝试，默认 thinking 级别为 `high`。
-- `editor`：润色；省略时继承 `primary` 的完整候选列表，默认 thinking 级别为 `high`。
-- `fast`：术语挖掘、术语抽取和附属章轻量翻译；候选按顺序尝试，默认 thinking 级别为 `off`。
+- `translator`：正文翻译和定向重译，默认使用 Hy-MT2 30B 的固定版本。
+- `analyst`：全局分析、定名、标题翻译和富文本译文的边界对齐。
+- `editor`：中文润色。
+- `fast`：语言识别、术语挖掘、术语抽取和附属章轻量翻译。
 - 每个角色都必须是非空的 `provider/model-id` 列表；同一角色不能重复候选。
-- `quality`：`economy`、`balanced` 或 `quality`。
+- `quality`：`economy` 使用批量翻译；`balanced` 按单段严格 JSON 契约翻译；
+  `quality` 在同样的单段契约上增加润色。
 
 模型规格可在模型 ID 最右侧追加 `:off`、`:low`、`:medium`、`:high` 或 `:max`；
 Provider/模型 ID 中间的 `/` 只分割第一个斜杠，因此 OpenRouter 的嵌套模型 ID 可直接使用。
@@ -116,16 +119,18 @@ Provider 使用固定的官方地址和密钥环境变量：
 | `opencode-go` | `OPENCODE_API_KEY` |
 | `deepseek` | `DEEPSEEK_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
-百炼使用华北 2（北京）的共享 OpenAI 兼容端点。正文模型保留 DeepSeek V4 Flash、
-快任务改用更便宜的千问 3.7 Flash 时，可写：
+| `openrouter` | `OPENROUTER_API_KEY` |
+百炼使用华北 2（北京）的共享 OpenAI 兼容端点。每个角色可以配置不同 Provider，例如：
 ```yaml
 llm:
   models:
-    primary:
+    translator:
       - bailian/deepseek-v4-flash:high
       - opencode-go/deepseek-v4-flash:high
+    analyst:
+      - opencode-go/muse-spark-1.2-contributor:low
     editor:
-      - bailian/deepseek-v4-flash:high
+      - opencode-go/muse-spark-1.2-contributor:low
     fast:
       - bailian/qwen3.7-flash:off
       - opencode-go/deepseek-v4-flash:off
@@ -140,7 +145,9 @@ llm:
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_env: DASHSCOPE_API_KEY
   models:
-    primary:
+    translator:
+      - openai-compatible/qwen-max
+    analyst:
       - openai-compatible/qwen-max
     editor:
       - openai-compatible/qwen-max
@@ -164,8 +171,9 @@ quality: balanced
 → 模型识别源语言（或使用配置指定语言）
 → 分析样章，建立风格指南与初始术语表
 → 源文侧术语候选挖掘 → 一次性全书定名
-→ 按章、按批翻译（批后确定性 lint，命中即定向重译）
-→ 可选润色（润色若引入 lint 回归，该段回退润色前译文）
+→ 按章翻译（balanced/quality 每次只提交一个待译段，严格校验单值 JSON）
+→ 批后确定性 lint，命中可安全修复的问题即定向重译
+→ quality 可选润色（润色若引入 lint 回归，该段回退润色前译文）
 → 标点规范化
 → 确定性全书 QA → 报告
 → 回填导出 EPUB/TXT
@@ -177,7 +185,10 @@ quality: balanced
 
 - **术语库**：翻译前从源文挖掘专名候选，由定名 Agent 一次性统一定名后写入 SQLite 术语库，翻译期只读。
 - **滚动上下文**：章内批次串行处理，后一个批次能看到前面最近几段译文。
-- **段数对齐**：每批输入 N 段，要求模型输出 N 段 JSON；段数不符会重试，仍失败则逐段兜底。
+- **段落对应**：`balanced` / `quality` 每次调用只含一个待译段，并严格要求仅含
+  `translation` 键的非空 JSON；格式失败会重试，耗尽后章节失败且不组装成品。
+- **经济模式对齐**：`economy` 每批输入 N 段并要求输出 N 段 JSON；段数不符会重试，
+  仍失败则逐段兜底。
 - **确定性 lint**：零成本机器校验直接引语、数字、锁定专名和未译内容；命中即定向重译或回退，其余记录进报告。
 - **确定性全书 QA**：扫描每个完成章节的每个源文/译文段落，不调用 LLM，也不修改译文。
 - **标点规范化**：译文统一为简体中文大陆常用全角标点。
@@ -196,25 +207,25 @@ trans-novel tools assemble book.epub
 
 ## 模型路由
 
-每个内部 Agent 固定映射到 `primary`、`editor` 或 `fast` 角色。角色候选按配置顺序尝试：
+每个内部 Agent 固定映射到 `translator`、`analyst`、`editor` 或 `fast` 角色。角色候选按配置顺序尝试：
 当前 Provider 的传输层先完成既有重试，只有 fallback 分类器返回固定原因时才切换到下一候选；
 404 和结构化 `model_not_found` 直接切换，永久/本地配置错误原样抛出。一次逻辑调用只计一次，
 但每个物理尝试仍分别记入用量和遥测。
 
-默认使用 OpenCode Go，通过其 OpenAI-compatible 端点
-`https://opencode.ai/zen/go/v1` 调用 DeepSeek V4 Flash。直接使用 DeepSeek、OpenAI 或
-OpenRouter 时走各自官方地址；Ollama 与 vLLM 使用本地默认地址；
+默认由 OpenRouter 的 Hy-MT2 30B 固定版本翻译正文，由 OpenCode Go 的
+Muse Spark 1.2 Contributor 承担分析、边界对齐、润色和快速任务。直接使用 DeepSeek、
+OpenAI、百炼或其他 OpenRouter 模型时走各自内置地址；Ollama 与 vLLM 使用本地默认地址；
 `openai-compatible` 必须设置 `llm.base_url`。
 
-内部 Agent 固定映射到三个用户模型角色：
+内部 Agent 固定映射到四个用户模型角色：
 
-- `primary`：正文翻译、定向重译、标题翻译、全局分析和定名。
-- `editor`：润色；省略时继承 `primary` 的完整候选列表。
-- `fast`：语言识别、术语挖掘、术语抽取和附属章粗翻。
-thinking 级别由模型规格最右侧的后缀决定。请求字段由内置的逐 Provider/模型能力表
-生成：OpenCode Go 的 `deepseek-v4-flash:high` 下发 `thinking=enabled` 与
-`reasoning_effort=high`，`:off` 下发 `thinking=disabled`。该模型不支持 `low`，
-配置为 `opencode-go/deepseek-v4-flash:low` 会在启动时直接报错。
+- `translator`：正文翻译和定向重译。
+- `analyst`：标题翻译、全局分析、定名和富文本译文的边界对齐。
+- `editor`：润色。
+- `fast`：语言识别、术语挖掘、术语抽取和附属章轻量翻译。
+
+thinking 级别由模型规格最右侧的后缀决定。程序按逐 Provider、逐模型能力表生成请求字段；
+配置模型不支持的 thinking 级别会在启动时直接报错。
 
 ## 项目结构
 
@@ -249,7 +260,7 @@ benchmark 专用翻译提示词。`economy` 不润色，`balanced`、`quality` �
 
 `BOOK_SPEC.yaml` 必须包含至少 3 个 `screen`、恰好用于正式运行的 6 个 `formal`
 以及至少 1 个 `hidden` EPUB。`CANDIDATES.yaml` 中每个候选都必须显式配置
-`primary_model`、`editor_model` 和 thinking 级别；支持关闭时使用 `:off`。
+`translator_model`、`analyst_model`、`editor_model`、`fast_model` 及 thinking 级别。
 
 ```bash
 # 先用一个真实 screen 章节验证生产请求、路由、输出和遥测

@@ -2,106 +2,86 @@
 
 ## Project Overview
 
-`trans-novel` is a Python CLI for translating long-form EPUB, FB2, and text-family inputs into Chinese while preserving book structure and terminology consistency. The system combines deterministic parsing/linting with specialized LLM agents for analysis, naming, translation, review, polishing, and consistency work. Source lives in `trans_novel/`; the supported source entry point is `trans_novel.cli:main`.
+`trans-novel` is a synchronous Python CLI for translating EPUB, FB2, TXT, and Markdown books into Chinese EPUB/TXT while preserving source structure and terminology consistency. The normal command is `translate`; `resume`, `status`, and `tools` support persisted runs and maintenance. Source lives in `trans_novel/`; both `python -m trans_novel` and the installed `trans-novel` command delegate to `trans_novel.cli:main`.
 
 ## Architecture & Data Flow
 
-1. `trans_novel/cli.py` loads `Config`, applies CLI overrides, and dispatches `translate`, `resume`, `status`, or `tools` commands.
-2. `ingest/` parses the input into `Book`, `Chapter`, and `Segment` models. EPUB navigation and resources are retained for later reconstruction.
-3. `llm/registry.py` builds the provider transport; `AgentRouter` maps production agents to the configured `primary` or `fast` model. Agents receive `LLMClient` and `Config` through constructors.
-4. `pipeline/orchestrator.py` detects language, analyzes a sample, builds the style guide, pre-scans chapters, mines terminology, resolves names once, and generates book context.
-5. Translation runs chapter-by-chapter and batch-by-batch. Deterministic lint checks quotes, numbers, locked names, untranslated text, and segment counts; failures trigger targeted retries or safe fallback. Optional polishing, punctuation normalization, chapter review, severe-issue autofix, and consistency QA follow the quality preset.
-6. `RunStore` owns resumable state under `state/<book-slug>/`. It atomically writes manifests, chapter JSON, context, reports, usage, and events; `glossary.db` becomes read-only during translation. Completed segments must not be translated again on resume.
-7. `assemble/` writes EPUB/TXT outputs and QA reports, reusing original EPUB structure where possible.
+1. `trans_novel/cli.py` loads the strict configuration, applies per-run CLI overrides, and calls `Application` in `trans_novel/pipeline/bootstrap.py`. `Application` is the production composition root: it constructs and injects clients, agents, nodes, the planner, and the runner, then drives prepare, translate, and finish phases.
+2. `trans_novel/ingest/` parses and segments source books. Stage behavior belongs in `trans_novel/pipeline/nodes/`; translation nodes handle batching, alignment, lint/fix, context, glossary checkpoints, and optional polish, while finish nodes handle titles, deterministic QA, reports, and assembly.
+3. `Planner` in `pipeline/planner.py` owns dependency planning, scopes, optional nodes, chapter targets, backmatter policy, fingerprints, and invalidation. `WorkflowRunner` in `pipeline/runner.py` owns execution lifecycle, locking, status transitions, failure policy, chapter concurrency, persistence coordination, and usage flushing. Keep the runner business-agnostic.
+4. Version-3 Pydantic state in `pipeline/state.py` and `RunStore` in `pipeline/runstore.py` own persistence and resume. Source/language identity and node fingerprints protect resume safety; migrations, interrupted-run recovery, checkpoint journals, and descendant invalidation must remain deterministic.
+5. Runtime calls remain synchronous. Chapter work uses a bounded `ThreadPoolExecutor` with at most four workers; ordered commits and `RunStore` reads/writes are serialized through the runner's lock and main-thread persistence path.
+6. `trans_novel/assemble/writer.py` reopens EPUB sources to preserve navigation/resources or emits TXT, supporting mono/bilingual output and source fallback.
 
-Key patterns: a synchronous call graph with bounded `ThreadPoolExecutor` concurrency, constructor-injected LLM clients/configuration, strict Pydantic configuration boundaries, agent-local business fallbacks, centralized provider retries, and persistent state owned by `RunStore`. Do not introduce a second routing, retry, configuration, or state-writing path.
+`trans_novel/benchmark/` is a separate offline evaluation subsystem exposed under `tools benchmark`. It reuses the production `Application` with isolated state and records corpus, run, review, telemetry, and report artifacts; detailed operating rules live in `DOCS/benchmark-guide.md`.
 
 ## Key Directories
 
-- `trans_novel/ingest/`: EPUB/FB2/text parsing, TOC handling, domain models, segmentation.
-- `trans_novel/llm/`: stable `LLMClient` interface, provider registry/transports, routing, retries, JSON parsing, usage accounting.
-- `trans_novel/agents/`: prompt-driven analysis, translation, naming, review, polish, synopsis, naturalization, and consistency behavior.
-- `trans_novel/glossary/`: SQLite terminology store, candidate mining, extraction, resolution, auditing.
-- `trans_novel/pipeline/`: orchestration, resumable state, rolling context, deterministic lint, back-matter policy.
-- `trans_novel/postprocess/`: deterministic Chinese punctuation normalization.
-- `trans_novel/assemble/`: EPUB/TXT reconstruction and report generation.
-- `tests/`: offline `unittest` coverage and reusable fake LLM/sample-book helpers.
-- `scripts/`: changelog gate and release metadata validation.
-- `.github/workflows/`: Python 3.10/3.12 tests and multi-platform PyInstaller release builds.
+- `trans_novel/pipeline/`: composition, planning, lifecycle, resumable state, and stage nodes.
+- `trans_novel/ingest/` and `trans_novel/assemble/`: source parsing/segmentation and structural EPUB/TXT reconstruction.
+- `trans_novel/llm/` and `trans_novel/agents/`: provider routing/retry/usage boundaries and prompt-driven behavior.
+- `trans_novel/glossary/`: terminology persistence and resolution.
+- `trans_novel/benchmark/`: isolated offline evaluation tooling, not production workflow ownership.
+- `tests/`: offline `unittest` suites plus fake LLM and generated-book fixtures.
+- `scripts/` and `.github/workflows/`: changelog/release gates, test matrix, and binary builds.
 
-`state/`, `build/`, `dist/`, local `config.yaml`, databases, source books, and translated outputs are generated/ignored artifacts. Never edit or commit them as source.
+`state/`, `benchmark_data/`, `benchmark_runs/`, `build/`, `dist/`, local `config.yaml`, databases, source books, and generated translations are ignored/generated artifacts. Do not edit or commit them as repository source.
 
 ## Development Commands
 
 ```bash
-uv sync                                           # install locked runtime and dev dependencies
-uv build                                          # build the Hatchling source/wheel packages
-uv tool install .                                 # install the source CLI as trans-novel
-uv run trans-novel --help                         # run from the managed environment
-uv run trans-novel translate book.epub            # real provider; requires its API key
-uv run ruff format .                              # format
-uv run ruff check --fix .                         # lint and import-sort
-uv run python -m unittest discover -s tests        # full offline suite
-UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest discover -s tests
-uv run pre-commit install                         # enable changelog + Ruff commit hooks
+uv sync --locked --group dev
+uv run trans-novel --help
+uv run trans-novel translate book.epub
+uv run python -m unittest tests.test_pipeline
+uv run python -m unittest tests.test_routing
+uv run --no-sync python -m unittest discover -s tests
+uv run ruff check --fix .
+uv run ruff format .
+uv run pre-commit install
+uv build
 ```
 
-Run a focused module while iterating, for example:
-
-```bash
-uv run python -m unittest tests.test_orchestrator
-uv run python -m unittest tests.test_llm
-```
-
-Release binaries are built by `.github/workflows/build.yml` as `wenyi`; do not confuse that packaged executable name with the source-installed `trans-novel` command.
+The package-installed source command is `trans-novel`; `python -m trans_novel` is an equivalent source entry point. Release workflows build the single-file executable as `wenyi` (`wenyi.exe` on Windows), so do not use that binary name in source-development commands.
 
 ## Code Conventions & Common Patterns
 
-- Target Python 3.10; use `from __future__ import annotations` where needed and keep public boundaries typed.
-- Ruff is authoritative: 100-column target, `E/W/F/I` checks, and `E501` ignored for long prompt literals.
-- Use `snake_case` for modules/functions/variables, `PascalCase` for classes, `UPPER_CASE` for constants, and leading underscores for module-private helpers. Tests use `Test...` classes and `test_...` methods.
-- Prefer dataclasses for runtime/domain values and Pydantic for external configuration validation. `Config` rejects unknown and deprecated keys; do not silently accept legacy schemas.
-- Configuration precedence is CLI override, then `config.yaml` (`llm` and `quality` only), then code defaults. Change `trans_novel/config.example.yaml` when changing generated defaults.
-- Keep the runtime synchronous. Existing parallel work uses `ThreadPoolExecutor`; do not add isolated `asyncio` APIs to this call graph.
-- Pass `LLMClient`/`Config` explicitly. Tests substitute `FakeClient`; production code must not instantiate hidden clients inside agents.
-- Every LLM request needs stable `agent` and `operation` identifiers for routing, retry behavior, and usage attribution. Unknown production agents fail explicitly.
-- Keep transport/retry failures in `llm/errors.py`, `llm/retrying.py`, and provider transports. Business-specific default responses belong in the agent layer; do not swallow provider failures globally.
-- Preserve resume invariants: atomic JSON replacement, `.run.lock` mutual exclusion, `STATUS_DONE`, batch-level reuse, and persisted `review_pending` work.
-- During translation the terminology store is read-only. Read `README.md` sections “工作流程” and “一致性机制” before changing naming, glossary injection, lint, or resume behavior.
-- Prefer quality/CLI configuration for translation behavior before changing pipeline code.
+- Support Python `>=3.10`; keep public boundaries typed and use absolute imports. Ruff targets Python 3.10, a 100-column line length, import sorting, and the configured `E/W/F/I/B/C4/PIE/RUF/SIM/TID/UP` rules.
+- Keep configuration narrow and strict. YAML exposes model lists for the `translator`, `analyst`, `editor`, and `fast` roles plus `quality`; unknown keys fail validation. CLI values override the loaded quality preset, and missing config uses code defaults.
+- Preserve constructor injection. `Application` is the only production construction site; agents and nodes receive precise dependencies rather than creating hidden clients, stores, or configuration.
+- Route agents to ordered model-role candidates through `llm/router.py` and construct transports through `llm/registry.py`. Keep retry/fallback classification centralized in `llm/retrying.py`; do not add a second provider-routing or retry path.
+- Keep state writes behind `RunStore` and runner coordination. Preserve identity hashes, fingerprints, node/chapter statuses, advisory locking, ordered checkpoint commits, and idempotent recovery instead of special-casing resume in individual nodes.
+- Put stage-specific decisions in `pipeline/nodes/`, deterministic parsing/formatting in their existing subsystems, and external validation in Pydantic models. Reuse existing patterns rather than adding parallel orchestration or configuration layers.
+- Tests use `Test...` classes, `test_...` methods, `assertRaises`/`assertRaisesRegex`, and `subTest` for matrices.
 
 ## Important Files
 
-- `pyproject.toml`: package metadata, Python/dependency constraints, CLI entry point, Hatchling and Ruff settings.
-- `trans_novel/cli.py`, `trans_novel/__main__.py`: command tree and executable entry points.
-- `trans_novel/config.py`, `trans_novel/config.example.yaml`: strict config schema, defaults, quality presets.
-- `trans_novel/pipeline/orchestrator.py`: end-to-end state machine and resume logic.
-- `trans_novel/pipeline/runstore.py`: state layout, locking, atomic writes, events, usage persistence.
-- `trans_novel/pipeline/lint.py`: deterministic translation invariants.
-- `trans_novel/llm/base.py`, `router.py`, `registry.py`, `retrying.py`: provider abstraction and model routing contract.
-- `trans_novel/glossary/store.py`: SQLite terminology ownership and locking semantics.
-- `trans_novel/assemble/writer.py`: final EPUB/TXT reconstruction.
-- `tests/fake_llm.py`: canonical offline routing handler/config helper.
-- `README.md`: user behavior, workflow, consistency, configuration, and release process.
-- `CHANGELOG.md`, `scripts/check_changelog.py`, `scripts/prepare_release.py`: change and release gates.
+- `trans_novel/pipeline/bootstrap.py`: `Application` composition root and workflow facade.
+- `trans_novel/pipeline/planner.py`, `runner.py`, `state.py`, `runstore.py`: planning, lifecycle, V3 state, persistence, migration, and recovery contracts.
+- `trans_novel/pipeline/nodes/translate.py`, `finish.py`: translation and terminal stage behavior.
+- `trans_novel/config.py`, `config.example.yaml`: strict schema, model roles, defaults, and quality presets.
+- `trans_novel/llm/router.py`, `registry.py`, `retrying.py`: role routing, transport construction, and centralized retry/fallback.
+- `trans_novel/ingest/segmenter.py`, `trans_novel/assemble/writer.py`: batching and output reconstruction boundaries.
+- `tests/fake_llm.py`, `tests/sample_data.py`: canonical offline client seam and generated book fixtures.
+- `tests/test_pipeline.py`, `tests/test_checkpoint.py`, `tests/test_routing.py`, `tests/test_ingest.py`, `tests/test_assemble.py`: representative workflow, recovery, provider, and structural contracts.
+- `pyproject.toml`, `uv.lock`, `.pre-commit-config.yaml`: package/tool configuration and local gates.
+- `README.md`, `DOCS/benchmark-guide.md`, `CHANGELOG.md`: user behavior, benchmark operations, and release history.
+- `scripts/check_changelog.py`, `scripts/prepare_release.py`: changed-path changelog policy and tag/version/release-note validation.
 
 ## Runtime/Tooling Preferences
 
-- Python `>=3.10`; CI covers 3.10 and 3.12.
-- Use `uv` and the committed `uv.lock`; do not introduce Poetry, pip requirement files, or another environment manager.
-- Build backend: Hatchling. CLI: Typer + Rich. Distribution binaries: PyInstaller through CI.
-- Default provider is OpenCode Go. Provider-specific credentials include `OPENCODE_API_KEY`, `DEEPSEEK_API_KEY`, `BAILIAN_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`.
-- Offline development and tests must use `llm.provider: fake`/`FakeClient`; never send real network requests from tests or debugging.
-- Standard providers own their endpoint and API-key variable. Only `openai-compatible` accepts custom `base_url`/`api_key_env` configuration.
-- Code, tests, dependencies, scripts, build/workflow changes, or pre-commit changes must update `CHANGELOG.md` under `[Unreleased]` in the same change. Commit messages are English.
+- Use `uv` with the committed `uv.lock`. CI installs locked dev dependencies and tests Python 3.10 and 3.12.
+- Hatchling builds the wheel; Typer/Rich provide the CLI; release CI uses PyInstaller for five platform/architecture targets and smoke-checks the resulting `wenyi` binaries.
+- Keep runtime behavior synchronous. Use the existing bounded executor and main-thread persistence protocol rather than introducing an isolated `asyncio` call graph.
+- Provider credentials belong in environment variables such as `OPENCODE_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, and `OPENROUTER_API_KEY`, never plaintext repository configuration.
+- Routing, retries, timeouts, and concurrency are internal policy, not general YAML knobs. Unsupported configuration or model capabilities should fail explicitly.
+- The changelog gate runs locally and in CI. Changes under `trans_novel/`, `tests/`, `scripts/`, `.github/workflows/`, or to `.pre-commit-config.yaml`, `pyproject.toml`, or `uv.lock` must update `CHANGELOG.md` under `[Unreleased]` in the same change.
 
 ## Testing & QA
 
-- Canonical framework and runner: standard-library `unittest`, despite `pytest` being a dev dependency.
-- Use `tempfile.TemporaryDirectory` for books, SQLite files, and `state_dir`; never depend on the repository’s local `state/` contents.
-- Use `FakeClient` and `tests/fake_llm.py` handlers for LLM behavior. CLI tests use Typer’s `CliRunner`; use `unittest.mock` for boundaries and strip ANSI output where assertions require stable text.
-- Representative suites: `test_ingest.py`, `test_llm.py`, `test_routing.py`, `test_orchestrator.py`, `test_backmatter.py`, `test_usage.py`, `test_cli.py`, and `test_release_tooling.py`.
-- For pipeline changes, test observable resume/idempotency behavior: completed segments are reused, pending reviews recover, atomic state remains readable, and no unexpected LLM calls occur.
-- For routing/provider changes, test agent/model selection, request dialect, retry classification, error propagation, and usage schema attribution.
-- For ingest/assemble changes, test generated temporary EPUB/FB2/TXT fixtures and structural round trips rather than repository books.
-- No numeric coverage threshold is configured. Every behavior change still needs a focused regression test plus the full offline suite before submission.
+- Use standard-library `unittest`; the canonical full CI command is `uv run --no-sync python -m unittest discover -s tests`. `pytest` is a dev dependency but is not the repository's canonical runner.
+- Keep the suite offline. Inject `FakeClient` from `tests/fake_llm.py` or stub transports, inspect call metadata when relevant, and never send provider requests from tests.
+- Isolate filesystem state with `tempfile.TemporaryDirectory`. Build TXT/FB2/EPUB inputs with `tests/sample_data.py` or focused inline fixtures, then reopen outputs to assert serialized state and ZIP/XML structure.
+- Use Typer's `CliRunner` for CLI behavior, normalize ANSI output for stable assertions, and patch only external boundaries.
+- Pipeline changes should cover observable planning, fingerprints, lifecycle statuses, resume/idempotency, checkpoint recovery, ordered persistence, and unexpected LLM calls. Routing changes should cover candidate order, retry classification, error identity, and usage attribution. Ingest/assembly changes should cover structural round trips and unsafe/malformed input boundaries.
+- There is no numeric coverage threshold. Every behavior change still requires a focused behavioral regression in an existing appropriate module and the full offline suite before submission.

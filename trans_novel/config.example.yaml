@@ -1,13 +1,14 @@
 # 模型规格：`provider/model-id:thinking 级别`；级别可选 off / low / medium / high / max
 llm:
   models:
-    primary:
-      - opencode-go/deepseek-v4-flash:high
-    # editor 省略时继承 primary 的完整候选列表
+    translator:
+      - openrouter/tencent/hy-mt2-30b-a3b-20260521:off
+    analyst:
+      - opencode-go/muse-spark-1.2-contributor:low
     editor:
-      - opencode-go/deepseek-v4-flash:high
+      - opencode-go/muse-spark-1.2-contributor:low
     fast:
-      - opencode-go/deepseek-v4-flash:off
+      - opencode-go/muse-spark-1.2-contributor:low
 
 # economy（省钱）| balanced（均衡）| quality（最高质量）
 quality: balanced

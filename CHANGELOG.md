@@ -13,6 +13,7 @@
 - EPUB translation now aligns plain-text output back to source slot boundaries.
 - benchmark 候选 schema 升级为四角色完整模型 ID，并横向比较 Hy-MT2 30B、GLM-5.3-Flash 与 Muse Spark 1.2 Contributor 的 minimal/polish 两臂。
 - Benchmark validation now accepts independent translator, analyst, editor, and fast model IDs per candidate.
+- Configuration examples now expose independent translator, analyst, editor, and fast model chains.
 
 
 ### Fixed
