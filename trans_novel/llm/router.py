@@ -1,4 +1,4 @@
-"""将内部 Agent 映射到 primary / editor / fast 三个用户模型角色。"""
+"""将内部 Agent 映射到 translator / analyst / editor / fast 四个模型角色。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from trans_novel.llm.retrying import classify_fallback
 from trans_novel.llm.telemetry import CallTelemetrySink
 from trans_novel.model_profiles import parse_model_selection, parse_provider_model
 
-_PRIMARY_AGENTS = frozenset({"translator", "analyst"})
+_TRANSLATOR_AGENTS = frozenset({"translator"})
+_ANALYST_AGENTS = frozenset({"analyst"})
 _EDITOR_AGENTS = frozenset({"editor"})
 _FAST_AGENTS = frozenset({"preparer", "light-translator"})
 
@@ -35,9 +36,8 @@ class AgentRouter(LLMClient):
         super().__init__()
         self.config = config
         self._role_candidates = {
-            "primary": tuple(config.llm.models.primary),
-            "editor": tuple(config.llm.models.editor),
-            "fast": tuple(config.llm.models.fast),
+            role: tuple(getattr(config.llm.models, role))
+            for role in ("translator", "analyst", "editor", "fast")
         }
         if registry is not None:
             self._registry = registry
@@ -62,12 +62,14 @@ class AgentRouter(LLMClient):
             raise UnknownAgentError(
                 f"未知或缺失 Agent：{agent!r}（生产 LLM 调用必须提供内置 Agent 标识）"
             )
-        if agent in _PRIMARY_AGENTS:
-            role, default_thinking = "primary", "high"
+        if agent in _TRANSLATOR_AGENTS:
+            role, default_thinking = "translator", "off"
+        elif agent in _ANALYST_AGENTS:
+            role, default_thinking = "analyst", "low"
         elif agent in _EDITOR_AGENTS:
-            role, default_thinking = "editor", "high"
+            role, default_thinking = "editor", "low"
         elif agent in _FAST_AGENTS:
-            role, default_thinking = "fast", "off"
+            role, default_thinking = "fast", "low"
         else:  # pragma: no cover - PRODUCTION_AGENT_IDS 与映射必须同步
             raise UnknownAgentError(f"Agent 未绑定模型角色：{agent!r}")
         models: list[ModelRef] = []

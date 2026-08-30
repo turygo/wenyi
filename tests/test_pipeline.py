@@ -172,7 +172,7 @@ class TestMinimalPipeline(unittest.TestCase):
                 _write_source(d)
             )
             self.assertEqual(store.load_progress(0).status, "done")
-            self.assertEqual(store.load_chapter(0).segments[0].target, "译0")
+            self.assertTrue(store.load_chapter(0).segments[0].target.startswith("译"))
 
     def test_term_mining_and_naming_have_no_summary_operation(self):
         with tempfile.TemporaryDirectory() as d:

@@ -12,29 +12,39 @@ from trans_novel.model_profiles import parse_provider_model
 from trans_novel.pipeline.state import input_fingerprint, normalize_lang_code
 
 
-def primary_model_profile(config) -> str:
-    """provider + primary 模型（正文翻译、分析、定名等节点）。"""
-    return _role_profile(config, "primary")
+def translator_model_profile(config) -> str:
+    """正文翻译模型候选。"""
+    return _role_profile(config, "translator")
+
+
+def translation_model_profile(config) -> str:
+    """正文翻译和富文本边界对齐共用的模型候选。"""
+    return _role_profile(config, "translator", "analyst")
+
+
+def analyst_model_profile(config) -> str:
+    """分析、定名与标题模型候选。"""
+    return _role_profile(config, "analyst")
 
 
 def editor_model_profile(config) -> str:
-    """provider + editor 模型（润色节点）。"""
+    """润色模型候选。"""
     return _role_profile(config, "editor")
 
 
+def polish_model_profile(config) -> str:
+    """润色及富文本边界对齐共同消费的模型候选。"""
+    return _role_profile(config, "editor", "analyst")
+
+
 def fast_model_profile(config) -> str:
-    """provider + fast 模型（审校、预扫、回译等节点）。"""
+    """预扫与附属章模型候选。"""
     return _role_profile(config, "fast")
 
 
-def editor_fast_model_profile(config) -> str:
-    """provider + editor + fast 模型（自然化节点）。"""
-    return _role_profile(config, "editor", "fast")
-
-
-def primary_fast_model_profile(config) -> str:
-    """provider + primary + fast 模型（审校及自动修复节点）。"""
-    return _role_profile(config, "primary", "fast")
+def fast_translation_model_profile(config) -> str:
+    """附属章翻译及富文本边界对齐共同消费的模型候选。"""
+    return _role_profile(config, "fast", "analyst")
 
 
 def _role_profile(config, *roles: str) -> str:
@@ -44,11 +54,7 @@ def _role_profile(config, *roles: str) -> str:
     models = getattr(llm, "models", None)
     if models is None:
         return ""
-    profile = {
-        role: list(getattr(models, role, ()) or ())
-        for role in ("primary", "editor", "fast")
-        if role in roles
-    }
+    profile = {role: list(getattr(models, role, ()) or ()) for role in roles}
     candidates = [candidate for role in roles for candidate in profile[role]]
     if any(parse_provider_model(candidate)[0] == "openai-compatible" for candidate in candidates):
         profile["base_url"] = str(getattr(llm, "base_url", "") or "")
@@ -76,6 +82,23 @@ def glossary_semantic_fingerprint_part(terms) -> str:
             )
         )
     return "\n".join(sorted(parts))
+
+
+def translation_structure_fingerprint_part(segments) -> str:
+    """Serialize EPUB slot geometry consumed after plain-text translation."""
+    return json.dumps(
+        [
+            {
+                "index": getattr(segment, "index", None),
+                "slot_contract": getattr(
+                    getattr(segment, "epub_state", None), "slot_contract_sha256", None
+                ),
+            }
+            for segment in segments
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def frozen_input_fingerprint(
@@ -130,6 +153,7 @@ def translate_input_fingerprint(
     punctuation_normalize: bool,
     honorific_strategy: str,
     glossary_scope: str,
+    single_segment_translation: bool,
     model: str = "",
 ) -> str:
     return input_fingerprint(
@@ -140,6 +164,7 @@ def translate_input_fingerprint(
         punctuation_normalize,
         honorific_strategy,
         glossary_scope,
+        single_segment_translation,
         model,
     )
 

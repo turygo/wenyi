@@ -294,6 +294,15 @@ class TestUntranslated(unittest.TestCase):
         issues = lint_targets(["你好世界"], ["你好世界"], src_lang="zh")
         self.assertNotIn("untranslated", _types(issues, 0))
 
+    def test_numeric_heading_is_not_untranslated(self):
+        issues = lint_targets(["15"], ["15"], src_lang="en")
+        self.assertNotIn("untranslated", _types(issues, 0))
+
+    def test_machine_literal_is_not_untranslated(self):
+        literal = "{var=dc:http_errors:rate10m,job=webserver}"
+        issues = lint_targets([literal], [literal], src_lang="en")
+        self.assertNotIn("untranslated", _types(issues, 0))
+
 
 class TestLengthFlagsReuse(unittest.TestCase):
     def test_empty_target_flags(self):

@@ -6,11 +6,17 @@
 ### Changed
 
 - 完成最简生产流水线切换：保留确定性 lint/QA 与可选润色，移除旧的模型审校链。
+- Balanced and quality translation now use one strict single-value JSON call per segment; malformed responses retry and fail closed, while machine-readable literals bypass translation.
 - benchmark schema 升级，并支持对 minimal/polish 克隆进行消融；两条分支共享不可变的初译结果，分别记录目标哈希和用量增量。
+- 新增经 OpenRouter 目录核验的 Tencent Hy-MT2 30B-A3B 固定版本信息（含能力元数据和价格快照），并避免向非推理模型发送 OpenRouter reasoning 参数。
+- 模型路由拆分为显式的 `translator`、`analyst`、`editor`、`fast` 四角色；默认由 Hy-MT2 30B 负责纯文本翻译，Muse Spark Contributor 负责分析、边界对齐、润色和快速任务。
+- EPUB 翻译改为“完整纯文本翻译后通用边界对齐”：模型不再接收 EPUB 槽位 ID 或路径，程序严格校验边界数量与译文内容后再回填原结构。
+- benchmark 候选 schema 升级为四角色完整模型 ID，并横向比较 Hy-MT2 30B、GLM-5.3-Flash 与 Muse Spark 1.2 Contributor 的 minimal/polish 两臂。
 
 
 ### Fixed
 
+- Match repeated bilingual source paragraphs to their distinct adjacent targets during EPUB verification.
 - Reject review autofixes that introduce deterministic lint regressions or remove preserved dialogue quotes.
 - Preserve non-linguistic segments without sending them to the LLM, including EPUB text-slot records.
 

@@ -52,6 +52,47 @@ $numbered_source
 请翻译以上每一段，输出 JSON：{"translations":[...]}，数组长度必须恰好为 $n。\
 """)
 
+TRANSLATOR_SINGLE_SYSTEM = Template("""\
+你是一位资深文学翻译。将完整的 $src_label 小说段落翻译为简体中文，忠实保留含义、语气和标点。
+只能输出译文本身，不得输出 JSON、解释、标签或代码块。\
+""")
+
+TRANSLATOR_SINGLE_USER = Template("""\
+【风格指南】
+$style
+
+【专有名词对照表】
+$glossary
+
+【前文译文】
+$context
+
+【待译$src_label段落】
+$source\
+""")
+
+TRANSLATOR_STRICT_SYSTEM = Template("""\
+你是一位资深的文学翻译。每次只翻译一个完整的 $src_label 段落，忠实保留含义、语气和标点。
+【上下文】只用于理解当前段落，不得翻译、复述或合并进译文。
+仅输出严格 JSON 对象，且只能有一个键：{"translation":"当前段落的完整中文译文"}。\
+""")
+
+TRANSLATOR_STRICT_USER = Template("""\
+【风格指南】
+$style
+
+【专有名词对照表】
+$glossary
+
+【上下文（只读）】
+$context
+
+【唯一待译$src_label段落】
+$source
+
+只翻译【唯一待译段落】，输出 {"translation":"..."}。\
+""")
+
 TRANSLATOR_FIX_USER = Template("""\
 【角色信息 / 风格指南】
 $style
@@ -89,6 +130,19 @@ $items
 
 请依次重译，输出 JSON：{"translations":[...]}，数组长度恰为 $n。\
 """)
+BOUNDARY_ALIGNER_SYSTEM = Template("""\
+你是文本边界对齐器。输入包含原文片段和一份完整中文译文。你的唯一任务是在译文中插入
+$marker，使每个原文片段对应一个有序译文片段。不得增删、替换、规范化或重排译文中的任何字符；
+只能插入标记。仅输出 JSON：{"aligned":["带标记译文",...]}。\
+""")
+
+BOUNDARY_ALIGNER_USER = Template("""\
+每条记录包含 N 个 source_parts（原文片段），必须在 translation 中插入恰好 N-1 个 $marker。
+标记位置应与对应的原文片段在语义上对齐；标点可归入任一相邻片段。输出顺序与输入一致。
+
+$records
+""")
+
 POLISHER_SYSTEM = Template("""\
 你是中文润色编辑。给定$src_label源文与其中文直译，在严格忠实源文的前提下，提升译文的中文流畅度与文学性：
 理顺语序、修正翻译腔、统一文体语气。
@@ -254,8 +308,14 @@ $candidates
 _DEFAULTS = {
     "translator_system": TRANSLATOR_SYSTEM,
     "translator_user": TRANSLATOR_USER,
+    "translator_single_system": TRANSLATOR_SINGLE_SYSTEM,
+    "translator_single_user": TRANSLATOR_SINGLE_USER,
+    "translator_strict_system": TRANSLATOR_STRICT_SYSTEM,
+    "translator_strict_user": TRANSLATOR_STRICT_USER,
     "translator_fix_user": TRANSLATOR_FIX_USER,
     "translator_fix_multi_user": TRANSLATOR_FIX_MULTI_USER,
+    "boundary_aligner_system": BOUNDARY_ALIGNER_SYSTEM,
+    "boundary_aligner_user": BOUNDARY_ALIGNER_USER,
     "polisher_system": POLISHER_SYSTEM,
     "polisher_user": POLISHER_USER,
     "title_translator_system": TITLE_TRANSLATOR_SYSTEM,

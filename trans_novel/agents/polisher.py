@@ -7,37 +7,24 @@
 
 from __future__ import annotations
 
-import json
-
 from trans_novel.agents import prompts
 from trans_novel.agents.base import Agent, WorkflowProtocolError
 from trans_novel.glossary.store import GlossaryTerm
-from trans_novel.ingest.models import Segment, validate_slot_transport
 
 
 class Polisher(Agent):
     def polish(
         self,
-        targets: list,
+        targets: list[str],
         sources: list[str],
         *,
         glossary_terms: list[GlossaryTerm] | None = None,
         style: str = "",
         strict: bool = False,
-        segments: list[Segment] | None = None,
-    ) -> list:
+    ) -> list[str]:
         if not targets:
             return []
         n = len(targets)
-        epub = bool(segments and any(segment.epub_state is not None for segment in segments))
-        if epub and (
-            not segments or len(segments) != n or any(s.epub_state is None for s in segments)
-        ):
-            raise ValueError("EPUB polish transport requires one slot contract per segment")
-        displayed = [
-            json.dumps(target, ensure_ascii=False, separators=(",", ":")) if epub else target
-            for target in targets
-        ]
         system = prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=n)
         user = prompts.render(
             "polisher_user",
@@ -47,49 +34,36 @@ class Polisher(Agent):
             style=style or "（无）",
             n=n,
             numbered_source=prompts.numbered(sources),
-            numbered_target=prompts.numbered(displayed),
+            numbered_target=prompts.numbered(targets),
         )
-        if epub:
-            user += (
-                '\n【EPUB 槽位协议】每项必须输出 {"slots":[{"id":"原始槽位 ID",'
-                '"core":"润色核心"}]}；槽位数量、顺序和 ID 必须完全一致；不得输出扁平字符串。\n'
+
+        def decode(values: object) -> list[str]:
+            if (
+                not isinstance(values, list)
+                or len(values) != n
+                or not all(isinstance(value, str) and value.strip() for value in values)
+            ):
+                return []
+            return [value.strip() for value in values]
+
+        decoded = decode(
+            self._ask_json(
+                system,
+                user,
+                key="polished",
+                default=None,
+                agent="editor",
+                operation="polish.batch",
+                strict=strict,
             )
-        items = self._ask_json(
-            system,
-            user,
-            key="polished",
-            default=None,
-            agent="editor",
-            operation="polish.batch",
-            strict=strict,
         )
-
-        def decode(values: object) -> list:
-            if not isinstance(values, list) or len(values) != n:
-                return []
-            if not epub:
-                return [str(x) for x in values]
-            try:
-                return [
-                    validate_slot_transport(segment, item["slots"])
-                    if isinstance(item, dict) and isinstance(item.get("slots"), list)
-                    else (_ for _ in ()).throw(ValueError("EPUB polish item is not an object"))
-                    for segment, item in zip(segments, values, strict=True)
-                ]
-            except (ValueError, TypeError):
-                return []
-
-        decoded = decode(items)
         if decoded:
             return decoded
         if not strict:
             return list(targets)
-        retry_user = f"{user}\n\n" + (
-            f"Your previous response violated the output contract: `polished` must contain "
-            f"exactly {n} strings. Return the complete JSON object again."
-            if not epub
-            else f"Your previous response violated the output contract: return exactly {n} "
-            "ordered records with every original slot ID."
+        retry_user = (
+            f"{user}\n\nYour previous response violated the output contract: `polished` must "
+            f"contain exactly {n} strings, all non-empty. Return the complete JSON object again."
         )
         decoded = decode(
             self._ask_json(
@@ -104,9 +78,8 @@ class Polisher(Agent):
         )
         if decoded:
             return decoded
-        recovered: list = []
-        for index, (source, target) in enumerate(zip(sources, targets, strict=True)):
-            single_system = prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=1)
+        recovered = []
+        for source, target in zip(sources, targets, strict=True):
             single_user = prompts.render(
                 "polisher_user",
                 src=self.src,
@@ -115,18 +88,10 @@ class Polisher(Agent):
                 style=style or "（无）",
                 n=1,
                 numbered_source=prompts.numbered([source]),
-                numbered_target=prompts.numbered(
-                    [
-                        json.dumps(target, ensure_ascii=False, separators=(",", ":"))
-                        if epub
-                        else target
-                    ]
-                ),
+                numbered_target=prompts.numbered([target]),
             )
-            if epub:
-                single_user += "\n【EPUB 槽位协议】仅输出带原始槽位 ID 的 slots 记录。\n"
             single_items = self._ask_json(
-                single_system,
+                prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=1),
                 single_user,
                 key="polished",
                 default=None,
@@ -134,15 +99,19 @@ class Polisher(Agent):
                 operation="polish.segment",
                 strict=True,
             )
-            if not isinstance(single_items, list) or len(single_items) != 1:
-                raise WorkflowProtocolError("polish_count_mismatch")
-            try:
-                one = (
-                    [validate_slot_transport(segments[index], single_items[0]["slots"])]
-                    if epub
-                    else [str(single_items[0])]
+            one = (
+                decode(single_items)
+                if n == 1
+                else (
+                    [single_items[0].strip()]
+                    if isinstance(single_items, list)
+                    and len(single_items) == 1
+                    and isinstance(single_items[0], str)
+                    and single_items[0].strip()
+                    else []
                 )
-            except (KeyError, TypeError, ValueError) as error:
-                raise WorkflowProtocolError("polish_slot_mismatch") from error
+            )
+            if not one:
+                raise WorkflowProtocolError("polish_count_mismatch")
             recovered.append(one[0])
         return recovered

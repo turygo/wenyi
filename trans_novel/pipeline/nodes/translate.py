@@ -20,17 +20,18 @@ from trans_novel.ingest.models import (
     translation_text,
 )
 from trans_novel.ingest.segmenter import batch_segments
-from trans_novel.pipeline import checkpoint, lint
+from trans_novel.pipeline import checkpoint, checks, lint
 from trans_novel.pipeline.backmatter import is_back_matter
 from trans_novel.pipeline.contracts import BatchCommitHook, NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
     back_matter_translate_input_fingerprint,
-    editor_model_profile,
-    fast_model_profile,
+    fast_translation_model_profile,
     frozen_input_fingerprint,
     polish_input_fingerprint,
-    primary_model_profile,
+    polish_model_profile,
     translate_input_fingerprint,
+    translation_model_profile,
+    translation_structure_fingerprint_part,
 )
 from trans_novel.pipeline.nodes.common import chapter_term_snapshot, resume_batches
 from trans_novel.pipeline.runstore import STATUS_DONE, STATUS_PENDING, stable_digest
@@ -46,6 +47,25 @@ from trans_novel.postprocess.punct import normalize_zh
 _BM_RANK = {"skip": 0, "light": 1, "full": 2}
 
 
+def _align_epub_translations(boundary_aligner, segments, translations: list[str]) -> list[str]:
+    """Align only multi-slot EPUB segments; all other translations pass through."""
+    indices = [
+        index
+        for index, segment in enumerate(segments)
+        if segment.epub_state is not None and len(segment.epub_state.slots) > 1
+    ]
+    if not indices:
+        return translations
+    aligned = boundary_aligner.align_batch(
+        [[slot.source_core for slot in segments[index].epub_state.slots] for index in indices],
+        [translations[index] for index in indices],
+    )
+    result = list(translations)
+    for index, value in zip(indices, aligned, strict=True):
+        result[index] = value
+    return result
+
+
 class TranslateNode:
     """逐章批翻译：滚动上下文、lint 修复、检查点落盘、附属章旁路。"""
 
@@ -56,6 +76,7 @@ class TranslateNode:
         self,
         *,
         translator,
+        boundary_aligner,
         extractor,
         polisher,
         glossary: GlossaryStore,
@@ -67,6 +88,7 @@ class TranslateNode:
         batch_commit_hook: BatchCommitHook | None = None,
     ):
         self.translator = translator
+        self.boundary_aligner = boundary_aligner
         self.extractor = extractor
         self.polisher = polisher
         self.glossary = glossary
@@ -289,9 +311,13 @@ class TranslateNode:
                         operation="translate.lint_fix",
                         glossary_terms=term_snapshot,
                         style=style,
-                        segments=b,
                     )
                     if len(merged) == len(actionable_idx):
+                        merged = _align_epub_translations(
+                            self.boundary_aligner,
+                            [b[index] for index in actionable_idx],
+                            merged,
+                        )
                         merged_targets = dict(zip(actionable_idx, merged, strict=False))
 
                 if merged_targets:
@@ -313,8 +339,8 @@ class TranslateNode:
                             style=style,
                             context_before=before,
                             context_after=after,
-                            segment=seg,
                         )
+                        new_t = _align_epub_translations(self.boundary_aligner, [seg], [new_t])[0]
                         _apply_fix_result(idx, new_t)
             batch_start = seg_base
             request.shared.segments_done += len(b)
@@ -358,6 +384,15 @@ class TranslateNode:
                 "chapter": ci,
                 "start_index": batch_start,
                 "count": len(b),
+                "translate_call_count": (
+                    sum(
+                        any(character.isalpha() for character in segment.source)
+                        and not checks.is_machine_literal(segment.source)
+                        for segment in b
+                    )
+                    if config.pipeline.single_segment_translation
+                    else 1
+                ),
                 "polished": False,
                 "punctuation_normalized": punctuation_normalized,
                 "target_sha256": stable_digest(
@@ -380,12 +415,11 @@ class TranslateNode:
                 # 润色批间无依赖：提交共享线程池，章末由 polish 节点统一排干。
                 request.shared.polish_futures[(ci, batch_start)] = request.executor.submit(
                     self.polisher.polish,
-                    [slot_transport(s) if s.epub_state else (s.target or "") for s in b],
+                    [s.target or "" for s in b],
                     [s.source for s in b],
                     glossary_terms=list(term_snapshot),
                     style=style,
                     strict=True,
-                    segments=b,
                 )
 
             if not bm and config.pipeline.inflight_glossary:
@@ -435,7 +469,11 @@ class TranslateNode:
         chapter_index: int | None = None,
         shared=None,
     ) -> str:
-        """translate 输入指纹：正文含概览/风格/提示配置；旁路只含源文/语言/标点。"""
+        """Fingerprint text, EPUB slot geometry, and every model consumed by translation."""
+        if chapter_index is not None:
+            source_text += "\n" + translation_structure_fingerprint_part(
+                store.load_chapter(chapter_index).text_segments
+            )
         if self.frozen_book is not None and self.frozen_preparation is not None:
             return frozen_input_fingerprint(
                 self.frozen_preparation.preparation_sha256,
@@ -449,7 +487,7 @@ class TranslateNode:
                 self.translator.src,
                 self.translator.tgt,
                 punctuation_normalize=self.config.punctuation_normalize,
-                model=fast_model_profile(self.config),
+                model=fast_translation_model_profile(self.config),
             )
         return translate_input_fingerprint(
             source_text,
@@ -459,7 +497,8 @@ class TranslateNode:
             punctuation_normalize=self.config.punctuation_normalize,
             honorific_strategy=self.config.honorific_strategy,
             glossary_scope=self.config.pipeline.glossary_scope,
-            model=primary_model_profile(self.config),
+            single_segment_translation=self.config.pipeline.single_segment_translation,
+            model=translation_model_profile(self.config),
         )
 
     # ── 附属章旁路 ────────────────────────────────────────────────────────
@@ -522,8 +561,8 @@ class TranslateNode:
                     glossary_terms=[],
                     style="",
                     context="",
-                    segments=b,
                 )
+                raw = _align_epub_translations(self.boundary_aligner, b, raw)
                 for s, t in zip(b, raw, strict=True):
                     if config.punctuation_normalize:
                         if s.epub_state is None:
@@ -571,15 +610,15 @@ class TranslateNode:
         )
         return NodeOutcome(chapter_finalized=True, fingerprint=fp)
 
-    def _process_batch(self, batch, terms, ctx_text: str, style: str) -> list:
-        return self.translator.translate_batch(
+    def _process_batch(self, batch, terms, ctx_text: str, style: str) -> list[str]:
+        translated = self.translator.translate_batch(
             [s.source for s in batch],
             agent="translator",
             glossary_terms=terms,
             style=style,
             context=ctx_text,
-            segments=batch,
         )
+        return _align_epub_translations(self.boundary_aligner, batch, translated)
 
     def _extract_batch_glossary(
         self,
@@ -613,6 +652,7 @@ class PolishNode:
         self,
         *,
         polisher,
+        boundary_aligner,
         extractor,
         glossary: GlossaryStore,
         config: Config,
@@ -621,6 +661,7 @@ class PolishNode:
         frozen_preparation=None,
     ):
         self.polisher = polisher
+        self.boundary_aligner = boundary_aligner
         self.extractor = extractor
         self.glossary = glossary
         self.config = config
@@ -685,7 +726,7 @@ class PolishNode:
                 self.polisher.src,
                 style,
                 punctuation_normalize=self.config.punctuation_normalize,
-                model=editor_model_profile(self.config),
+                model=polish_model_profile(self.config),
             )
         return NodeOutcome(fingerprint=fp)
 
@@ -712,34 +753,22 @@ class PolishNode:
             if key not in futures_by_key:
                 count = entry.count
                 batch = text_segs[start : start + count]
-                raw_transport = [
-                    slot_transport(segment) if segment.epub_state else (segment.target or "")
-                    for segment in batch
-                ]
+                raw_plain = [segment.target or "" for segment in batch]
                 futures_by_key[key] = executor.submit(
                     self.polisher.polish,
-                    raw_transport,
+                    raw_plain,
                     [segment.source for segment in batch],
                     glossary_terms=list(term_snapshot),
                     style=style,
                     strict=True,
-                    segments=batch,
                 )
         for entry in sorted(pending, key=lambda e: e.start):
             start, count = entry.start, entry.count
             fut = futures_by_key.pop((ci, start), None)
             batch = text_segs[start : start + count]
-            raw_transport = [
-                slot_transport(segment) if segment.epub_state else (segment.target or "")
-                for segment in batch
-            ]
-            final_transport = fut.result() if fut is not None else raw_transport
             srcs = [segment.source for segment in batch]
             raw_plain = [segment.target or "" for segment in batch]
-            final_plain = [
-                translation_text(segment, value) if segment.epub_state else value
-                for segment, value in zip(batch, final_transport, strict=True)
-            ]
+            final_plain = fut.result() if fut is not None else raw_plain
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
             results = [
                 lint.polish_gate(
@@ -752,17 +781,15 @@ class PolishNode:
                 )
                 for i in range(count)
             ]
-            selected_transport = []
+            selected_plain = [result.selected for result in results]
+            selected_transport = _align_epub_translations(
+                self.boundary_aligner, batch, selected_plain
+            )
             for i, result in enumerate(results):
-                base = final_transport[i] if result.accepted else raw_transport[i]
-                if batch[i].epub_state is not None:
-                    selected_transport.append(
-                        normalize_slot_transport(batch[i], base)
-                        if result.selected != translation_text(batch[i], base)
-                        else base
+                if batch[i].epub_state is not None and self.config.punctuation_normalize:
+                    selected_transport[i] = normalize_slot_transport(
+                        batch[i], selected_transport[i]
                     )
-                else:
-                    selected_transport.append(result.selected)
                 if result.accepted:
                     self.polisher.client.usage.record_outcome(
                         "editor", "polish.batch", accepted=True

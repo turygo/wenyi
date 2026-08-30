@@ -17,10 +17,10 @@ from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.models import KIND_HEADING
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
+    analyst_model_profile,
     assemble_input_fingerprint,
     deterministic_qa_input_fingerprint,
     glossary_semantic_fingerprint_part,
-    primary_model_profile,
     report_input_fingerprint,
     titles_input_fingerprint,
 )
@@ -149,7 +149,7 @@ class TitlesNode:
         data = self.client.complete_json(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             stage="title_translate",
-            agent="translator",
+            agent="analyst",
             operation="title.translate",
         )
         out = data.get("titles") if isinstance(data, dict) else data
@@ -202,7 +202,7 @@ class TitlesNode:
                 str(e.get("title", "")) for e in raw_toc if isinstance(e, dict) and e.get("title")
             )
         return titles_input_fingerprint(
-            titles, self.src, self.tgt, primary_model_profile(self.config)
+            titles, self.src, self.tgt, analyst_model_profile(self.config)
         )
 
 

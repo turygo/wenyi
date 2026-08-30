@@ -36,20 +36,23 @@ from trans_novel.pipeline.contracts import (
 )
 from trans_novel.pipeline.definition import NodeSpec, WorkflowDefinition
 from trans_novel.pipeline.fingerprints import (
+    analyst_model_profile,
     analyze_input_fingerprint,
     assemble_input_fingerprint,
     back_matter_translate_input_fingerprint,
     deterministic_qa_input_fingerprint,
-    editor_model_profile,
     fast_model_profile,
+    fast_translation_model_profile,
     glossary_semantic_fingerprint_part,
     name_terms_input_fingerprint,
     polish_input_fingerprint,
+    polish_model_profile,
     prepare_input_fingerprint,
-    primary_model_profile,
     report_input_fingerprint,
     titles_input_fingerprint,
     translate_input_fingerprint,
+    translation_model_profile,
+    translation_structure_fingerprint_part,
 )
 from trans_novel.pipeline.nodes import AgentBundle, RunShared
 from trans_novel.pipeline.nodes.common import count_segments, sample_text
@@ -167,6 +170,7 @@ class Application:
             ),
             NODE_TRANSLATE: lambda shared, ci: TranslateNode(
                 translator=shared.agents.translator,
+                boundary_aligner=shared.agents.boundary_aligner,
                 extractor=shared.agents.extractor,
                 polisher=shared.agents.polisher,
                 glossary=shared.glossary(),
@@ -179,6 +183,7 @@ class Application:
             ),
             NODE_POLISH: lambda shared, ci: PolishNode(
                 polisher=shared.agents.polisher,
+                boundary_aligner=shared.agents.boundary_aligner,
                 extractor=shared.agents.extractor,
                 glossary=shared.glossary(),
                 config=self.config,
@@ -253,7 +258,7 @@ class Application:
                 source_path=state.source_path,
                 chapters=chapters,
             )
-            return analyze_input_fingerprint(sample_text(doc), primary_model_profile(cfg))
+            return analyze_input_fingerprint(sample_text(doc), analyst_model_profile(cfg))
 
         def mine_fp():
             texts = [
@@ -266,26 +271,32 @@ class Application:
             )
 
         def translate_fp(ci):
+            source_text = (
+                source(ci)
+                + "\n"
+                + translation_structure_fingerprint_part(store.load_chapter(ci).text_segments)
+            )
             chapter = next(c for c in state.chapters if c.index == ci)
             if policy.back_matter in {"skip", "light"} and is_back_matter(
                 chapter.title, index=ci, total=len(state.chapters)
             ):
                 return back_matter_translate_input_fingerprint(
-                    source(ci),
+                    source_text,
                     src,
                     tgt,
                     punctuation_normalize=cfg.punctuation_normalize,
-                    model=fast_model_profile(cfg),
+                    model=fast_translation_model_profile(cfg),
                 )
             return translate_input_fingerprint(
-                source(ci),
+                source_text,
                 src,
                 tgt,
                 style_brief=shared.style_brief(),
                 punctuation_normalize=cfg.punctuation_normalize,
                 honorific_strategy=cfg.honorific_strategy,
                 glossary_scope=cfg.pipeline.glossary_scope,
-                model=primary_model_profile(cfg),
+                single_segment_translation=cfg.pipeline.single_segment_translation,
+                model=translation_model_profile(cfg),
             )
 
         def polish_fp(ci):
@@ -294,11 +305,11 @@ class Application:
                 src,
                 shared.style_brief(),
                 punctuation_normalize=cfg.punctuation_normalize,
-                model=editor_model_profile(cfg),
+                model=polish_model_profile(cfg),
             )
 
         def titles_fp():
-            return titles_input_fingerprint(titles(), src, tgt, primary_model_profile(cfg))
+            return titles_input_fingerprint(titles(), src, tgt, analyst_model_profile(cfg))
 
         def qa_fp():
             terms = [term for term in shared.glossary().all_terms() if getattr(term, "locked", 0)]
@@ -327,7 +338,7 @@ class Application:
                 mine_fp(),
                 shared.style_brief(),
                 policy.prescan_concurrency,
-                primary_model_profile(cfg),
+                analyst_model_profile(cfg),
             ),
             translate_fingerprint=translate_fp,
             polish_fingerprint=polish_fp,

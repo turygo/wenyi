@@ -45,8 +45,8 @@ class TestCliBootstrap(unittest.TestCase):
             self.assertIn("已生成配置文件", plain(result.output))
             config = Config.load(config_path)
             self.assertEqual(
-                config.llm.models.primary,
-                ["opencode-go/deepseek-v4-flash:high"],
+                config.llm.models.translator,
+                ["openrouter/tencent/hy-mt2-30b-a3b-20260521:off"],
             )
             with open(config_path, encoding="utf-8") as stream:
                 self.assertEqual(stream.read(), Config.default_config_text())
@@ -100,8 +100,12 @@ class TestCliBootstrap(unittest.TestCase):
                 stream.write(
                     "llm:\n"
                     "  models:\n"
-                    "    primary:\n"
+                    "    translator:\n"
                     "      - opencode-go/deepseek-v4-flash:low\n"
+                    "    analyst:\n"
+                    "      - opencode-go/deepseek-v4-flash:off\n"
+                    "    editor:\n"
+                    "      - opencode-go/deepseek-v4-flash:off\n"
                     "    fast:\n"
                     "      - opencode-go/deepseek-v4-flash:off\n"
                 )
@@ -113,8 +117,8 @@ class TestCliBootstrap(unittest.TestCase):
 
         output = plain(result.output)
         self.assertEqual(result.exit_code, 2, result.output)
-        self.assertIn("opencode-go:deepseek-v4-flash 不支持 thinking", output)
-        self.assertIn("级别 'low'；支持：off, high, max", output)
+        self.assertIn("deepseek-v4-flash 不支持", output)
+        self.assertIn("'low'；支持：off, high, max", output)
         self.assertNotIn("Traceback", output)
 
 

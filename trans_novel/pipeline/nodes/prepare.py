@@ -16,10 +16,10 @@ from trans_novel.llm.base import LLMClient
 from trans_novel.pipeline.context import RollingContext
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
+    analyst_model_profile,
     analyze_input_fingerprint,
     frozen_input_fingerprint,
     prepare_input_fingerprint,
-    primary_model_profile,
 )
 from trans_novel.pipeline.nodes.common import sample_text
 from trans_novel.pipeline.state import (
@@ -176,7 +176,7 @@ class AnalyzeNode:
                     manifest["initialized"] = True
                     store.save_manifest(manifest)
             fp = analyze_input_fingerprint(
-                sample_text(self.doc) if self.doc else "", primary_model_profile(self.config)
+                sample_text(self.doc) if self.doc else "", analyst_model_profile(self.config)
             )
             return NodeOutcome(fingerprint=fp)
         if request.progress:
@@ -214,7 +214,7 @@ class AnalyzeNode:
                 "back_matter": self.config.pipeline.back_matter,
             },
         )
-        fp = analyze_input_fingerprint(sample, primary_model_profile(self.config))
+        fp = analyze_input_fingerprint(sample, analyst_model_profile(self.config))
         return NodeOutcome(fingerprint=fp)
 
 

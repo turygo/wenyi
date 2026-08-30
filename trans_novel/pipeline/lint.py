@@ -442,19 +442,8 @@ def _norm_for_compare(text: str) -> str:
     return re.sub(r"\s+", "", text or "").lower()
 
 
-def _looks_like_identifier_token(source: str) -> bool:
-    """URL/邮箱/@handle/ISBN 等标识符类单 token：本就不该翻译，原样出现在译文
-    不算未译（实测 12 处误报全部属此类）。"""
-    s = source.strip()
-    if not s or any(ch.isspace() for ch in s):
-        return False
-    if s.upper().startswith("ISBN"):
-        return True
-    return any(ch in s for ch in ".@/#")
-
-
 def _is_untranslated(source: str, target: str) -> bool:
-    if _looks_like_identifier_token(source):
+    if not any(character.isalpha() for character in source) or checks.is_machine_literal(source):
         return False
     ns, nt = _norm_for_compare(source), _norm_for_compare(target)
     if ns and ns == nt:

@@ -103,7 +103,8 @@ class _Sink:
 
 def _router(*, models=None, transports=None, options=None, telemetry_sink=None) -> AgentRouter:
     models = models or {
-        "primary": ["fake/primary-id"],
+        "translator": ["fake/primary-id"],
+        "analyst": ["fake/analyst-id"],
         "editor": ["fake/editor-id"],
         "fast": ["fake/fast-id"],
     }
@@ -145,7 +146,7 @@ class TestAgentRouter(unittest.TestCase):
         backup = StubTransport("bailian").plan("backup")
         router = _router(
             models={
-                "primary": ["fake/first", "bailian/second"],
+                "translator": ["fake/first", "bailian/second"],
                 "editor": ["fake/editor"],
                 "fast": ["fake/fast"],
             },
@@ -174,7 +175,7 @@ class TestAgentRouter(unittest.TestCase):
             {
                 "llm": {
                     "models": {
-                        "primary": ["fake/first", "bailian/second"],
+                        "translator": ["fake/first", "bailian/second"],
                         "editor": ["fake/editor"],
                         "fast": ["fake/fast"],
                     }
@@ -194,7 +195,7 @@ class TestAgentRouter(unittest.TestCase):
         backup = StubTransport("bailian").plan("done")
         router = _router(
             models={
-                "primary": ["fake/first", "bailian/second"],
+                "translator": ["fake/first", "bailian/second"],
                 "editor": ["fake/editor"],
                 "fast": ["fake/fast"],
             },
@@ -210,7 +211,7 @@ class TestAgentRouter(unittest.TestCase):
         third = StubTransport("openai").plan("done")
         router = _router(
             models={
-                "primary": ["fake/one", "bailian/two", "openai/three"],
+                "translator": ["fake/one", "bailian/two", "openai/three"],
                 "editor": ["fake/editor"],
                 "fast": ["fake/fast"],
             },
@@ -235,7 +236,7 @@ class TestAgentRouter(unittest.TestCase):
                 backup = StubTransport("bailian")
                 router = _router(
                     models={
-                        "primary": ["fake/one", "bailian/two"],
+                        "translator": ["fake/one", "bailian/two"],
                         "editor": ["fake/editor"],
                         "fast": ["fake/fast"],
                     },
@@ -250,7 +251,7 @@ class TestAgentRouter(unittest.TestCase):
         second = StubTransport("bailian").plan(_StructuredNotFound())
         router = _router(
             models={
-                "primary": ["fake/one", "bailian/two"],
+                "translator": ["fake/one", "bailian/two"],
                 "editor": ["fake/editor"],
                 "fast": ["fake/fast"],
             },
@@ -269,7 +270,7 @@ class TestAgentRouter(unittest.TestCase):
         second = StubTransport("bailian")
         router = _router(
             models={
-                "primary": ["bailian/qwen3.7-flash:off", "bailian/unknown:off"],
+                "translator": ["bailian/qwen3.7-flash:off", "bailian/unknown:off"],
                 "editor": ["fake/editor"],
                 "fast": ["fake/fast"],
             },
@@ -284,11 +285,14 @@ class TestAgentRouter(unittest.TestCase):
         self.assertEqual(usage["attempts"], 0)
 
     def test_roles_and_json_route(self):
-        transport = StubTransport("fake").plan(json.dumps({"ok": True}))
+        transport = StubTransport("fake").plan(json.dumps({"ok": True}), "analysis")
         router = _router(transports={"fake": transport})
         self.assertEqual(router.complete_json([], agent="editor", operation="op"), {"ok": True})
-        ref = transport.calls[0]["model_ref"]
-        self.assertEqual(ref.full_name, "fake:editor-id")
+        self.assertEqual(router.complete([], agent="analyst", operation="op"), "analysis")
+        self.assertEqual(
+            [call["model_ref"].full_name for call in transport.calls],
+            ["fake:editor-id", "fake:analyst-id"],
+        )
 
     def test_unknown_agent_fails_before_transport(self):
         transport = StubTransport()

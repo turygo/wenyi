@@ -30,8 +30,8 @@ PRODUCTION_AGENT_IDS: tuple[str, ...] = (
 
 QualityPreset = Literal["economy", "balanced", "quality"]
 
-_DEFAULT_PRIMARY_MODEL = "opencode-go/deepseek-v4-flash:high"
-_DEFAULT_FAST_MODEL = "opencode-go/deepseek-v4-flash:off"
+_DEFAULT_TRANSLATOR_MODEL = "openrouter/tencent/hy-mt2-30b-a3b-20260521:off"
+_DEFAULT_GENERAL_MODEL = "opencode-go/muse-spark-1.2-contributor:low"
 _DEPRECATED_ROOT_KEYS = frozenset(
     {"language", "segment", "pipeline", "honorific", "punctuation", "paths", "output"}
 )
@@ -53,23 +53,16 @@ class ModelRef:
 
 
 class ModelRoles(BaseModel):
-    """用户可选的 primary、editor、fast 三个模型角色。"""
+    """用户可选的 translator、analyst、editor、fast 四个模型角色。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    primary: list[str] = Field(default_factory=lambda: [_DEFAULT_PRIMARY_MODEL])
-    editor: list[str] = Field(default_factory=lambda: [_DEFAULT_PRIMARY_MODEL])
-    fast: list[str] = Field(default_factory=lambda: [_DEFAULT_FAST_MODEL])
+    translator: list[str] = Field(default_factory=lambda: [_DEFAULT_TRANSLATOR_MODEL])
+    analyst: list[str] = Field(default_factory=lambda: [_DEFAULT_GENERAL_MODEL])
+    editor: list[str] = Field(default_factory=lambda: [_DEFAULT_GENERAL_MODEL])
+    fast: list[str] = Field(default_factory=lambda: [_DEFAULT_GENERAL_MODEL])
 
-    @model_validator(mode="before")
-    @classmethod
-    def _inherit_editor(cls, value: Any) -> Any:
-        if isinstance(value, dict) and "editor" not in value:
-            primary = value.get("primary", [_DEFAULT_PRIMARY_MODEL])
-            return {**value, "editor": list(primary) if isinstance(primary, list) else primary}
-        return value
-
-    @field_validator("primary", "editor", "fast")
+    @field_validator("translator", "analyst", "editor", "fast")
     @classmethod
     def _model_ids_non_empty(cls, value: list[str] | None) -> list[str]:
         if value is None:
@@ -85,7 +78,7 @@ class ModelRoles(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """三模型角色的公开 LLM 配置。"""
+    """四模型角色的公开 LLM 配置。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -96,7 +89,7 @@ class LLMConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_llm(self) -> LLMConfig:
         has_custom = False
-        for role in ("primary", "editor", "fast"):
+        for role in ("translator", "analyst", "editor", "fast"):
             for value in getattr(self.models, role):
                 try:
                     provider, model = parse_provider_model(value)
@@ -136,6 +129,7 @@ class PipelineConfig(BaseModel):
     """由质量档位展开的内部流水线策略。"""
 
     polish: bool
+    single_segment_translation: bool = False
     align_retry_limit: int = 2
     rolling_context_segments: int = 6
     prescan_concurrency: int = 4
@@ -154,9 +148,21 @@ class PipelineConfig(BaseModel):
             "inflight_glossary": False,
         }
         profiles: dict[str, dict[str, Any]] = {
-            "economy": {"polish": False, "back_matter": "light"},
-            "balanced": {"polish": False, "back_matter": "full"},
-            "quality": {"polish": True, "back_matter": "full"},
+            "economy": {
+                "polish": False,
+                "back_matter": "light",
+                "single_segment_translation": False,
+            },
+            "balanced": {
+                "polish": False,
+                "back_matter": "full",
+                "single_segment_translation": True,
+            },
+            "quality": {
+                "polish": True,
+                "back_matter": "full",
+                "single_segment_translation": True,
+            },
         }
         return cls.model_validate({**common, **profiles[quality]})
 

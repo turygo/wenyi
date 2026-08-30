@@ -16,7 +16,7 @@ from trans_novel.llm import (
     parse_json_loose,
 )
 from trans_novel.llm.errors import JSONParseError
-from trans_novel.pipeline.fingerprints import primary_model_profile
+from trans_novel.pipeline.fingerprints import translator_model_profile
 
 
 class TestParseJsonLoose(unittest.TestCase):
@@ -53,33 +53,40 @@ class TestParseJsonLoose(unittest.TestCase):
 class TestConfigValidation(unittest.TestCase):
     def test_zero_config_defaults(self):
         cfg = Config.from_dict({})
-        self.assertEqual(cfg.llm.models.primary, ["opencode-go/deepseek-v4-flash:high"])
-        self.assertEqual(cfg.llm.models.editor, ["opencode-go/deepseek-v4-flash:high"])
-        self.assertEqual(cfg.llm.models.fast, ["opencode-go/deepseek-v4-flash:off"])
-
-    def test_omitted_editor_inherits_complete_primary_chain(self):
-        cfg = Config.from_dict(
-            {
-                "llm": {
-                    "models": {
-                        "primary": ["fake/first", "fake/second"],
-                        "fast": ["fake/fast"],
-                    }
-                }
-            }
+        self.assertEqual(
+            cfg.llm.models.translator,
+            ["openrouter/tencent/hy-mt2-30b-a3b-20260521:off"],
         )
-        self.assertEqual(cfg.llm.models.editor, ["fake/first", "fake/second"])
+        general = ["opencode-go/muse-spark-1.2-contributor:low"]
+        self.assertEqual(cfg.llm.models.analyst, general)
+        self.assertEqual(cfg.llm.models.editor, general)
+        self.assertEqual(cfg.llm.models.fast, general)
+
+    def test_removed_primary_role_is_rejected(self):
+        with self.assertRaisesRegex(ValidationError, "primary"):
+            Config.from_dict({"llm": {"models": {"primary": ["fake/a"]}}})
 
     def test_lists_are_non_empty_and_unique(self):
         for models in ([], ["fake/a", "fake/a"]):
             with self.subTest(models=models), self.assertRaises(ValidationError):
-                Config.from_dict({"llm": {"models": {"primary": models}}})
+                Config.from_dict({"llm": {"models": {"translator": models}}})
 
     def test_old_provider_and_scalar_models_are_rejected(self):
         with self.assertRaises(ValueError):
-            Config.from_dict({"llm": {"provider": "fake", "models": {"primary": ["fake/a"]}}})
+            Config.from_dict({"llm": {"provider": "fake", "models": {"translator": ["fake/a"]}}})
         with self.assertRaises(ValidationError):
-            Config.from_dict({"llm": {"models": {"primary": "fake/a"}}})
+            Config.from_dict({"llm": {"models": {"translator": "fake/a"}}})
+
+    def test_fake_model_roles_are_qualified_lists(self):
+        self.assertEqual(
+            fake_llm_dict(models=("translator", "analyst", "editor", "fast"))["models"],
+            {
+                "translator": ["fake/translator"],
+                "analyst": ["fake/analyst"],
+                "editor": ["fake/editor"],
+                "fast": ["fake/fast"],
+            },
+        )
 
     def test_provider_model_parsing_rules(self):
         from trans_novel.model_profiles import parse_model_selection, parse_provider_model
@@ -104,7 +111,7 @@ class TestConfigValidation(unittest.TestCase):
             {
                 "llm": {
                     "models": {
-                        "primary": [
+                        "translator": [
                             "opencode-go/deepseek-v4-flash:high",
                             "bailian/qwen3.7-flash:off",
                         ],
@@ -125,15 +132,15 @@ class TestConfigValidation(unittest.TestCase):
     def test_model_thinking_suffix_is_validated_against_capabilities(self):
         with self.assertRaises(ValidationError):
             Config.from_dict(
-                {"llm": {"models": {"primary": ["opencode-go/deepseek-v4-flash:low"]}}}
+                {"llm": {"models": {"translator": ["opencode-go/deepseek-v4-flash:low"]}}}
             )
 
     def test_openai_compatible_requires_base_url(self):
         with self.assertRaisesRegex(ValidationError, "base_url"):
-            LLMConfig.model_validate({"models": {"primary": ["openai-compatible/a"]}})
+            LLMConfig.model_validate({"models": {"translator": ["openai-compatible/a"]}})
         cfg = LLMConfig.model_validate(
             {
-                "models": {"primary": ["openai-compatible/a"], "fast": ["fake/f"]},
+                "models": {"translator": ["openai-compatible/a"]},
                 "base_url": "https://example.com/v1",
             }
         )
@@ -142,16 +149,19 @@ class TestConfigValidation(unittest.TestCase):
     def test_standard_provider_rejects_endpoint_overrides(self):
         with self.assertRaisesRegex(ValidationError, "只用于 openai-compatible"):
             LLMConfig.model_validate(
-                {"models": {"primary": ["fake/a"]}, "base_url": "https://example.com"}
+                {"models": {"translator": ["fake/a"]}, "base_url": "https://example.com"}
             )
 
     def test_unknown_and_deprecated_fields_fail_fast(self):
         with self.assertRaisesRegex(ValidationError, "Extra inputs"):
             Config.from_dict({"unknown": True})
         with self.assertRaisesRegex(ValueError, "已废弃"):
-            Config.from_dict({"llm": {"provider": "fake", "models": {"primary": ["fake/a"]}}})
+            Config.from_dict({"llm": {"provider": "fake", "models": {"translator": ["fake/a"]}}})
 
     def test_quality_profiles(self):
+        self.assertFalse(PipelineConfig.for_quality("economy").single_segment_translation)
+        self.assertTrue(PipelineConfig.for_quality("balanced").single_segment_translation)
+        self.assertTrue(PipelineConfig.for_quality("quality").single_segment_translation)
         self.assertTrue(PipelineConfig.for_quality("quality").polish)
 
     def test_fake_provider_usable_without_credentials(self):
@@ -165,16 +175,6 @@ class TestConfigValidation(unittest.TestCase):
             "",
         )
 
-    def test_fake_model_roles_are_qualified_lists(self):
-        self.assertEqual(
-            fake_llm_dict(models=("primary", "editor", "fast"))["models"],
-            {
-                "primary": ["fake/primary"],
-                "editor": ["fake/editor"],
-                "fast": ["fake/fast"],
-            },
-        )
-
 
 class TestProviderTransportConfiguration(unittest.TestCase):
     def test_openai_compatible_overrides_do_not_redirect_builtin_provider(self):
@@ -183,7 +183,7 @@ class TestProviderTransportConfiguration(unittest.TestCase):
 
         cfg = LLMConfig(
             models={
-                "primary": ["deepseek/custom-chain", "openai-compatible/custom-model"],
+                "translator": ["deepseek/custom-chain", "openai-compatible/custom-model"],
             },
             base_url="https://custom.example/v1",
             api_key_env="CUSTOM_API_KEY",
@@ -202,107 +202,45 @@ class TestProviderTransportConfiguration(unittest.TestCase):
 class TestRoleProfiles(unittest.TestCase):
     def test_profiles_invalidate_only_consuming_roles(self):
         from trans_novel.pipeline.fingerprints import (
-            editor_fast_model_profile,
+            analyst_model_profile,
             editor_model_profile,
             fast_model_profile,
-            primary_fast_model_profile,
         )
 
-        primary = Config.from_dict(
-            {
-                "llm": {
-                    "models": {
-                        "primary": ["fake/p", "fake/p2"],
-                        "editor": ["fake/e"],
-                        "fast": ["fake/f"],
-                    }
-                }
-            }
-        )
-        editor_changed = Config.from_dict(
-            {
-                "llm": {
-                    "models": {
-                        "primary": ["fake/p", "fake/p2"],
-                        "editor": ["fake/e2"],
-                        "fast": ["fake/f"],
-                    }
-                }
-            }
-        )
-        primary_changed = Config.from_dict(
-            {
-                "llm": {
-                    "models": {
-                        "primary": ["fake/p2"],
-                        "editor": ["fake/e"],
-                        "fast": ["fake/f"],
-                    }
-                }
-            }
-        )
-        self.assertEqual(primary_model_profile(primary), primary_model_profile(editor_changed))
-        self.assertNotEqual(editor_model_profile(primary), editor_model_profile(editor_changed))
-        self.assertNotEqual(
-            editor_fast_model_profile(primary), editor_fast_model_profile(editor_changed)
-        )
-        self.assertEqual(
-            primary_fast_model_profile(primary), primary_fast_model_profile(editor_changed)
-        )
-        self.assertNotEqual(primary_model_profile(primary), primary_model_profile(primary_changed))
-        self.assertEqual(editor_model_profile(primary), editor_model_profile(primary_changed))
-        self.assertEqual(
-            editor_fast_model_profile(primary), editor_fast_model_profile(primary_changed)
-        )
-        self.assertIn('"fake/p","fake/p2"', primary_model_profile(primary))
-        reordered = Config.from_dict(
-            {
-                "llm": {
-                    "models": {
-                        "primary": ["fake/p2", "fake/p"],
-                        "editor": ["fake/e"],
-                        "fast": ["fake/f"],
-                    }
-                }
-            }
-        )
-        self.assertNotEqual(primary_model_profile(primary), primary_model_profile(reordered))
-        self.assertEqual(fast_model_profile(primary), fast_model_profile(editor_changed))
+        base_models = {
+            "translator": ["fake/t", "fake/t2"],
+            "analyst": ["fake/a"],
+            "editor": ["fake/e"],
+            "fast": ["fake/f"],
+        }
+        base = Config.from_dict({"llm": {"models": base_models}})
+        profiles = {
+            "translator": translator_model_profile,
+            "analyst": analyst_model_profile,
+            "editor": editor_model_profile,
+            "fast": fast_model_profile,
+        }
+        for changed_role in profiles:
+            changed_models = {role: list(values) for role, values in base_models.items()}
+            changed_models[changed_role] = [f"fake/{changed_role}-changed"]
+            changed = Config.from_dict({"llm": {"models": changed_models}})
+            for role, role_profile in profiles.items():
+                with self.subTest(changed=changed_role, profile=role):
+                    if role == changed_role:
+                        self.assertNotEqual(role_profile(base), role_profile(changed))
+                    else:
+                        self.assertEqual(role_profile(base), role_profile(changed))
 
     def test_role_profile_serializes_candidate_boundaries(self):
-        single = Config.from_dict(
-            {
-                "llm": {
-                    "models": {
-                        "primary": ["fake/a|fake/b"],
-                        "editor": ["fake/e"],
-                        "fast": ["fake/f"],
-                    }
-                }
-            }
-        )
-        multiple = Config.from_dict(
-            {
-                "llm": {
-                    "models": {
-                        "primary": ["fake/a", "fake/b"],
-                        "editor": ["fake/e"],
-                        "fast": ["fake/f"],
-                    }
-                }
-            }
-        )
-        self.assertNotEqual(primary_model_profile(single), primary_model_profile(multiple))
+        single = Config.from_dict({"llm": {"models": {"translator": ["fake/a|fake/b"]}}})
+        multiple = Config.from_dict({"llm": {"models": {"translator": ["fake/a", "fake/b"]}}})
+        self.assertNotEqual(translator_model_profile(single), translator_model_profile(multiple))
 
-    def test_role_profile_includes_base_url_for_whitespace_custom_provider(self):
+    def test_role_profile_includes_base_url_for_custom_provider(self):
         first = Config.from_dict(
             {
                 "llm": {
-                    "models": {
-                        "primary": ["openai-compatible /model"],
-                        "editor": ["fake/e"],
-                        "fast": ["fake/f"],
-                    },
+                    "models": {"translator": ["openai-compatible/model"]},
                     "base_url": "https://one.example/v1",
                 }
             }
@@ -310,17 +248,16 @@ class TestRoleProfiles(unittest.TestCase):
         second = Config.from_dict(
             {
                 "llm": {
-                    "models": {
-                        "primary": ["openai-compatible /model"],
-                        "editor": ["fake/e"],
-                        "fast": ["fake/f"],
-                    },
+                    "models": {"translator": ["openai-compatible/model"]},
                     "base_url": "https://two.example/v1",
                 }
             }
         )
-        self.assertNotEqual(primary_model_profile(first), primary_model_profile(second))
-        self.assertIn('"base_url":"https://one.example/v1"', primary_model_profile(first))
+        self.assertNotEqual(translator_model_profile(first), translator_model_profile(second))
+        self.assertIn(
+            '"base_url":"https://one.example/v1"',
+            translator_model_profile(first),
+        )
 
 
 class TestFakeClient(unittest.TestCase):
@@ -518,6 +455,52 @@ class TestGenerationOptions(unittest.TestCase):
         options = GenerationOptions(temperature=0.1)
         with self.assertRaises((AttributeError, TypeError)):
             options.temperature = 0.2
+
+
+class TestOpenRouterTranslationCapabilities(unittest.TestCase):
+    messages: ClassVar[list[dict[str, str]]] = [{"role": "user", "content": "translate"}]
+    model_ids: ClassVar[tuple[str, ...]] = ("tencent/hy-mt2-30b-a3b-20260521",)
+
+    def test_every_hy_mt2_id_accepts_controlled_generation(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import capabilities_for
+
+        options = GenerationOptions(
+            temperature=0.1,
+            require_catalogued_model=True,
+            require_thinking_disabled=True,
+        )
+        for model in self.model_ids:
+            with self.subTest(model=model):
+                model_ref = ModelRef("openrouter", model, reasoning_enabled=False)
+                kwargs = build_request_kwargs(
+                    capabilities_for("openrouter", model),
+                    model_ref,
+                    self.messages,
+                    generation_options=options,
+                )
+                self.assertEqual(kwargs["temperature"], 0.1)
+                self.assertNotIn("extra_body", kwargs)
+
+
+class TestOpenCodeGLMCapabilities(unittest.TestCase):
+    def test_glm_5_3_flash_accepts_controlled_generation(self):
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import capabilities_for
+
+        model = "glm-5.3-flash"
+        kwargs = build_request_kwargs(
+            capabilities_for("opencode-go", model),
+            ModelRef("opencode-go", model, reasoning_enabled=False),
+            [{"role": "user", "content": "translate"}],
+            generation_options=GenerationOptions(
+                temperature=0.1,
+                require_catalogued_model=True,
+                require_thinking_disabled=True,
+            ),
+        )
+        self.assertEqual(kwargs["temperature"], 0.1)
+        self.assertNotIn("extra_body", kwargs)
 
 
 class TestBailianGenerationCapabilities(unittest.TestCase):

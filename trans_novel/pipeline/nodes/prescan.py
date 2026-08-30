@@ -9,10 +9,10 @@ from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore
 from trans_novel.pipeline.backmatter import is_back_matter
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.fingerprints import (
+    analyst_model_profile,
     fast_model_profile,
     frozen_input_fingerprint,
     name_terms_input_fingerprint,
-    primary_model_profile,
 )
 from trans_novel.pipeline.state import (
     NODE_MINE_TERMS,
@@ -132,7 +132,7 @@ class NameTermsNode:
             mine_fingerprint,
             style,
             self.config.pipeline.prescan_concurrency,
-            primary_model_profile(self.config),
+            analyst_model_profile(self.config),
         )
         return NodeOutcome(fingerprint=fp, artifacts={"named_terms": named})
 

@@ -86,7 +86,12 @@ class _ClientStub:
 def _transport(tracker: UsageTracker):
     config = LLMConfig.model_validate(
         {
-            "models": {"primary": ["deepseek/m1"], "fast": ["deepseek/m2"]},
+            "models": {
+                "translator": ["deepseek/m1"],
+                "analyst": ["deepseek/m1"],
+                "editor": ["deepseek/m1"],
+                "fast": ["deepseek/m2"],
+            },
         }
     )
     return OpenAICompatibleTransport(

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 KIND_TEXT = "text"
 KIND_HEADING = "heading"
+SLOT_BOUNDARY_MARKER = "⟪TN_SLOT⟫"
 
 
 def _slot_contract_digest(slots: list[EpubTextSlot]) -> str:
@@ -101,26 +102,32 @@ def slot_transport(segment: Segment, *, target: bool = True) -> list[dict[str, s
 
 
 def validate_slot_transport(segment: Segment, translation: object) -> list[tuple[str, str]]:
-    """Validate an agent slot response without mutating the segment."""
+    """Validate an ordered slot response without mutating the segment."""
     state = segment.epub_state
     if state is None:
         raise ValueError("slot transport requires an EPUB segment")
-    if not isinstance(translation, list) or len(translation) != len(state.slots):
-        raise ValueError(f"EPUB segment slot count mismatch for {state.resource_href}")
-    parsed: list[tuple[str, str]] = []
-    for item in translation:
-        if isinstance(item, dict):
-            slot_id, core = item.get("id"), item.get("core")
-        elif isinstance(item, tuple | list) and len(item) == 2:
-            slot_id, core = item
-        else:
-            raise ValueError(f"invalid EPUB slot record for {state.resource_href}")
-        if not isinstance(slot_id, str) or not isinstance(core, str):
-            raise ValueError(f"invalid EPUB slot record for {state.resource_href}")
-        parsed.append((slot_id, core))
-    expected = [slot.id for slot in state.slots]
-    if [slot_id for slot_id, _ in parsed] != expected:
-        raise ValueError(f"EPUB slot IDs/order mismatch for {state.resource_href}")
+    if isinstance(translation, str):
+        cores = translation.split(SLOT_BOUNDARY_MARKER)
+        if len(cores) != len(state.slots):
+            raise ValueError(f"EPUB segment slot count mismatch for {state.resource_href}")
+        parsed = [(slot.id, core) for slot, core in zip(state.slots, cores, strict=True)]
+    else:
+        if not isinstance(translation, list) or len(translation) != len(state.slots):
+            raise ValueError(f"EPUB segment slot count mismatch for {state.resource_href}")
+        parsed = []
+        for item in translation:
+            if isinstance(item, dict):
+                slot_id, core = item.get("id"), item.get("core")
+            elif isinstance(item, tuple | list) and len(item) == 2:
+                slot_id, core = item
+            else:
+                raise ValueError(f"invalid EPUB slot record for {state.resource_href}")
+            if not isinstance(slot_id, str) or not isinstance(core, str):
+                raise ValueError(f"invalid EPUB slot record for {state.resource_href}")
+            parsed.append((slot_id, core))
+        expected = [slot.id for slot in state.slots]
+        if [slot_id for slot_id, _ in parsed] != expected:
+            raise ValueError(f"EPUB slot IDs/order mismatch for {state.resource_href}")
     for slot, (_slot_id, core) in zip(state.slots, parsed, strict=True):
         if not slot.source_core.strip() and core.strip():
             raise ValueError(f"whitespace-only EPUB slot translated for {state.resource_href}")

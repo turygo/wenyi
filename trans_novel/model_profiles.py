@@ -86,12 +86,24 @@ _MODEL_CAPABILITIES: dict[tuple[str, str], ModelCapabilities] = {
         supports_thinking_disabled=True,
         supports_temperature=True,
     ),
+    ("opencode-go", "glm-5.3-flash"): ModelCapabilities(
+        request_dialect=DIALECT_GENERIC,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
+    ),
     ("opencode-go", "muse-spark-1.2-contributor"): ModelCapabilities(
         request_dialect=DIALECT_OPENAI,
         reasoning_efforts=frozenset({"low"}),
         catalogued=True,
         supports_temperature=True,
         responses_api=True,
+    ),
+    ("openrouter", "tencent/hy-mt2-30b-a3b-20260521"): ModelCapabilities(
+        request_dialect=DIALECT_GENERIC,
+        catalogued=True,
+        supports_thinking_disabled=True,
+        supports_temperature=True,
     ),
     # 百炼的 DeepSeek V4 使用 enable_thinking，并接受四档 reasoning_effort。
     ("bailian", "deepseek-v4-flash"): ModelCapabilities(

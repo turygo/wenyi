@@ -2,32 +2,37 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 
 
 def fake_llm_dict(*, models=("p",), extra_agents=None) -> dict:
-    """构造离线 fake provider 的三角色精简配置。
-
-    传入一个模型时，所有角色共用该模型；传入两个模型时，`primary` 和 `editor` 共用第一个，
-    `fast` 使用第二个；传入三个模型时，依次对应 `primary`、`editor`、`fast`。
-    """
+    """构造离线 fake provider 的四角色精简配置。"""
     if extra_agents is not None:
         raise ValueError("新配置不支持 Agent 路由覆盖")
-    if not models or len(models) > 3:
-        raise ValueError("fake 模型配置必须包含 1 至 3 个模型")
+    if not models or len(models) > 4:
+        raise ValueError("fake 模型配置必须包含 1 至 4 个模型")
     qualified = [f"fake/{model}" for model in models]
-    primary = qualified[:1]
-    editor = qualified[:1] if len(models) < 3 else qualified[1:2]
+    translator = qualified[:1]
+    analyst = qualified[:1] if len(models) < 3 else qualified[1:2]
+    editor = analyst if len(models) < 4 else qualified[2:3]
     fast = qualified[:1] if len(models) == 1 else qualified[-1:]
     return {
-        "models": {"primary": primary, "editor": editor, "fast": fast},
+        "models": {
+            "translator": translator,
+            "analyst": analyst,
+            "editor": editor,
+            "fast": fast,
+        },
     }
 
 
 def _count_numbered(text: str) -> int:
     return len(re.findall(r"^\[(\d+)\]", text, re.M))
+
+
+def _numbered_values(text: str) -> list[str]:
+    return re.findall(r"^\[\d+\]\s*(.*)$", text, re.M)
 
 
 def routing_handler(messages, agent, operation, json_mode):
@@ -54,49 +59,44 @@ def routing_handler(messages, agent, operation, json_mode):
         n = _count_numbered(user)
         return json.dumps({"titles": [f"标题{i}" for i in range(n)]}, ensure_ascii=False)
 
+    if "文本边界对齐器" in system:
+        try:
+            records = json.loads(user.rsplit("\n\n", 1)[-1])
+            aligned = []
+            marker = "⟪TN_SLOT⟫"
+            for record in records:
+                translation = record["translation"]
+                count = len(record["source_parts"])
+                cuts = [round(len(translation) * index / count) for index in range(1, count)]
+                parts = []
+                start = 0
+                for cut in cuts:
+                    parts.append(translation[start:cut])
+                    start = cut
+                parts.append(translation[start:])
+                aligned.append(marker.join(parts))
+            return json.dumps({"aligned": aligned}, ensure_ascii=False)
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return json.dumps({"aligned": []}, ensure_ascii=False)
+
     if "文学翻译" in system:
-        n = _count_numbered(user)
-        marker = "【EPUB 槽位协议】\n"
-        if marker in user:
-            try:
-                expected = json.loads(user.split(marker, 1)[1].split("\n", 1)[0])
-                return json.dumps(
-                    {
-                        "translations": [
-                            {
-                                "slots": [
-                                    {"id": slot["id"], "core": f"译{i}"} for slot in item["slots"]
-                                ]
-                            }
-                            for i, item in enumerate(expected)
-                        ]
-                    },
-                    ensure_ascii=False,
-                )
-            except (IndexError, KeyError, TypeError, json.JSONDecodeError):
-                return json.dumps({"translations": []}, ensure_ascii=False)
-        return json.dumps({"translations": [f"译{i}" for i in range(n)]}, ensure_ascii=False)
+        if "【唯一待译" in user:
+            source = user.split("【唯一待译", 1)[-1].split("\n", 1)[-1].split("\n\n", 1)[0]
+            return json.dumps(
+                {"translation": "译" + "文" * max(1, len(source) - 1)},
+                ensure_ascii=False,
+            )
+        sources = _numbered_values(user.split("【待译", 1)[-1])
+        translations = [
+            f"译{i}" + "文" * max(0, len(source) - 2) for i, source in enumerate(sources)
+        ]
+        return json.dumps({"translations": translations}, ensure_ascii=False)
 
     if "中文润色编辑" in system:
         target_block = user.split("【待润色中文译文】", 1)[-1]
-        n = _count_numbered(target_block)
-        if "【EPUB 槽位协议】" in user:
-            records = []
-            for line in target_block.splitlines():
-                match = re.match(r"^\[\d+\] (.+)$", line)
-                if match:
-                    with contextlib.suppress(json.JSONDecodeError):
-                        records.append(json.loads(match.group(1)))
-            return json.dumps(
-                {
-                    "polished": [
-                        {"slots": [{"id": slot["id"], "core": "润"} for slot in item]}
-                        for item in records
-                    ]
-                },
-                ensure_ascii=False,
-            )
-        return json.dumps({"polished": [f"润{i}" for i in range(n)]}, ensure_ascii=False)
+        targets = _numbered_values(target_block)
+        polished = [f"润{i}" + "文" * max(0, len(target) - 2) for i, target in enumerate(targets)]
+        return json.dumps({"polished": polished}, ensure_ascii=False)
 
     if "术语候选挖掘" in system:
         return json.dumps({"candidates": ["堀北"]}, ensure_ascii=False)

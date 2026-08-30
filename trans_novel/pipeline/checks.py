@@ -20,6 +20,24 @@ def count_aligned(sources: list[str], targets: list[str]) -> bool:
     return len(sources) == len(targets)
 
 
+def is_machine_literal(source: str) -> bool:
+    """Whether a single token is machine-readable content that must pass through unchanged."""
+    value = source.strip()
+    if not value or any(char.isspace() for char in value):
+        return False
+    if value.upper().startswith("ISBN") or any(char in value for char in "@/#"):
+        return True
+    if any(char in value for char in "{}[]="):
+        return True
+    if ":" in value and ("_" in value or any(char.isdigit() for char in value)):
+        return True
+    if "." not in value or value.endswith("."):
+        return False
+    return all(
+        part and all(char.isalnum() or char in "-_" for char in part) for part in value.split(".")
+    )
+
+
 def length_flags(
     sources: list[str],
     targets: list[str],

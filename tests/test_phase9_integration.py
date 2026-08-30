@@ -41,7 +41,9 @@ from trans_novel.pipeline.runstore import RunStore
 
 
 class _InstrumentedFakeClient(FakeClient):
-    def __init__(self, *, handler, models: tuple[str, str, str], provider: str = "fake") -> None:
+    def __init__(
+        self, *, handler, models: tuple[str, str, str, str], provider: str = "fake"
+    ) -> None:
         super().__init__(handler=handler)
         self.models = models
         self.provider = provider
@@ -66,8 +68,10 @@ class _InstrumentedFakeClient(FakeClient):
         self._attempts += 1
         model_ref = (
             self.models[1]
-            if agent == "editor"
+            if agent == "analyst"
             else self.models[2]
+            if agent == "editor"
+            else self.models[3]
             if agent in {"preparer", "light-translator"}
             else self.models[0]
         )
@@ -265,7 +269,7 @@ class TestPhase9Integration(unittest.TestCase):
                 sum(call["operation"] == "translate.batch" for call in resumed.calls), 0
             )
 
-    def test_primary_model_change_invalidates_naming_and_translation(self):
+    def test_translator_model_change_invalidates_translation_only(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "book.txt"
@@ -275,10 +279,10 @@ class TestPhase9Integration(unittest.TestCase):
             ).run(str(source))
             old_name_fingerprint = first.load_state().nodes["name_terms"].input_fingerprint
             changed = _config(root / "state")
-            changed.llm.models.primary = ["fake/different-primary"]
+            changed.llm.models.translator = ["fake/different-translator"]
             client = FakeClient(handler=routing_handler)
             second = Application(changed, client=client).run(str(source))
-            self.assertNotEqual(
+            self.assertEqual(
                 second.load_state().nodes["name_terms"].input_fingerprint,
                 old_name_fingerprint,
             )
@@ -397,24 +401,26 @@ class TestPhase9Integration(unittest.TestCase):
         write_sample_epub(str(source))
         candidate_spec = CandidateSpec.model_validate(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "benchmark_id": "phase9",
-                "provider": "bailian",
-                "fast_model": "qwen3.7-flash:off",
                 "temperature": 0.1,
                 "seed": None,
                 "replicates": 1,
                 "candidates": [
                     {
                         "candidate_id": "candidate-a-polished",
-                        "primary_model": "qwen3.8-max:off",
-                        "editor_model": "deepseek-v4-pro:off",
+                        "translator_model": "bailian/qwen3.8-max:off",
+                        "analyst_model": "bailian/qwen3.7-flash:off",
+                        "editor_model": "bailian/deepseek-v4-pro:off",
+                        "fast_model": "bailian/qwen3.7-flash:off",
                         "pipeline_variant": "polish",
                     },
                     {
                         "candidate_id": "candidate-b-polished",
-                        "primary_model": "deepseek-v4-flash:off",
-                        "editor_model": "qwen3.7-plus:off",
+                        "translator_model": "bailian/deepseek-v4-flash:off",
+                        "analyst_model": "bailian/qwen3.7-flash:off",
+                        "editor_model": "bailian/qwen3.7-plus:off",
+                        "fast_model": "bailian/qwen3.7-flash:off",
                         "pipeline_variant": "polish",
                     },
                 ],
@@ -439,17 +445,24 @@ class TestPhase9Integration(unittest.TestCase):
         def factory(**kwargs):
             roles = kwargs.get("models")
             if roles is not None:
-                models = (roles.primary[0], roles.editor[0], roles.fast[0])
+                models = (
+                    roles.translator[0],
+                    roles.analyst[0],
+                    roles.editor[0],
+                    roles.fast[0],
+                )
             else:
                 if len(factory_calls) < 3:
                     models = (
                         "bailian/qwen3.8-max:off",
+                        "bailian/qwen3.7-flash:off",
                         "bailian/deepseek-v4-pro:off",
                         "bailian/qwen3.7-flash:off",
                     )
                 else:
                     models = (
                         "bailian/deepseek-v4-flash:off",
+                        "bailian/qwen3.7-flash:off",
                         "bailian/qwen3.7-plus:off",
                         "bailian/qwen3.7-flash:off",
                     )
@@ -1204,24 +1217,26 @@ class TestPhase9Integration(unittest.TestCase):
             candidate_path.write_text(
                 yaml.safe_dump(
                     {
-                        "schema_version": 2,
+                        "schema_version": 3,
                         "benchmark_id": "phase9",
-                        "provider": "bailian",
-                        "fast_model": "qwen3.7-flash:off",
                         "temperature": 0.1,
                         "seed": None,
                         "replicates": 1,
                         "candidates": [
                             {
                                 "candidate_id": "a-polished",
-                                "primary_model": "qwen3.8-max:off",
-                                "editor_model": "deepseek-v4-pro:off",
+                                "translator_model": "bailian/qwen3.8-max:off",
+                                "analyst_model": "bailian/qwen3.7-flash:off",
+                                "editor_model": "bailian/deepseek-v4-pro:off",
+                                "fast_model": "bailian/qwen3.7-flash:off",
                                 "pipeline_variant": "polish",
                             },
                             {
                                 "candidate_id": "b-polished",
-                                "primary_model": "deepseek-v4-flash:off",
-                                "editor_model": "qwen3.7-plus:off",
+                                "translator_model": "bailian/deepseek-v4-flash:off",
+                                "analyst_model": "bailian/qwen3.7-flash:off",
+                                "editor_model": "bailian/qwen3.7-plus:off",
+                                "fast_model": "bailian/qwen3.7-flash:off",
                                 "pipeline_variant": "polish",
                             },
                         ],
