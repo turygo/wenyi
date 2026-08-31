@@ -32,6 +32,7 @@
 - Preserve non-linguistic segments without sending them to the LLM, including EPUB text-slot records.
 
 - Direct-`br` bilingual proof now resolves nested inline owners structurally; machine-readable literals bypass polishing and retain exact EPUB slots.
+- Added regression coverage for persisted Repair budgets and exhaustion behavior.
 
 ## [0.1.4] - 2026-08-28
 ### Added
