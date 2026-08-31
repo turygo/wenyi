@@ -47,6 +47,9 @@ from trans_novel.pipeline.readiness import assemble_readiness_problems
 from trans_novel.pipeline.runstore import RunStore
 
 _HEX64 = r"^[0-9a-f]{64}$"
+TRANSLATOR_OPERATIONS = frozenset({"translate.batch", "translate.single", "translate.heading"})
+LIGHT_TRANSLATOR_OPERATIONS = frozenset({"translate.back_matter"})
+
 _SAFE_ID = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 
 
@@ -270,6 +273,14 @@ def _telemetry_records(path: Path) -> list[CallAttemptTelemetry]:
         ]
     except Exception as error:
         raise IntegrationError(f"invalid telemetry artifact {path}: {error}") from error
+
+
+def _translator_call_count(records: list[CallAttemptTelemetry]) -> int:
+    """Count first translator attempts, not physical provider retries."""
+    return sum(
+        record.operation in TRANSLATOR_OPERATIONS and record.attempt_index == 1
+        for record in records
+    )
 
 
 def _authenticated_telemetry_prefix(
@@ -499,19 +510,20 @@ def _telemetry_evidence(
     expected_operations = {
         "translator": {
             "translate.batch",
-            "translate.back_matter",
-            "translate.lint_fix",
+            "translate.single",
             "integration.canary.translate",
         },
+        "light-translator": LIGHT_TRANSLATOR_OPERATIONS,
         "analyst": {
             "analyzer.analyze",
             "prescan.name_terms",
             "glossary.audit",
             "title.translate",
-            "align.boundaries",
+            "translate.heading",
+            "translate.single",
         },
         "preparer": {"language.detect", "prescan.term_mine", "glossary.extract"},
-        "editor": {"polish.batch", "polish.segment", "integration.canary.polish"},
+        "editor": {"polish.segment", "translate.repair", "integration.canary.polish"},
     }
     mismatches = 0
     unknown = 0
@@ -548,9 +560,7 @@ def _telemetry_evidence(
         "retry_count": sum(
             1 for record in records if record.attempt_index > 1 or record.retry_class is not None
         ),
-        "translate_call_count": sum(
-            1 for record in records if record.operation == "translate.batch"
-        ),
+        "translate_call_count": _translator_call_count(records),
         "valid": True,
     }
 
@@ -971,9 +981,7 @@ def _validate_present_failed_evidence(value: dict[str, Any], out: Path) -> None:
                 for record in telemetry
                 if record.attempt_index > 1 or record.retry_class is not None
             ),
-            "translate_call_count": sum(
-                1 for record in telemetry if record.operation == "translate.batch"
-            ),
+            "translate_call_count": _translator_call_count(telemetry),
         }
         if any(counts.get(key) != expected_value for key, expected_value in expected.items()):
             raise IntegrationIntegrityError("integration telemetry count mismatch")
@@ -1164,9 +1172,7 @@ def _validate_result_contract(
         "retry_count": sum(
             1 for record in telemetry if record.attempt_index > 1 or record.retry_class is not None
         ),
-        "translate_call_count": sum(
-            1 for record in telemetry if record.operation == "translate.batch"
-        ),
+        "translate_call_count": _translator_call_count(telemetry),
     }
     if not isinstance(telemetry_counts, dict) or any(
         type(telemetry_counts.get(key)) is not int
@@ -1187,7 +1193,7 @@ def _node_phase_timings(store: RunStore) -> dict[str, int]:
     phases = {
         "prepare": {"prepare", "analyze", "mine_terms", "name_terms"},
         "translate": {"translate", "titles"},
-        "quality": {"polish", "deterministic_qa", "report", "assemble"},
+        "quality": {"polish", "deterministic_qa", "repair", "report", "assemble"},
     }
     phase_by_node = {node: phase for phase, nodes in phases.items() for node in nodes}
     for node_id, node in state.nodes.items():

@@ -126,55 +126,50 @@ class TitlesNode:
             return NodeOutcome(fingerprint=fp)
 
         pending_items: list[dict] = [*llm_chapters, *toc_entries_pending]
-        unique_titles: list[str] = []
-        title_slot: dict[str, int] = {}
-        for item in pending_items:
-            key = _flat(item.get("title", ""))
-            if key not in title_slot:
-                title_slot[key] = len(unique_titles)
-                unique_titles.append(key)
+        unique_titles = list(dict.fromkeys(_flat(item.get("title", "")) for item in pending_items))
 
         if request.progress:
             request.progress(0, 0, "翻译章节标题…")
-        system = prompts.render("title_translator_system", src=src, tgt=tgt, n=len(unique_titles))
-        title_terms = terms_matching_text(self.glossary.all_terms(), "\n".join(unique_titles))
-        user = prompts.render(
-            "title_translator_user",
-            src=src,
-            tgt=tgt,
-            glossary=prompts.render_glossary(title_terms),
-            n=len(unique_titles),
-            numbered_titles=prompts.numbered(unique_titles),
-        )
-        data = self.client.complete_json(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            stage="title_translate",
-            agent="analyst",
-            operation="title.translate",
-        )
-        out = data.get("titles") if isinstance(data, dict) else data
-        if not isinstance(out, list) or len(out) != len(unique_titles):
-            # 数量不符是协议错误：节点落失败态保持可重试（幂等），下次 run 重试，
-            # 而不是记录 succeeded 后永久跳过（标题会一直缺失）。
-            store.log_event(
-                "titles_translation_rejected",
-                reason="count_mismatch",
-                expected=len(unique_titles),
-                actual=len(out) if isinstance(out, list) else None,
+        translated_titles: dict[str, str] = {}
+        for title in unique_titles:
+            system = prompts.render("title_translator_system", src=src, tgt=tgt, n=1)
+            title_terms = terms_matching_text(self.glossary.all_terms(), title)
+            user = prompts.render(
+                "title_translator_user",
+                src=src,
+                tgt=tgt,
+                glossary=prompts.render_glossary(title_terms),
+                n=1,
+                numbered_titles=prompts.numbered([title]),
             )
-            raise WorkflowProtocolError("title_count_mismatch")
-        out = [str(t).strip() for t in out]
-        if not all(out):
-            # 空/缺失的标题项：协议错误（保持可重试），不得回退占位导致标题缺失。
-            store.log_event(
-                "titles_translation_rejected",
-                reason="empty_item",
-                expected=len(unique_titles),
+            data = self.client.complete_json(
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                stage="title_translate",
+                agent="analyst",
+                operation="title.translate",
             )
-            raise WorkflowProtocolError("title_empty_item")
+            out = data.get("titles") if isinstance(data, dict) else data
+            if not isinstance(out, list) or len(out) != 1:
+                store.log_event(
+                    "titles_translation_rejected",
+                    reason="count_mismatch",
+                    expected=1,
+                    actual=len(out) if isinstance(out, list) else None,
+                )
+                raise WorkflowProtocolError("title_count_mismatch")
+            translated = str(out[0]).strip() if isinstance(out[0], str) else ""
+            if not translated:
+                store.log_event(
+                    "titles_translation_rejected",
+                    reason="empty_item",
+                    expected=1,
+                )
+                raise WorkflowProtocolError("title_empty_item")
+            translated_titles[title] = translated
+
         for item in pending_items:
             key = _flat(item.get("title", ""))
-            item["title_translated"] = out[title_slot[key]] or item.get("title")
+            item["title_translated"] = translated_titles[key]
 
         for c in toc_covered_chapters:
             entry_translated = entries_by_id[c["toc_entry_id"]].get("title_translated")
@@ -185,8 +180,8 @@ class TitlesNode:
         store.log_event(
             "titles_translated",
             titles=[
-                {"index": i, "source": source, "target": target}
-                for i, (source, target) in enumerate(zip(unique_titles, out, strict=False))
+                {"index": i, "source": source, "target": translated_titles[source]}
+                for i, source in enumerate(unique_titles)
             ],
         )
         fp = self._fingerprint(store)
@@ -261,15 +256,11 @@ class ReportNode:
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
         report = build_report(store, self.glossary)
-        deterministic = (request.artifacts.get("deterministic_qa") or {}).get("issues")
-        if deterministic is None:
-            node = store.load_state().nodes.get(NODE_DETERMINISTIC_QA)
-            deterministic = (node.output or {}).get("issues") if node else []
-        report["deterministic_issues"] = deterministic or []
         store.save_report(report)
         store.log_event("report_saved", path=store.report_path)
         return NodeOutcome(
-            artifacts={"report": report}, fingerprint=self._fingerprint(store, deterministic)
+            artifacts={"report": report},
+            fingerprint=self._fingerprint(store, report["deterministic_issues"]),
         )
 
     def _fingerprint(self, store, deterministic: list | None = None) -> str:
@@ -277,8 +268,7 @@ class ReportNode:
         lint_issues = [issue for ci in state.progress.values() for issue in ci.lint_issues]
         titles = [c.title for c in state.chapters if c.title]
         if deterministic is None:
-            node = state.nodes.get(NODE_DETERMINISTIC_QA)
-            deterministic = (node.output or {}).get("issues") if node else []
+            deterministic = lint_issues
         return report_input_fingerprint(
             lint_issues, deterministic or [], [t.source for t in self.glossary.all_terms()], titles
         )

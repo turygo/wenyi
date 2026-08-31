@@ -7,6 +7,8 @@
 from collections.abc import Mapping
 from typing import Any
 
+from trans_novel.llm.errors import LLMError
+
 # Normalized fallback reasons (AllModelsFailedError exposes only these categories).
 EMPTY_RESPONSE = "empty_response"
 RATE_LIMIT = "rate_limit"
@@ -19,7 +21,7 @@ MODEL_NOT_FOUND = "model_not_found"
 PROVIDER_RETRY = "provider_retry"
 
 
-class EmptyResponseError(Exception):
+class EmptyResponseError(LLMError):
     """A provider response did not contain usable message content."""
 
 

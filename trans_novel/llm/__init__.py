@@ -2,7 +2,12 @@
 
 from trans_novel.config import ModelRef
 from trans_novel.llm.base import LLMClient, Messages
-from trans_novel.llm.errors import AllModelsFailedError, UnknownAgentError
+from trans_novel.llm.errors import (
+    AllModelsFailedError,
+    LLMError,
+    ProviderError,
+    UnknownAgentError,
+)
 from trans_novel.llm.factory import build_client
 from trans_novel.llm.generation import GenerationOptions
 from trans_novel.llm.json_parser import parse_json_loose
@@ -19,8 +24,10 @@ __all__ = [
     "FakeClient",
     "GenerationOptions",
     "LLMClient",
+    "LLMError",
     "Messages",
     "ModelRef",
+    "ProviderError",
     "UnknownAgentError",
     "build_client",
     "has_response_usage",

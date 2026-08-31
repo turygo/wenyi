@@ -59,33 +59,19 @@ def routing_handler(messages, agent, operation, json_mode):
         n = _count_numbered(user)
         return json.dumps({"titles": [f"标题{i}" for i in range(n)]}, ensure_ascii=False)
 
-    if "文本边界对齐器" in system:
-        try:
-            records = json.loads(user.rsplit("\n\n", 1)[-1])
-            aligned = []
-            marker = "⟪TN_SLOT⟫"
-            for record in records:
-                translation = record["translation"]
-                count = len(record["source_parts"])
-                cuts = [round(len(translation) * index / count) for index in range(1, count)]
-                parts = []
-                start = 0
-                for cut in cuts:
-                    parts.append(translation[start:cut])
-                    start = cut
-                parts.append(translation[start:])
-                aligned.append(marker.join(parts))
-            return json.dumps({"aligned": aligned}, ensure_ascii=False)
-        except (KeyError, TypeError, json.JSONDecodeError):
-            return json.dumps({"aligned": []}, ensure_ascii=False)
+    if operation == "translate.repair":
+        current = (
+            user.split("【当前译文】", 1)[-1].split("\n\n【唯一需要修复的问题】", 1)[0].strip()
+        )
+        issue_type = user.split("类型：", 1)[-1].split("\n", 1)[0].strip()
+        if issue_type == "quote_loss" and current:
+            return f"“{current.strip('“”「」『』《》')}”"
+        return current
 
     if "文学翻译" in system:
-        if "【唯一待译" in user:
-            source = user.split("【唯一待译", 1)[-1].split("\n", 1)[-1].split("\n\n", 1)[0]
-            return json.dumps(
-                {"translation": "译" + "文" * max(1, len(source) - 1)},
-                ensure_ascii=False,
-            )
+        if not json_mode:
+            source = user.rsplit("】", 1)[-1].strip()
+            return "译" + "文" * max(1, len(source) - 1)
         sources = _numbered_values(user.split("【待译", 1)[-1])
         translations = [
             f"译{i}" + "文" * max(0, len(source) - 2) for i, source in enumerate(sources)

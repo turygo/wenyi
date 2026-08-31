@@ -68,6 +68,7 @@ from trans_novel.pipeline.nodes.prescan import (
     NameTermsNode,
     mine_terms_input_fingerprint,
 )
+from trans_novel.pipeline.nodes.repair import RepairNode
 from trans_novel.pipeline.nodes.translate import PolishNode, TranslateNode
 from trans_novel.pipeline.planner import Planner, PrescanInputs, WorkflowPlan, WorkflowPolicy
 from trans_novel.pipeline.runner import RunResult, WorkflowRunner
@@ -80,6 +81,7 @@ from trans_novel.pipeline.state import (
     NODE_NAME_TERMS,
     NODE_POLISH,
     NODE_PREPARE,
+    NODE_REPAIR,
     NODE_REPORT,
     NODE_TITLES,
     NODE_TRANSLATE,
@@ -111,7 +113,8 @@ _NODE_SPECS = (
         aggregates=(NODE_TRANSLATE, NODE_POLISH),
     ),
     NodeSpec(NODE_DETERMINISTIC_QA, SCOPE_BOOK, "required", depends_on=(NODE_TITLES,)),
-    NodeSpec(NODE_REPORT, SCOPE_BOOK, "required", depends_on=(NODE_DETERMINISTIC_QA,)),
+    NodeSpec(NODE_REPAIR, SCOPE_BOOK, "required", depends_on=(NODE_DETERMINISTIC_QA,)),
+    NodeSpec(NODE_REPORT, SCOPE_BOOK, "required", depends_on=(NODE_REPAIR,)),
     NodeSpec(NODE_ASSEMBLE, SCOPE_BOOK, "required", depends_on=(NODE_REPORT,)),
 )
 
@@ -170,7 +173,6 @@ class Application:
             ),
             NODE_TRANSLATE: lambda shared, ci: TranslateNode(
                 translator=shared.agents.translator,
-                boundary_aligner=shared.agents.boundary_aligner,
                 extractor=shared.agents.extractor,
                 polisher=shared.agents.polisher,
                 glossary=shared.glossary(),
@@ -183,7 +185,6 @@ class Application:
             ),
             NODE_POLISH: lambda shared, ci: PolishNode(
                 polisher=shared.agents.polisher,
-                boundary_aligner=shared.agents.boundary_aligner,
                 extractor=shared.agents.extractor,
                 glossary=shared.glossary(),
                 config=self.config,
@@ -200,6 +201,12 @@ class Application:
             ),
             NODE_DETERMINISTIC_QA: lambda shared, ci: DeterministicQANode(
                 glossary=shared.glossary()
+            ),
+            NODE_REPAIR: lambda shared, ci: RepairNode(
+                translator=shared.agents.translator,
+                glossary=shared.glossary(),
+                style_brief=_style(),
+                config=self.config,
             ),
             NODE_REPORT: lambda shared, ci: ReportNode(glossary=shared.glossary()),
             NODE_ASSEMBLE: lambda shared, ci: AssembleNode(
@@ -357,10 +364,9 @@ class Application:
     # ── 目标执行 ──────────────────────────────────────────────────────────
     # 阶段分段：prepare（不依赖暂存章节）→ 翻译闭包（prescan/translate/titles）→
     # 收尾（qa/report/assemble）。章相关规划必须等 prepare 暂存文档后才能进行；
-    # “翻译完成”标签夹在翻译闭包与收尾之间（与旧 run()/finish 顺序一致）。
     _PREPARE_PHASES = ("prepare",)
     _TRANSLATE_PHASES = ("prescan", "translate", "titles")
-    _FINISH_PHASES = ("qa", "report", "assemble")
+    _FINISH_PHASES = ("qa", "repair", "report", "assemble")
 
     def run_goal(
         self,
@@ -572,14 +578,13 @@ class Application:
     def _steps_result(self, input_path: str, goal: ExecutionGoal, *, progress=None) -> dict:
         result, store = self.run_goal(input_path, goal, progress=progress)
         outputs = result.artifact("assemble", "outputs", [])
-        report = result.artifact("report", "report")
-        qa_issues = result.artifact("deterministic_qa", "issues", [])
+        report = result.artifact("report", "report") or {}
         return {
             "store": store,
             "output": outputs[0] if outputs else None,
             "outputs": outputs,
             "report": report,
-            "qa_issues": qa_issues,
+            "qa_issues": report.get("deterministic_issues", []),
         }
 
     def translate_titles(self, store: RunStore) -> None:

@@ -254,14 +254,18 @@ def _translate_impl(
             raise typer.Exit(2) from error
 
     s = result["report"]["summary"]
-    console.print(f"术语 {s['terms']}，确定性 QA 问题 {len(result['qa_issues'])} 项。")
+    repair = result["report"].get("repair", {})
+    console.print(
+        f"术语 {s['terms']}，Repair 检测 {repair.get('detected', 0)} 项，"
+        f"解决 {repair.get('resolved', 0)} 项，耗尽 {repair.get('accepted_after_exhaustion', 0)} 项。"
+    )
     _print_usage({"usage": result["store"].load_usage() or {}})
     _print_back_matter(result["report"])
     for path in result.get("outputs") or [result["output"]]:
         console.print(f"译文：[bold]{path}[/]")
     console.print(
         f"[bold green]完成[/]：{s['chapters_done']}/{s['chapters_total']} 章，"
-        f"术语 {s['terms']}，确定性 QA 问题 {len(result['qa_issues'])} 项。"
+        f"Repair 逻辑调用 {repair.get('attempts', 0)} 次。"
     )
 
 
@@ -550,11 +554,12 @@ def report(input: str = typer.Argument(..., help="输入文件")):
         raise typer.Exit(1)
     rep = Application(config).report(store)
     s = rep["summary"]
+    repair = rep.get("repair", {})
     console.print(f"QA 报告已写入 {store.report_path}")
     console.print(
-        f"  章节 {s['chapters_done']}/{s['chapters_total']}  术语 {s['terms']} "
-        f"lint 问题 {s['lint_issues']}  确定性 QA {s['deterministic_issues']} "
-        f"附属章旁路 {s.get('back_matter_chapters', 0)}"
+        f"  章节 {s['chapters_done']}/{s['chapters_total']} 术语 {s['terms']} "
+        f"Repair 检测 {repair.get('detected', 0)} 解决 {repair.get('resolved', 0)} "
+        f"耗尽 {repair.get('accepted_after_exhaustion', 0)} 调用 {repair.get('attempts', 0)}"
     )
     _print_back_matter(rep)
 

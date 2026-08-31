@@ -125,6 +125,7 @@ class WorkflowDefinition:
             "translate",
             "titles",
             "qa",
+            "repair",
             "report",
             "assemble",
         }

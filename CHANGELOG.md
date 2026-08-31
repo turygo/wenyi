@@ -5,12 +5,19 @@
 ## [Unreleased]
 ### Changed
 
-- 完成最简生产流水线切换：保留确定性 lint/QA 与可选润色，移除旧的模型审校链。
-- Balanced and quality translation now use one strict single-value JSON call per segment; malformed responses retry and fail closed, while machine-readable literals bypass translation.
+- Deterministic QA now feeds one persisted issue-level Repair queue through the `editor` role, with an independent ten-call budget per issue, resumable ledger state, and guaranteed assembly after exhaustion.
+- Reports expose Repair detected/resolved/exhausted counts and logical attempts, always set `requires_user_action: false`, and generate mono/bilingual outputs for exhausted issues.
+- Heading segments in balanced/quality translation now use a concise plain-text prompt with source-matching glossary terms and the analyst role, while retaining strict retry/length validation.
+- Balanced and quality translation now use one plain-text call per segment; empty or abnormally long responses retry and fail closed, while machine-readable literals bypass translation.
+- Balanced/quality prose retries now fall back from an exhausted translator role to the analyst role without relaxing single-segment validation; headings and economy remain unchanged.
+- EPUB 富文本译文改由代码按原文槽位长度确定性回填，不再调用模型插入边界标记。
+- 定向重译、润色和标题翻译改为每次只处理一段或一条，避免等长批量响应仍发生内容串位。
+- EPUB 输出会把不规范源书的 `mimetype` 规范化为首项、无压缩且无尾随换行，并允许该标准化元数据差异通过发布验证。
 - benchmark schema 升级，并支持对 minimal/polish 克隆进行消融；两条分支共享不可变的初译结果，分别记录目标哈希和用量增量。
 - 新增经 OpenRouter 目录核验的 Tencent Hy-MT2 30B-A3B 固定版本信息（含能力元数据和价格快照），并避免向非推理模型发送 OpenRouter reasoning 参数。
-- 模型路由拆分为显式的 `translator`、`analyst`、`editor`、`fast` 四角色；默认由 Hy-MT2 30B 负责纯文本翻译，Muse Spark Contributor 负责分析、边界对齐、润色和快速任务。
-- EPUB translation now aligns plain-text output back to source slot boundaries.
+- 模型路由拆分为显式的 `translator`、`analyst`、`editor`、`fast` 四角色；默认由 Hy-MT2 30B 负责纯文本翻译，Muse Spark Contributor 负责分析、润色和快速任务。
+- EPUB translation now deterministically distributes plain-text output back to source slot boundaries.
+- EPUB slot state now uses exact source/target values with complete whitespace-tail coverage; target distribution is lossless and schema versions require a fresh run.
 - benchmark 候选 schema 升级为四角色完整模型 ID，并横向比较 Hy-MT2 30B、GLM-5.3-Flash 与 Muse Spark 1.2 Contributor 的 minimal/polish 两臂。
 - Benchmark validation now accepts independent translator, analyst, editor, and fast model IDs per candidate.
 - Configuration examples now expose independent translator, analyst, editor, and fast model chains.

@@ -1,25 +1,26 @@
-"""章翻译节点：translate（批翻译 + lint/修复 + 检查点）与 polish（章末排干润色）。
+"""章翻译节点：translate（批翻译 + 检查点）与 polish（章末排干润色）。
 
-从迁移前的 _translate_chapter 平移，边界按节点契约拆分：
-- translate 保留批翻译、滚动上下文重建、确定性 lint 与定向重译修复、翻译检查点、
-  可选 in-flight 术语抽取、附属章旁路（skip/light/full 是翻译内部策略）、
-  升档重开、标题无关的章完成（done 由章链收尾节点落）；
-- polish 保留 pending_polish 排干（本轮新提交 + 续跑遗留），逐批 lint 回退保护；
-- 审校/自然化/回译已拆到 quality 节点；runner 只提供共享线程池与 store。
+translate 保留批翻译、滚动上下文重建、确定性 lint 清单、翻译检查点、
+可选 in-flight 术语抽取、附属章旁路和升档重开；Repair 节点统一负责质量修复。
+polish 保留 pending_polish 排干（本轮新提交 + 续跑遗留），逐批 lint 回退保护。
+审校/自然化/回译已拆到 quality 节点；runner 只提供共享线程池与 store。
 """
 
 from __future__ import annotations
 
 from trans_novel.config import Config
-from trans_novel.glossary.store import GlossaryStore
-from trans_novel.ingest.models import (
+from trans_novel.epub.slots import (
     assign_segment_translation,
+    distribute_slot_translation,
     normalize_slot_transport,
     reset_segment_translation,
-    slot_transport,
-    translation_text,
+    source_passthrough_transport,
+    target_slot_transport,
 )
+from trans_novel.glossary.store import GlossaryStore
+from trans_novel.ingest.models import KIND_HEADING
 from trans_novel.ingest.segmenter import batch_segments
+from trans_novel.llm.errors import LLM_FALLBACK_ERRORS
 from trans_novel.pipeline import checkpoint, checks, lint
 from trans_novel.pipeline.backmatter import is_back_matter
 from trans_novel.pipeline.contracts import BatchCommitHook, NodeOutcome, NodeRequest
@@ -42,32 +43,30 @@ from trans_novel.pipeline.state import (
     PolishBatch,
     chapter_node_key,
 )
-from trans_novel.postprocess.punct import normalize_zh
+from trans_novel.postprocess.punct import normalize_heading_numbering, normalize_zh
 
 _BM_RANK = {"skip": 0, "light": 1, "full": 2}
 
 
-def _align_epub_translations(boundary_aligner, segments, translations: list[str]) -> list[str]:
-    """Align only multi-slot EPUB segments; all other translations pass through."""
-    indices = [
-        index
-        for index, segment in enumerate(segments)
-        if segment.epub_state is not None and len(segment.epub_state.slots) > 1
-    ]
-    if not indices:
-        return translations
-    aligned = boundary_aligner.align_batch(
-        [[slot.source_core for slot in segments[index].epub_state.slots] for index in indices],
-        [translations[index] for index in indices],
-    )
-    result = list(translations)
-    for index, value in zip(indices, aligned, strict=True):
-        result[index] = value
+def _align_epub_translations(segments, translations: list[str]) -> list[object]:
+    """Distribute complete translations across EPUB slots deterministically."""
+    result: list[object] = list(translations)
+    for index, (segment, translation) in enumerate(zip(segments, translations, strict=True)):
+        if segment.epub_state is not None:
+            complete = (
+                normalize_heading_numbering(translation)
+                if segment.kind == "heading"
+                else translation
+            )
+            if complete == segment.source:
+                result[index] = source_passthrough_transport(segment)
+            else:
+                result[index] = distribute_slot_translation(segment, complete)
     return result
 
 
 class TranslateNode:
-    """逐章批翻译：滚动上下文、lint 修复、检查点落盘、附属章旁路。"""
+    """逐章批翻译：滚动上下文、lint 清单、检查点落盘、附属章旁路。"""
 
     node_id = NODE_TRANSLATE
     scope = SCOPE_CHAPTER
@@ -76,7 +75,6 @@ class TranslateNode:
         self,
         *,
         translator,
-        boundary_aligner,
         extractor,
         polisher,
         glossary: GlossaryStore,
@@ -88,7 +86,6 @@ class TranslateNode:
         batch_commit_hook: BatchCommitHook | None = None,
     ):
         self.translator = translator
-        self.boundary_aligner = boundary_aligner
         self.extractor = extractor
         self.polisher = polisher
         self.glossary = glossary
@@ -186,15 +183,16 @@ class TranslateNode:
                 continue
 
             ctx_text = context.render(config.pipeline.rolling_context_segments)
-            raw_transports = self._process_batch(b, term_snapshot, ctx_text, style)
+            raw_transports, translate_call_count = self._process_batch(
+                b, term_snapshot, ctx_text, style
+            )
             raw_targets: list[str] = []
             for segment, transport in zip(b, raw_transports, strict=True):
                 assign_segment_translation(segment, transport)
                 raw_targets.append(segment.target or "")
 
-            # 确定性 lint（零 LLM）：flag 段带审校意见定向重译，每段最多一轮。
+            # Deterministic lint only inventories issues; Repair owns all model fixes.
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
-            lint_refixed_entries: list[dict] = []
             batch_issues = lint.lint_targets(
                 [s.source for s in b],
                 raw_targets,
@@ -209,6 +207,16 @@ class TranslateNode:
                 type_counts: dict[str, int] = {}
                 for it in batch_issues:
                     type_counts[it.type] = type_counts.get(it.type, 0) + 1
+                    lint_issues.append(
+                        {
+                            "chapter": ci,
+                            "index": seg_base + it.index,
+                            "type": it.type,
+                            "detail": it.detail,
+                            "stage": "lint",
+                            "fixed": False,
+                        }
+                    )
                 store.log_event(
                     "batch_linted",
                     chapter=ci,
@@ -217,131 +225,6 @@ class TranslateNode:
                     by_type={t: type_counts[t] for t in sorted(type_counts)},
                     issues_sha256=stable_digest(lint_issues_payload),
                 )
-                by_idx: dict[int, list] = {}
-                for it in batch_issues:
-                    by_idx.setdefault(it.index, []).append(it)
-                actionable_idx: list[int] = []
-                for idx, seg_issues in sorted(by_idx.items()):
-                    if not any(it.type in lint.ACTIONABLE_TYPES for it in seg_issues):
-                        for it in seg_issues:
-                            lint_issues.append(
-                                {
-                                    "chapter": ci,
-                                    "index": seg_base + idx,
-                                    "type": it.type,
-                                    "detail": it.detail,
-                                    "stage": "lint",
-                                    "fixed": False,
-                                }
-                            )
-                        continue
-                    actionable_idx.append(idx)
-
-                def _apply_fix_result(
-                    idx: int,
-                    new_t: object,
-                    *,
-                    by_idx: dict[int, list] = by_idx,
-                    b: list = b,
-                    locked: list = locked,
-                    seg_base: int = seg_base,
-                    raw_targets: list = raw_targets,
-                    lint_refixed_entries: list = lint_refixed_entries,
-                ) -> None:
-                    seg_issues = by_idx[idx]
-                    seg = b[idx]
-                    try:
-                        candidate_text = translation_text(seg, new_t) if seg.epub_state else new_t
-                    except ValueError:
-                        candidate_text = ""
-                    new_issues = (
-                        lint.lint_targets(
-                            [seg.source],
-                            [candidate_text],
-                            locked_terms=locked,
-                            src_lang=self.translator.src,
-                        )
-                        if isinstance(candidate_text, str) and candidate_text
-                        else []
-                    )
-                    if candidate_text and len(new_issues) < len(seg_issues):
-                        self.translator.client.usage.record_outcome(
-                            "translator", "translate.lint_fix", accepted=True
-                        )
-                        old_text = raw_targets[idx]
-                        assign_segment_translation(seg, new_t)
-                        raw_targets[idx] = seg.target or ""
-                        lint_refixed_entries.append(
-                            {
-                                "chapter": ci,
-                                "index": seg_base + idx,
-                                "before": old_text,
-                                "after": raw_targets[idx],
-                                "issues": [
-                                    {"type": it.type, "detail": it.detail} for it in seg_issues
-                                ],
-                            }
-                        )
-                        remaining = new_issues
-                    else:
-                        self.translator.client.usage.record_outcome(
-                            "translator", "translate.lint_fix", accepted=False
-                        )
-                        remaining = seg_issues
-                    for it in remaining:
-                        lint_issues.append(
-                            {
-                                "chapter": ci,
-                                "index": seg_base + idx,
-                                "type": it.type,
-                                "detail": it.detail,
-                                "stage": "lint",
-                                "fixed": False,
-                            }
-                        )
-
-                merged_targets: dict[int, str] = {}
-                if len(actionable_idx) > 1:
-                    merged = self.translator.retranslate_batch_with_feedback(
-                        [
-                            (idx, b[idx].source, "；".join(it.detail for it in by_idx[idx]))
-                            for idx in actionable_idx
-                        ],
-                        raw_targets,
-                        operation="translate.lint_fix",
-                        glossary_terms=term_snapshot,
-                        style=style,
-                    )
-                    if len(merged) == len(actionable_idx):
-                        merged = _align_epub_translations(
-                            self.boundary_aligner,
-                            [b[index] for index in actionable_idx],
-                            merged,
-                        )
-                        merged_targets = dict(zip(actionable_idx, merged, strict=False))
-
-                if merged_targets:
-                    for idx in actionable_idx:
-                        _apply_fix_result(idx, merged_targets.get(idx, ""))
-                else:
-                    for idx in actionable_idx:
-                        seg = b[idx]
-                        feedback = "；".join(it.detail for it in by_idx[idx])
-                        before = "\n".join(raw_targets[j] for j in range(max(0, idx - 2), idx))
-                        after = "\n".join(
-                            raw_targets[j] for j in range(idx + 1, min(len(b), idx + 3))
-                        )
-                        new_t = self.translator.retranslate_with_feedback(
-                            seg.source,
-                            feedback=feedback,
-                            operation="translate.lint_fix",
-                            glossary_terms=term_snapshot,
-                            style=style,
-                            context_before=before,
-                            context_after=after,
-                        )
-                        new_t = _align_epub_translations(self.boundary_aligner, [seg], [new_t])[0]
-                        _apply_fix_result(idx, new_t)
             batch_start = seg_base
             request.shared.segments_done += len(b)
             seg_base += len(b)
@@ -355,13 +238,15 @@ class TranslateNode:
                 if config.punctuation_normalize:
                     for s in b:
                         if s.epub_state is None:
-                            assign_segment_translation(s, normalize_zh(s.target or ""))
+                            target = s.target or ""
+                            if target != s.source:
+                                assign_segment_translation(s, normalize_zh(target))
                         else:
                             assign_segment_translation(
                                 s,
                                 normalize_slot_transport(
                                     s,
-                                    slot_transport(s),
+                                    target_slot_transport(s),
                                 ),
                             )
                     final_targets = [s.target or "" for s in b]
@@ -378,21 +263,11 @@ class TranslateNode:
             checkpoint.clear(store)
 
             # 增量持久化：本批译文（+ pending_polish / lint_issues 标记）立即落盘。
-            # 崩溃一致性（polish_on 时）：译文在章节文件、标记在 manifest，两次独立
-            # 已采纳的 lint 修复，避免事件先于持久化结果出现。
             event_payload = {
                 "chapter": ci,
                 "start_index": batch_start,
                 "count": len(b),
-                "translate_call_count": (
-                    sum(
-                        any(character.isalpha() for character in segment.source)
-                        and not checks.is_machine_literal(segment.source)
-                        for segment in b
-                    )
-                    if config.pipeline.single_segment_translation
-                    else 1
-                ),
+                "translate_call_count": translate_call_count,
                 "polished": False,
                 "punctuation_normalized": punctuation_normalized,
                 "target_sha256": stable_digest(
@@ -408,8 +283,6 @@ class TranslateNode:
                 store.log_event("batch_translated", **event_payload)
             if self.batch_commit_hook is not None:
                 self.batch_commit_hook.after_batch_committed(ci, batch_start, len(b))
-            for entry in lint_refixed_entries:
-                store.log_event("lint_refixed", **entry)
 
             if polish_on:
                 # 润色批间无依赖：提交共享线程池，章末由 polish 节点统一排干。
@@ -535,7 +408,7 @@ class TranslateNode:
             for s in text_segs:
                 assign_segment_translation(
                     s,
-                    s.source if s.epub_state is None else slot_transport(s, target=False),
+                    s.source if s.epub_state is None else source_passthrough_transport(s),
                 )
             store.save_chapter(chapter)
             request.shared.segments_done += len(text_segs)
@@ -554,19 +427,24 @@ class TranslateNode:
                             request.shared.segments_done, request.shared.segments_total, label
                         )
                     continue
-                raw = self.translator.translate_batch(
-                    [s.source for s in b],
-                    agent="light-translator",
-                    operation="translate.back_matter",
-                    glossary_terms=[],
-                    style="",
-                    context="",
-                )
-                raw = _align_epub_translations(self.boundary_aligner, b, raw)
+                try:
+                    result = self.translator.translate_batch(
+                        [s.source for s in b],
+                        agent="light-translator",
+                        operation="translate.back_matter",
+                        glossary_terms=[],
+                        style="",
+                        context="",
+                    )
+                    raw = _align_epub_translations(b, list(result.translations))
+                    translate_call_count = result.request_count
+                except LLM_FALLBACK_ERRORS:
+                    raw, translate_call_count = self._safe_batch_fallback(b)
                 for s, t in zip(b, raw, strict=True):
                     if config.punctuation_normalize:
                         if s.epub_state is None:
-                            t = normalize_zh(t)
+                            if t != s.source:
+                                t = normalize_zh(t)
                         else:
                             t = normalize_slot_transport(s, t)
                     assign_segment_translation(s, t)
@@ -578,7 +456,7 @@ class TranslateNode:
                     start_index=seg_base,
                     count=len(b),
                     polished=False,
-                    punctuation_normalized=config.punctuation_normalize,
+                    translate_call_count=translate_call_count,
                     back_matter=True,
                     operation="translate.back_matter",
                     target_sha256=stable_digest(
@@ -610,15 +488,56 @@ class TranslateNode:
         )
         return NodeOutcome(chapter_finalized=True, fingerprint=fp)
 
-    def _process_batch(self, batch, terms, ctx_text: str, style: str) -> list[str]:
-        translated = self.translator.translate_batch(
-            [s.source for s in batch],
-            agent="translator",
-            glossary_terms=terms,
-            style=style,
-            context=ctx_text,
-        )
-        return _align_epub_translations(self.boundary_aligner, batch, translated)
+    def _process_batch(self, batch, terms, ctx_text: str, style: str) -> tuple[list[object], int]:
+        for segment in batch:
+            if segment.epub_state is not None:
+                from trans_novel.epub.slots import normalized_source_text
+
+                if segment.source != normalized_source_text(segment.epub_state.slots):
+                    raise ValueError(f"EPUB source slot coverage mismatch: {segment.resource_href}")
+        try:
+            request_count = 0
+            if self.config.pipeline.single_segment_translation:
+                translated = []
+                for segment in batch:
+                    result = self.translator.translate_batch(
+                        [segment.source],
+                        agent="analyst" if segment.kind == KIND_HEADING else "translator",
+                        operation=(
+                            "translate.heading"
+                            if segment.kind == KIND_HEADING
+                            else "translate.single"
+                        ),
+                        fallback_agent=None if segment.kind == KIND_HEADING else "analyst",
+                        glossary_terms=terms,
+                        style=style if segment.kind != KIND_HEADING else "",
+                        context=ctx_text if segment.kind != KIND_HEADING else "",
+                        kind=KIND_HEADING if segment.kind == KIND_HEADING else None,
+                    )
+                    translated.extend(result.translations)
+                    request_count += result.request_count
+            else:
+                result = self.translator.translate_batch(
+                    [s.source for s in batch],
+                    agent="translator",
+                    glossary_terms=terms,
+                    style=style,
+                    context=ctx_text,
+                )
+                translated = list(result.translations)
+                request_count = result.request_count
+            return _align_epub_translations(batch, translated), request_count
+        except LLM_FALLBACK_ERRORS:
+            return self._safe_batch_fallback(batch)
+
+    @staticmethod
+    def _safe_batch_fallback(batch) -> tuple[list[object], int]:
+        return [
+            source_passthrough_transport(segment)
+            if segment.epub_state is not None
+            else segment.source
+            for segment in batch
+        ], 0
 
     def _extract_batch_glossary(
         self,
@@ -652,7 +571,6 @@ class PolishNode:
         self,
         *,
         polisher,
-        boundary_aligner,
         extractor,
         glossary: GlossaryStore,
         config: Config,
@@ -661,7 +579,6 @@ class PolishNode:
         frozen_preparation=None,
     ):
         self.polisher = polisher
-        self.boundary_aligner = boundary_aligner
         self.extractor = extractor
         self.glossary = glossary
         self.config = config
@@ -681,9 +598,7 @@ class PolishNode:
         pending = list(chapter_progress.pending_polish)
         if not pending:
             # 策略从禁用切到启用：此前 polish 关闭时翻译的章没有 pending 标记，
-            # 也没有记录过润色指纹（skipped/从未润色）。从已译段推导批次一次性
-            # 补润色——不清除译文、不重译。用“指纹为空”而非节点状态判断：节点
-            # 执行期间状态已是 running，status == skipped 永远不成立。
+            # 也没有记录过润色指纹（skipped/从未润色）。从已译段推导批次一次性补润色。
             node = store.load_state().nodes.get(chapter_node_key(NODE_POLISH, ci))
             if node is None or not node.input_fingerprint:
                 pending = []
@@ -703,8 +618,7 @@ class PolishNode:
             store,
             ci,
         )
-        # 章级术语兜底抽取：润色落盘后（润色前的译文可能含被润色修正的术语变体）。
-        # 与 TranslateNode 同口径：附属章（full 档下命中 is_back_matter）不抽术语。
+        # 章级术语兜底抽取：润色落盘后再抽取，附属章不抽术语。
         if self.config.pipeline.inflight_glossary and not is_back_matter(
             chapter.title, index=ci, total=request.total_chapters
         ):
@@ -781,10 +695,11 @@ class PolishNode:
                 )
                 for i in range(count)
             ]
-            selected_plain = [result.selected for result in results]
-            selected_transport = _align_epub_translations(
-                self.boundary_aligner, batch, selected_plain
-            )
+            selected_plain = [
+                raw_plain[i] if checks.is_machine_literal(srcs[i]) else result.selected
+                for i, result in enumerate(results)
+            ]
+            selected_transport = _align_epub_translations(batch, selected_plain)
             for i, result in enumerate(results):
                 if batch[i].epub_state is not None and self.config.punctuation_normalize:
                     selected_transport[i] = normalize_slot_transport(
@@ -792,10 +707,12 @@ class PolishNode:
                     )
                 if result.accepted:
                     self.polisher.client.usage.record_outcome(
-                        "editor", "polish.batch", accepted=True
+                        "editor", "polish.segment", accepted=True
                     )
                     continue
-                self.polisher.client.usage.record_outcome("editor", "polish.batch", accepted=False)
+                self.polisher.client.usage.record_outcome(
+                    "editor", "polish.segment", accepted=False
+                )
                 store.log_event(
                     "polish_rejected",
                     chapter=ci,

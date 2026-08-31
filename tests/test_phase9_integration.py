@@ -23,13 +23,15 @@ from trans_novel.benchmark.corpus import (
     sha256_bytes,
 )
 from trans_novel.benchmark.integration import (
+    TRANSLATOR_OPERATIONS,
     BenchmarkInterruption,
     IntegrationError,
     IntegrationRunner,
     IntegrationSpec,
     _telemetry_evidence,
+    _translator_call_count,
 )
-from trans_novel.benchmark.schema import CandidateSpec
+from trans_novel.benchmark.schema import Candidate, CandidateSpec
 from trans_novel.cli import app
 from trans_novel.config import Config
 from trans_novel.llm import FakeClient
@@ -38,6 +40,7 @@ from trans_novel.model_profiles import parse_model_selection, parse_provider_mod
 from trans_novel.pipeline.bootstrap import Application
 from trans_novel.pipeline.runner import RequiredNodeFailed
 from trans_novel.pipeline.runstore import RunStore
+from trans_novel.pipeline.state import RUN_INPUT_SCHEMA_VERSION
 
 
 class _InstrumentedFakeClient(FakeClient):
@@ -141,6 +144,42 @@ def _source(path: Path) -> None:
     path.write_text("First paragraph.\n\nSecond paragraph.\n\nThird paragraph.", encoding="utf-8")
 
 
+def _telemetry_record(operation: str, *, agent: str = "translator", index: int = 1):
+    return CallAttemptTelemetry(
+        schema_version=1,
+        logical_call_id=f"{index:032x}",
+        attempt_index=1,
+        started_at="2026-01-01T00:00:00.000Z",
+        elapsed_ms=0,
+        stage="translate",
+        agent=agent,
+        operation=operation,
+        provider="fake",
+        requested_model="model",
+        resolved_model="model",
+        reasoning_enabled=False,
+        reasoning_effort=None,
+        temperature=0.1,
+        seed=None,
+        json_mode=False,
+        max_tokens=None,
+        status="success",
+        retry_class=None,
+        http_status=None,
+        finish_reason=None,
+        response_id=None,
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        cache_hit_tokens=0,
+        cache_miss_tokens=0,
+        reasoning_tokens=0,
+        billed_usage_unknown=False,
+        request_sha256="a" * 64,
+        response_sha256="b" * 64,
+    )
+
+
 def _spec(**updates):
     value = {
         "schema_version": 1,
@@ -161,6 +200,159 @@ def _spec(**updates):
 
 
 class TestPhase9Integration(unittest.TestCase):
+    def test_telemetry_accepts_exact_agent_translation_operations(self):
+        candidate = Candidate.model_validate(
+            {
+                "candidate_id": "candidate-a",
+                "translator_model": "fake/model:off",
+                "analyst_model": "fake/model:off",
+                "editor_model": "fake/model:off",
+                "fast_model": "fake/model:off",
+                "pipeline_variant": "minimal",
+            }
+        )
+        candidate_spec = CandidateSpec.model_validate(
+            {
+                "schema_version": 3,
+                "benchmark_id": "phase9",
+                "temperature": 0.1,
+                "seed": None,
+                "replicates": 1,
+                "candidates": [candidate.model_dump()],
+            }
+        )
+        records = [
+            _telemetry_record(operation, agent=agent, index=index)
+            for index, (agent, operation) in enumerate(
+                (
+                    ("translator", "translate.batch"),
+                    ("translator", "translate.single"),
+                    ("analyst", "translate.heading"),
+                    ("analyst", "translate.single"),
+                    ("translator", "translate.heading"),
+                    ("analyst", "translate.batch"),
+                    ("translator", "translate.unknown"),
+                    ("analyst", "translate.unknown"),
+                    ("translator", "analyzer.analyze"),
+                ),
+                start=1,
+            )
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "telemetry.jsonl"
+            path.write_text(
+                "".join(json.dumps(record.model_dump()) + "\n" for record in records),
+                encoding="utf-8",
+            )
+            evidence = _telemetry_evidence(
+                path,
+                candidate=candidate,
+                candidate_spec=candidate_spec,
+            )
+        self.assertTrue(evidence["valid"])
+        self.assertEqual(evidence["translate_call_count"], 6)
+        self.assertEqual(evidence["model_mismatch_count"], 5)
+
+    def test_translator_call_count_counts_first_attempts_across_clients(self):
+        first_client_attempt = _telemetry_record("translate.batch", index=1)
+        second_client_attempt = _telemetry_record("translate.batch", index=1)
+        provider_retry = first_client_attempt.model_copy(update={"attempt_index": 2})
+        self.assertEqual(_translator_call_count([first_client_attempt, provider_retry]), 1)
+        self.assertEqual(
+            _translator_call_count([first_client_attempt, second_client_attempt, provider_retry]),
+            2,
+        )
+
+    def test_telemetry_accepts_only_light_translator_back_matter(self):
+        candidate = Candidate.model_validate(
+            {
+                "candidate_id": "candidate-a",
+                "translator_model": "fake/model:off",
+                "analyst_model": "fake/model:off",
+                "editor_model": "fake/model:off",
+                "fast_model": "fake/model:off",
+                "pipeline_variant": "minimal",
+            }
+        )
+        candidate_spec = CandidateSpec.model_validate(
+            {
+                "schema_version": 3,
+                "benchmark_id": "phase9",
+                "temperature": 0.1,
+                "seed": None,
+                "replicates": 1,
+                "candidates": [candidate.model_dump()],
+            }
+        )
+        legitimate = _telemetry_record("translate.back_matter", agent="light-translator", index=1)
+        ordinary_batch = _telemetry_record("translate.batch", agent="light-translator", index=2)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "telemetry.jsonl"
+            path.write_text(json.dumps(legitimate.model_dump()) + "\n", encoding="utf-8")
+            legitimate_evidence = _telemetry_evidence(
+                path,
+                candidate=candidate,
+                candidate_spec=candidate_spec,
+            )
+            path.write_text(
+                "".join(
+                    json.dumps(record.model_dump()) + "\n"
+                    for record in (legitimate, ordinary_batch)
+                ),
+                encoding="utf-8",
+            )
+            mixed_evidence = _telemetry_evidence(
+                path,
+                candidate=candidate,
+                candidate_spec=candidate_spec,
+            )
+        self.assertEqual(legitimate_evidence["model_mismatch_count"], 0)
+        self.assertEqual(legitimate_evidence["translate_call_count"], 0)
+        self.assertEqual(mixed_evidence["model_mismatch_count"], 1)
+        self.assertEqual(mixed_evidence["translate_call_count"], 1)
+
+    def test_resume_telemetry_counts_single_and_heading_calls(self):
+        candidate = Candidate.model_validate(
+            {
+                "candidate_id": "candidate-a",
+                "translator_model": "fake/model:off",
+                "analyst_model": "fake/model:off",
+                "editor_model": "fake/model:off",
+                "fast_model": "fake/model:off",
+                "pipeline_variant": "minimal",
+            }
+        )
+        candidate_spec = CandidateSpec.model_validate(
+            {
+                "schema_version": 3,
+                "benchmark_id": "phase9",
+                "temperature": 0.1,
+                "seed": None,
+                "replicates": 1,
+                "candidates": [candidate.model_dump()],
+            }
+        )
+        records = [
+            _telemetry_record("integration.canary.translate", index=1),
+            _telemetry_record("translate.batch", index=2),
+            _telemetry_record("translate.single", index=3),
+            _telemetry_record("translate.heading", index=4),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "telemetry.jsonl"
+            path.write_text(
+                "".join(json.dumps(record.model_dump()) + "\n" for record in records),
+                encoding="utf-8",
+            )
+            evidence = _telemetry_evidence(
+                path,
+                candidate=candidate,
+                candidate_spec=candidate_spec,
+                start_index=1,
+            )
+        self.assertTrue(evidence["valid"])
+        self.assertEqual(evidence["translate_call_count"], 3)
+
     def test_integration_spec_is_strict_and_rejects_controls_or_duplicates(self):
         spec = IntegrationSpec.model_validate(_spec())
         self.assertEqual(spec.schema_version, 1)
@@ -185,16 +377,17 @@ class TestPhase9Integration(unittest.TestCase):
                 )
             )
 
-    def test_hook_interrupts_after_persisted_full_body_batch(self):
+    def test_hook_persists_actual_translation_request_count(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "book.txt"
             _source(source)
             hook = _StopAfterBatch()
+            client = FakeClient(handler=routing_handler)
             with self.assertRaises(BenchmarkInterruption):
                 Application(
                     _config(root / "state"),
-                    client=FakeClient(handler=routing_handler),
+                    client=client,
                     batch_commit_hook=hook,
                 ).run(str(source))
             self.assertEqual(len(hook.commits), 1)
@@ -203,7 +396,47 @@ class TestPhase9Integration(unittest.TestCase):
             events = [
                 json.loads(line) for line in event_files[0].read_text(encoding="utf-8").splitlines()
             ]
-            self.assertTrue(any(event["event"] == "batch_translated" for event in events))
+            batch_event = next(event for event in events if event["event"] == "batch_translated")
+            self.assertEqual(
+                batch_event["translate_call_count"],
+                sum(call["operation"] in TRANSLATOR_OPERATIONS for call in client.calls),
+            )
+
+    def test_resumed_fallback_event_matches_actual_requests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "book.txt"
+            _source(source)
+            config = _config(root / "state")
+            config.segment.max_chars_per_batch = 40
+            config.pipeline.polish = False
+            with self.assertRaises(BenchmarkInterruption):
+                Application(
+                    config,
+                    client=FakeClient(handler=routing_handler),
+                    batch_commit_hook=_StopAfterBatch(),
+                ).run(str(source))
+
+            def fallback_handler(messages, agent, operation, json_mode):
+                if operation == "title.translate":
+                    return json.dumps({"titles": ["标题"]}, ensure_ascii=False)
+                if agent == "translator":
+                    return "译" * 300
+                return "分析译文"
+
+            resumed = FakeClient(handler=fallback_handler)
+            Application(config, client=resumed).run(str(source))
+            events_path = next((root / "state").rglob("events.jsonl"))
+            events = [
+                json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()
+            ]
+            translated_events = [event for event in events if event["event"] == "batch_translated"]
+            resumed_event = translated_events[-1]
+            resumed_requests = sum(
+                call["operation"] in TRANSLATOR_OPERATIONS for call in resumed.calls
+            )
+            self.assertEqual(resumed_event["translate_call_count"], resumed_requests)
+            self.assertEqual(resumed_event["translate_call_count"], 4)
 
     def test_required_event_failure_prevents_hook(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -287,7 +520,7 @@ class TestPhase9Integration(unittest.TestCase):
                 old_name_fingerprint,
             )
             self.assertGreater(
-                sum(call["operation"] == "translate.batch" for call in client.calls), 0
+                sum(call["operation"] in TRANSLATOR_OPERATIONS for call in client.calls), 0
             )
             events_path = next((root / "state").rglob("events.jsonl"))
             events = [
@@ -1072,7 +1305,7 @@ class TestPhase9Integration(unittest.TestCase):
                             "format": "text",
                             "title": book_id,
                             "chapter_count": 1,
-                            "parser_schema": 1,
+                            "parser_schema": RUN_INPUT_SCHEMA_VERSION,
                         }
                     )
                     book_entries.append(
@@ -1091,7 +1324,7 @@ class TestPhase9Integration(unittest.TestCase):
                     "format": "epub",
                     "title": "hidden-book",
                     "chapter_count": 2,
-                    "parser_schema": 1,
+                    "parser_schema": RUN_INPUT_SCHEMA_VERSION,
                 }
             )
             book_entries.append(

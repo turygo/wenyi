@@ -11,12 +11,12 @@ from typing import Any
 
 from trans_novel.config import Config
 from trans_novel.llm.base import LLMClient
-from trans_novel.llm.errors import JSONParseError
+from trans_novel.llm.errors import JSONParseError, LLMError
 
 _RAISE = object()  # 哨兵：未提供 default 时异常照常抛出，由调用方自理
 
 
-class WorkflowProtocolError(RuntimeError):
+class WorkflowProtocolError(RuntimeError, LLMError):
     """Agent 输出的协议错误（缺失键/形状错误/数量不符等）。
 
     workflow 必需节点据此按 protocol 失败分类（可重试、失败态落盘），

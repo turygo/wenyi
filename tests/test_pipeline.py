@@ -4,21 +4,32 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 from tests.fake_llm import fake_llm_dict, routing_handler
+from trans_novel.agents.polisher import Polisher
 from trans_novel.config import Config
+from trans_novel.epub.slots import EpubSegmentState, EpubTextSlot
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
 from trans_novel.ingest.models import Chapter, Document, Segment
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.bootstrap import Application
 from trans_novel.pipeline.contracts import GOAL_RUN_ALL, ExecutionGoal, NodeRequest
 from trans_novel.pipeline.nodes.finish import DeterministicQANode
+from trans_novel.pipeline.nodes.translate import PolishNode
 from trans_novel.pipeline.runstore import RunStore
 from trans_novel.pipeline.state import (
     NODE_DETERMINISTIC_QA,
     NODE_REPORT,
     NODE_SUCCEEDED,
+    ChapterIndex,
+    ChapterProgress,
+    NodeState,
+    PolishBatch,
+    RepairIssue,
     RunIdentity,
+    RunState,
 )
 
 
@@ -28,6 +39,16 @@ def _config(state_dir: str, *, quality: str = "balanced") -> Config:
     config.target_lang = "zh"
     config.state_dir = state_dir
     return config
+
+
+_MINIMAL_PIPELINE_OPERATIONS = {
+    "analyzer.analyze",
+    "prescan.term_mine",
+    "prescan.name_terms",
+    "translate.single",
+    "title.translate",
+}
+_LEGACY_TRANSLATION_OPERATIONS = {"translate.batch"}
 
 
 def _document() -> Document:
@@ -58,21 +79,9 @@ class TestMinimalPipeline(unittest.TestCase):
                 _write_source(d), out_format="txt"
             )
             operations = {call["operation"] for call in client.calls}
-            self.assertNotIn("polish.batch", operations)
-            self.assertTrue(
-                operations
-                <= {
-                    "language.detect",
-                    "analyzer.analyze",
-                    "prescan.term_mine",
-                    "prescan.name_terms",
-                    "translate.batch",
-                    "translate.lint_fix",
-                    "translate.back_matter",
-                    "title.translate",
-                    "report",
-                }
-            )
+            self.assertNotIn("polish.segment", operations)
+            self.assertTrue(_LEGACY_TRANSLATION_OPERATIONS.isdisjoint(operations))
+            self.assertEqual(operations, _MINIMAL_PIPELINE_OPERATIONS)
             state = result["store"].load_state()
             for node_id in (
                 "prepare",
@@ -82,6 +91,7 @@ class TestMinimalPipeline(unittest.TestCase):
                 "translate:0",
                 "titles",
                 "deterministic_qa",
+                "repair",
                 "report",
                 "assemble",
             ):
@@ -105,6 +115,37 @@ class TestMinimalPipeline(unittest.TestCase):
             for node_id, fingerprint in first_fingerprints.items():
                 self.assertEqual(second.nodes[node_id].status, NODE_SUCCEEDED)
                 self.assertEqual(second.nodes[node_id].input_fingerprint, fingerprint)
+
+    def test_fingerprint_reconciliation_clears_translation_artifacts(self):
+        issue = RepairIssue(
+            key="issue",
+            chapter=0,
+            index=0,
+            type="too_short",
+            attempts=4,
+        )
+        state = RunState(
+            chapters=[ChapterIndex(index=0)],
+            progress={
+                0: ChapterProgress(
+                    pending_polish=[PolishBatch(start=0, count=1)],
+                    lint_issues=[{"index": 0}],
+                    repair_ledger={"issue": issue},
+                )
+            },
+            nodes={
+                "translate:0": NodeState(
+                    node_id="translate:0",
+                    status=NODE_SUCCEEDED,
+                    input_fingerprint="old",
+                )
+            },
+        )
+        invalidated = state.reconcile_fingerprints({"translate:0": "new"})
+        self.assertIn("translate:0", invalidated)
+        self.assertEqual(state.progress[0].pending_polish, [])
+        self.assertEqual(state.progress[0].lint_issues, [])
+        self.assertEqual(state.progress[0].repair_ledger["issue"].attempts, 4)
 
     def test_two_segment_light_backmatter_resume_keeps_targets(self):
         with tempfile.TemporaryDirectory() as d:
@@ -147,23 +188,94 @@ class TestMinimalPipeline(unittest.TestCase):
             Application(_config(d, quality="quality"), client=client).run_all(
                 _write_source(d), out_format="txt"
             )
-            operations = [call["operation"] for call in client.calls]
-            self.assertIn("polish.batch", operations)
+            operations = {call["operation"] for call in client.calls}
+            self.assertIn("polish.segment", operations)
+            self.assertTrue(_LEGACY_TRANSLATION_OPERATIONS.isdisjoint(operations))
+            self.assertEqual(operations - {"polish.segment"}, _MINIMAL_PIPELINE_OPERATIONS)
+            self.assertEqual(operations & {"polish.segment"}, {"polish.segment"})
+
+    def test_quality_epub_machine_literal_preserves_exact_slots(self):
+        with tempfile.TemporaryDirectory() as d:
+            config = _config(d, quality="quality")
+            client = FakeClient(
+                handler=lambda *args: self.fail("machine literals must not call LLM")
+            )
+            polisher = Polisher(client, config)
+            literal = "{var=a--b}"
+            state = EpubSegmentState(
+                resource_href="chapter.xhtml",
+                resource_sha256="source",
+                block_path=(0,),
+                block_fingerprint="block",
+                parse_mode="xml",
+                slots=[
+                    EpubTextSlot(
+                        id="slot",
+                        field="text",
+                        source_value=f" {literal} ",
+                        target_value=f" {literal} ",
+                    )
+                ],
+                slot_contract_sha256="contract",
+            )
+            segment = Segment(index=0, source=literal, target=literal, epub_state=state)
+            chapter = Chapter(index=0, title="Chapter", segments=[segment])
+            progress = ChapterProgress(pending_polish=[PolishBatch(start=0, count=1)])
+
+            class Store:
+                def save_chapter(self, _chapter):
+                    return None
+
+                def save_progress(self, _ci, _progress):
+                    return None
+
+                def log_event(self, _event, **_data):
+                    return None
+
+            node = PolishNode(
+                polisher=polisher,
+                extractor=object(),
+                glossary=object(),
+                config=config,
+                style_brief="",
+            )
+            with (
+                patch("trans_novel.pipeline.nodes.translate.checkpoint.begin_polish"),
+                patch("trans_novel.pipeline.nodes.translate.checkpoint.clear"),
+                ThreadPoolExecutor(max_workers=1) as executor,
+            ):
+                node._drain_chapter_polish(
+                    chapter,
+                    progress,
+                    [segment],
+                    {},
+                    executor,
+                    "",
+                    [],
+                    Store(),
+                    0,
+                )
+
+            self.assertEqual(segment.epub_state.slots[0].target_value, f" {literal} ")
+            self.assertEqual(segment.target, literal)
+            self.assertEqual(client.calls, [])
+
+    def test_titles_are_translated_one_per_call(self):
+        with tempfile.TemporaryDirectory() as d:
+            doc = _document()
+            doc.chapters.append(
+                Chapter(index=1, title="Second", segments=[Segment(index=0, source="More text.")])
+            )
+            source = _write_source(d)
+            client = FakeClient(handler=routing_handler)
+            goal = ExecutionGoal(name="run_all", phases=GOAL_RUN_ALL.phases, out_format="txt")
+
+            Application(_config(d), client=client).run_document_goal(doc, source, goal)
+
+            title_calls = [call for call in client.calls if call["operation"] == "title.translate"]
+            self.assertEqual(len(title_calls), 2)
             self.assertTrue(
-                set(operations)
-                <= {
-                    "language.detect",
-                    "analyzer.analyze",
-                    "prescan.term_mine",
-                    "prescan.name_terms",
-                    "translate.batch",
-                    "translate.lint_fix",
-                    "translate.back_matter",
-                    "title.translate",
-                    "polish.batch",
-                    "polish.segment",
-                    "report",
-                }
+                all("[1]" not in call["messages"][-1]["content"] for call in title_calls)
             )
 
     def test_polish_disabled_body_chapter_reaches_done(self):

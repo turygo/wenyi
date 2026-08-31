@@ -1,8 +1,8 @@
 """文档加载分发 + 翻译批次切分。
 
 - load_document：按扩展名分发到 EPUB / 纯文本读取器；可选把超长 Segment 按句拆分。
-- batch_segments：把一章的 Segment 按字符预算（≈token）打包成批次，
-  一个批次整体发给翻译模型；模型须返回等长译文数组以做对齐校验。
+- batch_segments：把一章的 Segment 按字符预算（≈token）组成检查点批次；economy 会整批
+  发送给模型，balanced/quality 则在批次内逐段调用。
 - split_long_segments：单个 Segment 超过 max_chars 时按句切成多段（续段标 cont=True），
   回填时由 writer 把续段并回同一段落/同一 EPUB 元素，保持结构一一对应。
 """

@@ -6,11 +6,14 @@ from typing import Any
 
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.pipeline.runstore import STATUS_DONE, RunStore
-from trans_novel.pipeline.state import (
-    NODE_DETERMINISTIC_QA,
-    NODE_FAILED_PERMANENT,
-    NODE_FAILED_RETRYABLE,
-)
+from trans_novel.pipeline.state import NODE_FAILED_PERMANENT, NODE_FAILED_RETRYABLE, NODE_REPAIR
+
+
+def _audit_detail(detail: object) -> str:
+    text = str(detail or "")
+    for phrase in ("，请核对后重译", "，请重新翻译", "，请补全", "，请核对补全", "，请核对精简"):
+        text = text.replace(phrase, "")
+    return text
 
 
 def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
@@ -27,7 +30,19 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
             continue
         chapters_done += 1
         chapter = store.load_chapter(ci)
-        lint_issues.extend(progress.lint_issues)
+        for issue in progress.lint_issues:
+            record = next(
+                (
+                    item
+                    for item in progress.repair_ledger.values()
+                    if item.index == issue.get("index")
+                    and item.type == issue.get("type")
+                    and item.detail == issue.get("detail")
+                ),
+                None,
+            )
+            if record is None or record.status != "accepted_after_exhaustion":
+                lint_issues.append(issue)
         if progress.back_matter_mode:
             back_matter.append(
                 {
@@ -41,9 +56,30 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
                 empty_targets.append(
                     {"chapter": ci, "index": segment.index, "source": segment.source[:60]}
                 )
+
     state = store.load_state()
-    qa = state.nodes.get(NODE_DETERMINISTIC_QA)
-    deterministic_issues = ((qa.output or {}).get("issues") or []) if qa else []
+    repair_node = state.nodes.get(NODE_REPAIR)
+    raw_repair = ((repair_node.output or {}).get("repair") or {}) if repair_node else {}
+    ledger = [
+        record for progress in state.progress.values() for record in progress.repair_ledger.values()
+    ]
+    repair = {
+        "detected": int(raw_repair.get("detected", len(ledger))),
+        "resolved": int(raw_repair.get("resolved", sum(r.status == "resolved" for r in ledger))),
+        "accepted_after_exhaustion": int(
+            raw_repair.get(
+                "accepted_after_exhaustion",
+                sum(r.status == "accepted_after_exhaustion" for r in ledger),
+            )
+        ),
+        "attempts": int(raw_repair.get("attempts", sum(r.attempts for r in ledger))),
+        "audit": [
+            {**entry, "detail": _audit_detail(entry.get("detail"))}
+            for entry in raw_repair.get("audit", [])
+            if isinstance(entry, dict)
+        ],
+    }
+    deterministic_issues = list(lint_issues)
     failed_nodes = [
         {
             "node": key,
@@ -58,13 +94,13 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
     conflicts = glossary.open_conflicts()
     low_conf = [
         {
-            "source": t.source,
-            "target": t.target,
-            "type": t.type,
-            "confidence": t.confidence,
-            "status": t.status,
+            "source": term.source,
+            "target": term.target,
+            "type": term.type,
+            "confidence": term.confidence,
+            "status": term.status,
         }
-        for t in glossary.low_confidence_terms()
+        for term in glossary.low_confidence_terms()
     ]
     gstats = glossary.stats()
     return {
@@ -83,6 +119,8 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
         "low_confidence_terms": low_conf,
         "lint_issues": lint_issues,
         "deterministic_issues": deterministic_issues,
+        "repair": repair,
+        "requires_user_action": False,
         "empty_targets": empty_targets,
         "back_matter_chapters": back_matter,
         "failed_nodes": failed_nodes,

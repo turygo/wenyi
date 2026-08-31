@@ -241,7 +241,7 @@ class TestGlossaryAudit(unittest.TestCase):
                 RunState(
                     identity=RunIdentity(
                         source_bytes_sha256="test-hash",
-                        run_input_schema_version=1,
+                        run_input_schema_version=2,
                         source_lang="en",
                         target_lang="zh",
                     ),
@@ -311,7 +311,7 @@ class TestGlossaryAudit(unittest.TestCase):
                 RunState(
                     identity=RunIdentity(
                         source_bytes_sha256="test-hash",
-                        run_input_schema_version=1,
+                        run_input_schema_version=2,
                         source_lang="en",
                         target_lang="zh",
                     ),

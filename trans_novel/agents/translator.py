@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from trans_novel.assemble.translator import AlignmentError, Translator
+from trans_novel.assemble.translator import AlignmentError, TranslationBatchResult, Translator
 
-__all__ = ["AlignmentError", "Translator"]
+__all__ = ["AlignmentError", "TranslationBatchResult", "Translator"]

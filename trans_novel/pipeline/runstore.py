@@ -24,8 +24,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
-from trans_novel.ingest.models import Chapter, Document, reset_segment_translation
-from trans_novel.pipeline.migration import migrate_v1_to_v2, migrate_v2_to_v3
+from trans_novel.epub.slots import reset_segment_translation
+from trans_novel.ingest.models import Chapter, Document
+from trans_novel.pipeline.migration import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4
 from trans_novel.pipeline.state import (
     NODE_FAILED_PERMANENT,
     NODE_FAILED_RETRYABLE,
@@ -151,7 +152,7 @@ class RunStore:
         if not isinstance(data, dict) or data.get("fmt") != "epub" or not data.get("source_path"):
             return False
         meta = data.get("meta")
-        return not isinstance(meta, dict) or meta.get("epub_schema") != 3
+        return not isinstance(meta, dict) or meta.get("epub_schema") != 4
 
     def ensure_dirs(self) -> None:
         os.makedirs(self.chapters_v2_dir, exist_ok=True)
@@ -210,9 +211,9 @@ class RunStore:
             return
         meta = data.get("meta")
         schema = meta.get("epub_schema") if isinstance(meta, dict) else None
-        if schema != 3:
+        if schema != 4:
             raise ValueError(
-                f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
+                f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 4"
             )
 
     def _migrate_if_needed(self) -> None:
@@ -226,6 +227,16 @@ class RunStore:
         self._validate_epub_manifest(data)
         version = data.get("run_state_schema") if isinstance(data, dict) else None
         if version == RUN_STATE_SCHEMA_VERSION:
+            state = RunState.model_validate(data)
+            raw_progress = data.get("progress") if isinstance(data, dict) else {}
+            if isinstance(raw_progress, dict) and any(
+                isinstance(value, dict) and "repair_ledger" not in value
+                for value in raw_progress.values()
+            ):
+                self._write_json(self.manifest_path, state.model_dump(mode="json"))
+            self._v2_ready = True
+        elif version == 3:
+            migrate_v3_to_v4(self)
             self._v2_ready = True
         elif version == 2:
             migrate_v2_to_v3(self)

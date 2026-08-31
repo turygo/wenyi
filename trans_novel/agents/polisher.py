@@ -1,8 +1,7 @@
 """润色 Agent。
 
-在直译稿上做中文文学性二次加工：不增删信息、保持段数不变。
-注入源文逐段对照，让润色在提升表达的同时自查忠实度，避免因精简而丢失修饰语/限定语。
-对齐失败（段数不符）时保守地返回原译文，绝不因润色而引入漏译。
+逐段对照源文与直译稿做中文文学性二次加工，避免批量响应在段落之间串位。
+非严格模式下，单段响应无效时只保留该段原译文。
 """
 
 from __future__ import annotations
@@ -10,6 +9,7 @@ from __future__ import annotations
 from trans_novel.agents import prompts
 from trans_novel.agents.base import Agent, WorkflowProtocolError
 from trans_novel.glossary.store import GlossaryTerm
+from trans_novel.pipeline import checks
 
 
 class Polisher(Agent):
@@ -22,65 +22,15 @@ class Polisher(Agent):
         style: str = "",
         strict: bool = False,
     ) -> list[str]:
-        if not targets:
-            return []
-        n = len(targets)
-        system = prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=n)
-        user = prompts.render(
-            "polisher_user",
-            src=self.src,
-            tgt=self.tgt,
-            glossary=prompts.render_glossary(glossary_terms or []),
-            style=style or "（无）",
-            n=n,
-            numbered_source=prompts.numbered(sources),
-            numbered_target=prompts.numbered(targets),
-        )
-
-        def decode(values: object) -> list[str]:
-            if (
-                not isinstance(values, list)
-                or len(values) != n
-                or not all(isinstance(value, str) and value.strip() for value in values)
-            ):
-                return []
-            return [value.strip() for value in values]
-
-        decoded = decode(
-            self._ask_json(
-                system,
-                user,
-                key="polished",
-                default=None,
-                agent="editor",
-                operation="polish.batch",
-                strict=strict,
-            )
-        )
-        if decoded:
-            return decoded
-        if not strict:
-            return list(targets)
-        retry_user = (
-            f"{user}\n\nYour previous response violated the output contract: `polished` must "
-            f"contain exactly {n} strings, all non-empty. Return the complete JSON object again."
-        )
-        decoded = decode(
-            self._ask_json(
-                system,
-                retry_user,
-                key="polished",
-                default=None,
-                agent="editor",
-                operation="polish.batch",
-                strict=True,
-            )
-        )
-        if decoded:
-            return decoded
-        recovered = []
+        if len(targets) != len(sources):
+            raise ValueError("polish source/target count mismatch")
+        polished = []
         for source, target in zip(sources, targets, strict=True):
-            single_user = prompts.render(
+            if checks.is_machine_literal(source):
+                polished.append(target)
+                continue
+            system = prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=1)
+            user = prompts.render(
                 "polisher_user",
                 src=self.src,
                 tgt=self.tgt,
@@ -90,28 +40,27 @@ class Polisher(Agent):
                 numbered_source=prompts.numbered([source]),
                 numbered_target=prompts.numbered([target]),
             )
-            single_items = self._ask_json(
-                prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=1),
-                single_user,
+            values = self._ask_json(
+                system,
+                user,
                 key="polished",
                 default=None,
                 agent="editor",
                 operation="polish.segment",
-                strict=True,
+                strict=strict,
             )
             one = (
-                decode(single_items)
-                if n == 1
-                else (
-                    [single_items[0].strip()]
-                    if isinstance(single_items, list)
-                    and len(single_items) == 1
-                    and isinstance(single_items[0], str)
-                    and single_items[0].strip()
-                    else []
-                )
+                values[0].strip()
+                if isinstance(values, list)
+                and len(values) == 1
+                and isinstance(values[0], str)
+                and values[0].strip()
+                else ""
             )
-            if not one:
-                raise WorkflowProtocolError("polish_count_mismatch")
-            recovered.append(one[0])
-        return recovered
+            if one:
+                polished.append(one)
+            elif strict:
+                raise WorkflowProtocolError("polish_item_invalid")
+            else:
+                polished.append(target)
+        return polished

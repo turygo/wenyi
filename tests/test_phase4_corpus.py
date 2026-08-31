@@ -28,6 +28,7 @@ from trans_novel.benchmark.corpus import (
 from trans_novel.benchmark.schema import BookEntry, BookSpec, ContextChallenge, PassageSelection
 from trans_novel.cli import app
 from trans_novel.ingest.models import Chapter, Document, Segment
+from trans_novel.pipeline.state import RUN_INPUT_SCHEMA_VERSION
 
 
 def _artifact_hash(corpus: dict, runner: list[dict], challenge_keys: list[dict]) -> str:
@@ -57,15 +58,15 @@ def _write_minimal_artifact(
             "format": "text",
             "title": "book",
             "chapter_count": 1,
-            "parser_schema": 1,
+            "parser_schema": RUN_INPUT_SCHEMA_VERSION,
         }
     ]
     corpus = {
         "schema_version": 1,
         "benchmark_name": "fixture",
         "word_counter": "en-v1",
-        "parser_schema": 1,
-        "run_input_schema_version": 1,
+        "parser_schema": RUN_INPUT_SCHEMA_VERSION,
+        "run_input_schema_version": RUN_INPUT_SCHEMA_VERSION,
         "books": manifest_books,
         "passages": [
             {
@@ -108,7 +109,11 @@ def _write_minimal_artifact(
     )
     (root / "source_manifest.json").write_text(
         json.dumps(
-            {"schema_version": 1, "run_input_schema_version": 1, "books": manifest_books},
+            {
+                "schema_version": 1,
+                "run_input_schema_version": RUN_INPUT_SCHEMA_VERSION,
+                "books": manifest_books,
+            },
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -257,11 +262,11 @@ class CorpusPrimitiveTests(unittest.TestCase):
             corpus = {
                 "schema_version": 1,
                 "word_counter": "en-v1",
-                "run_input_schema_version": 1,
+                "run_input_schema_version": RUN_INPUT_SCHEMA_VERSION,
                 "passages": [],
                 "quotas": {},
             }
-            manifest = {"run_input_schema_version": 1, "books": []}
+            manifest = {"run_input_schema_version": RUN_INPUT_SCHEMA_VERSION, "books": []}
             semantics = {
                 "corpus": corpus,
                 "runner_segments": runner,
@@ -329,7 +334,7 @@ class CorpusPrimitiveTests(unittest.TestCase):
                     "format": "text",
                     "title": "book",
                     "chapter_count": 1,
-                    "parser_schema": 1,
+                    "parser_schema": RUN_INPUT_SCHEMA_VERSION,
                 }
                 manifest.update(updates)
                 _write_minimal_artifact(root, [], manifest_books=[manifest])

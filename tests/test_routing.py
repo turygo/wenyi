@@ -285,13 +285,20 @@ class TestAgentRouter(unittest.TestCase):
         self.assertEqual(usage["attempts"], 0)
 
     def test_roles_and_json_route(self):
-        transport = StubTransport("fake").plan(json.dumps({"ok": True}), "analysis")
+        transport = StubTransport("fake").plan(json.dumps({"ok": True}), "analysis", "prose")
         router = _router(transports={"fake": transport})
         self.assertEqual(router.complete_json([], agent="editor", operation="op"), {"ok": True})
-        self.assertEqual(router.complete([], agent="analyst", operation="op"), "analysis")
+        self.assertEqual(
+            router.complete([], agent="analyst", operation="translate.heading"),
+            "analysis",
+        )
+        self.assertEqual(
+            router.complete([], agent="translator", operation="translate.single"),
+            "prose",
+        )
         self.assertEqual(
             [call["model_ref"].full_name for call in transport.calls],
-            ["fake:editor-id", "fake:analyst-id"],
+            ["fake:editor-id", "fake:analyst-id", "fake:primary-id"],
         )
 
     def test_unknown_agent_fails_before_transport(self):

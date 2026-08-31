@@ -71,77 +71,45 @@ $context
 $source\
 """)
 
-TRANSLATOR_STRICT_SYSTEM = Template("""\
-你是一位资深的文学翻译。每次只翻译一个完整的 $src_label 段落，忠实保留含义、语气和标点。
-【上下文】只用于理解当前段落，不得翻译、复述或合并进译文。
-仅输出严格 JSON 对象，且只能有一个键：{"translation":"当前段落的完整中文译文"}。\
+TRANSLATOR_HEADING_SYSTEM = Template("""\
+你是一位文学翻译。将完整的 $src_label 标题翻译为简洁、自然的简体中文标题。
+只能输出一个标题译文本身，不得添加任何其他内容。\
 """)
 
-TRANSLATOR_STRICT_USER = Template("""\
-【风格指南】
-$style
-
+TRANSLATOR_HEADING_USER = Template("""\
 【专有名词对照表】
 $glossary
 
-【上下文（只读）】
-$context
-
-【唯一待译$src_label段落】
+【待译章节标题】
 $source
 
-只翻译【唯一待译段落】，输出 {"translation":"..."}。\
+请只输出标题译文。\
 """)
 
-TRANSLATOR_FIX_USER = Template("""\
-【角色信息 / 风格指南】
-$style
 
+TRANSLATOR_REPAIR_USER = Template("""\
 【专有名词对照表】
 $glossary
 
-【前文译文】
+【相邻段落上下文】
+前一段：
 $context_before
-
-【后文译文】
+后一段：
 $context_after
 
-【首译问题】
-$feedback
+【原文】
+$source
 
-【待重译$src_label段落】（仅 1 段）
-[0] $source
+【当前译文】
+$current_target
 
-请重译该段，输出 JSON：{"translations":["译文"]}。\
+【唯一需要修复的问题】
+类型：$issue_type
+详情：$issue_detail
+
+请只输出修复后的完整译文，不得输出 JSON、解释、标签或代码块。\
 """)
 
-TRANSLATOR_FIX_MULTI_USER = Template("""\
-【角色信息 / 风格指南】
-$style
-
-【专有名词对照表】
-$glossary
-
-【本批当前译文】
-$batch_targets
-
-【待重译$src_label段落及问题】
-$items
-
-请依次重译，输出 JSON：{"translations":[...]}，数组长度恰为 $n。\
-""")
-BOUNDARY_ALIGNER_SYSTEM = Template("""\
-你是文本边界对齐器。输入包含原文片段和一份完整中文译文。你的唯一任务是在译文中插入
-$marker，使每个原文片段对应一个有序译文片段。不得增删、替换、规范化或重排译文中的任何字符；
-只能插入标记。仅输出 JSON：{"aligned":["带标记译文",...]}。\
-""")
-
-BOUNDARY_ALIGNER_USER = Template("""\
-每条记录包含 N 个 source_parts（原文片段），必须在 translation 中插入恰好 N-1 个 $marker。
-标记位置应与对应的原文片段在语义上对齐；标点可归入任一相邻片段。输出顺序与输入一致。
-
-$records
-""")
 
 POLISHER_SYSTEM = Template("""\
 你是中文润色编辑。给定$src_label源文与其中文直译，在严格忠实源文的前提下，提升译文的中文流畅度与文学性：
@@ -310,12 +278,9 @@ _DEFAULTS = {
     "translator_user": TRANSLATOR_USER,
     "translator_single_system": TRANSLATOR_SINGLE_SYSTEM,
     "translator_single_user": TRANSLATOR_SINGLE_USER,
-    "translator_strict_system": TRANSLATOR_STRICT_SYSTEM,
-    "translator_strict_user": TRANSLATOR_STRICT_USER,
-    "translator_fix_user": TRANSLATOR_FIX_USER,
-    "translator_fix_multi_user": TRANSLATOR_FIX_MULTI_USER,
-    "boundary_aligner_system": BOUNDARY_ALIGNER_SYSTEM,
-    "boundary_aligner_user": BOUNDARY_ALIGNER_USER,
+    "translator_heading_system": TRANSLATOR_HEADING_SYSTEM,
+    "translator_heading_user": TRANSLATOR_HEADING_USER,
+    "translator_repair_user": TRANSLATOR_REPAIR_USER,
     "polisher_system": POLISHER_SYSTEM,
     "polisher_user": POLISHER_USER,
     "title_translator_system": TITLE_TRANSLATOR_SYSTEM,
@@ -373,16 +338,4 @@ def numbered_pairs(sources: list[str], targets: list[str]) -> str:
     out = []
     for i, (s, t) in enumerate(zip(sources, targets, strict=False)):
         out.append(f"[{i}] 原文：{s}\n    译文：{t}")
-    return "\n".join(out)
-
-
-def numbered_feedback(items: list[tuple[int, str, str]]) -> str:
-    """生成“[批内段号] 源文\\n意见：反馈”格式的编号列表（供批量合并定向重译调用使用）。
-
-    items 的编号必须与【本批当前译文】里的批内段号一致，模型才能据此定位原译及前后文——
-    不能按 items 在列表中的排列顺序重新编号，否则会失去与整批译文的索引对应关系。
-    """
-    out = []
-    for idx, source, feedback in items:
-        out.append(f"[{idx}] {source}\n意见：{feedback or '（无）'}")
     return "\n".join(out)

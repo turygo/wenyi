@@ -1,4 +1,4 @@
-"""V3 typed resumable workflow state."""
+"""V4 typed resumable workflow state."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-RUN_STATE_SCHEMA_VERSION = 3
-RUN_INPUT_SCHEMA_VERSION = 1
+RUN_STATE_SCHEMA_VERSION = 4
+RUN_INPUT_SCHEMA_VERSION = 2
 STATUS_PENDING = "pending"
 STATUS_DONE = "done"
 ChapterStatus = Literal["pending", "done"]
@@ -31,6 +31,7 @@ NODE_TRANSLATE = "translate"
 NODE_POLISH = "polish"
 NODE_TITLES = "titles"
 NODE_DETERMINISTIC_QA = "deterministic_qa"
+NODE_REPAIR = "repair"
 NODE_REPORT = "report"
 NODE_ASSEMBLE = "assemble"
 SCOPE_BOOK = "book"
@@ -43,7 +44,8 @@ _NODE_DESCENDANTS: dict[str, tuple[tuple[str, bool | str], ...]] = {
     NODE_TRANSLATE: ((NODE_POLISH, True),),
     NODE_POLISH: ((NODE_TITLES, False),),
     NODE_TITLES: ((NODE_DETERMINISTIC_QA, False),),
-    NODE_DETERMINISTIC_QA: ((NODE_REPORT, False),),
+    NODE_DETERMINISTIC_QA: ((NODE_REPAIR, False),),
+    NODE_REPAIR: ((NODE_REPORT, False),),
     NODE_REPORT: ((NODE_ASSEMBLE, False),),
     NODE_ASSEMBLE: (),
 }
@@ -161,11 +163,25 @@ class PolishBatch(BaseModel):
     count: int
 
 
+class RepairIssue(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    key: str
+    chapter: int
+    index: int
+    type: str
+    detail: str = ""
+    attempts: int = 0
+    status: Literal["pending", "repairing", "resolved", "accepted_after_exhaustion"] = "pending"
+    last_detail: str = ""
+    committed_target_fingerprint: str = ""
+
+
 class ChapterProgress(BaseModel):
     model_config = ConfigDict(extra="ignore")
     status: ChapterStatus = STATUS_PENDING
     pending_polish: list[PolishBatch] = Field(default_factory=list)
     lint_issues: list[dict[str, Any]] = Field(default_factory=list)
+    repair_ledger: dict[str, RepairIssue] = Field(default_factory=dict)
     back_matter_mode: str | None = None
 
 
@@ -246,4 +262,12 @@ class RunState(BaseModel):
                 node.status = NODE_PENDING
                 node.failure = NodeFailure(kind="interrupted", message="进程中断", at=now_iso())
                 changed = True
+        for progress in self.progress.values():
+            for issue in progress.repair_ledger.values():
+                if issue.status == "repairing":
+                    issue.status = (
+                        "accepted_after_exhaustion" if issue.attempts >= 10 else "pending"
+                    )
+                    issue.last_detail = "进程中断，保留已消耗的 Repair 预算"
+                    changed = True
         return changed

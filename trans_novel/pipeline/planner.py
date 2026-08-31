@@ -17,6 +17,7 @@ from trans_novel.pipeline.state import (
     NODE_NAME_TERMS,
     NODE_POLISH,
     NODE_PREPARE,
+    NODE_REPAIR,
     NODE_REPORT,
     NODE_SUCCEEDED,
     NODE_TITLES,
@@ -182,6 +183,8 @@ class Planner:
             elif node == NODE_DETERMINISTIC_QA:
                 need(NODE_TITLES)
             elif node == NODE_REPORT:
+                need(NODE_REPAIR, force=force)
+            elif node == NODE_REPAIR:
                 need(NODE_DETERMINISTIC_QA)
             elif node == NODE_ASSEMBLE:
                 need(NODE_REPORT)
@@ -206,6 +209,8 @@ class Planner:
             need(NODE_TITLES)
         if "qa" in goal.phases:
             need(NODE_DETERMINISTIC_QA, force=True)
+        if "repair" in goal.phases:
+            need(NODE_REPAIR, force=True)
         if "report" in goal.phases:
             need(NODE_REPORT, force=True)
         if "assemble" in goal.phases:
@@ -268,7 +273,7 @@ class Planner:
                 )
         if entries:
             plan.stages.append(PlannedStage(entries))
-        for node in (NODE_TITLES, NODE_DETERMINISTIC_QA, NODE_REPORT, NODE_ASSEMBLE):
+        for node in (NODE_TITLES, NODE_DETERMINISTIC_QA, NODE_REPAIR, NODE_REPORT, NODE_ASSEMBLE):
             item = take(node)
             if item is not None:
                 plan.stages.append(PlannedStage([item]))

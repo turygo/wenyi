@@ -18,16 +18,29 @@ def _cfg():
 
 
 class TestPolisher(unittest.TestCase):
-    def test_polish_ok(self):
+    def test_polishes_each_segment_independently(self):
+        responses = iter(["润色甲", "润色乙"])
         client = FakeClient(
             handler=lambda m, a, o, j: json.dumps(
-                {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False
+                {"polished": [next(responses)]}, ensure_ascii=False
             )
         )
+
         out = Polisher(client, _cfg()).polish(["甲", "乙"], ["a", "b"])
+
         self.assertEqual(out, ["润色甲", "润色乙"])
-        self.assertEqual(client.calls[-1]["operation"], "polish.batch")
-        self.assertEqual(client.calls[-1]["agent"], "editor")
+        self.assertEqual([call["operation"] for call in client.calls], ["polish.segment"] * 2)
+        self.assertTrue(all(call["agent"] == "editor" for call in client.calls))
+
+    def test_machine_literal_is_exact_and_skips_editor(self):
+        client = FakeClient(handler=lambda *args: self.fail("machine literals must not call LLM"))
+
+        literal = "{var=a--b}"
+        self.assertEqual(
+            Polisher(client, _cfg()).polish([literal], [literal], strict=True),
+            [literal],
+        )
+        self.assertEqual(client.calls, [])
 
     def test_polish_uses_plain_text_contract(self):
         client = FakeClient(
@@ -41,54 +54,34 @@ class TestPolisher(unittest.TestCase):
         self.assertEqual(polished, ["润甲乙"])
         self.assertNotIn("EPUB", client.calls[0]["messages"][-1]["content"])
 
-    def test_polish_mismatch_keeps_original(self):
-        client = FakeClient(
-            handler=lambda m, a, o, j: json.dumps({"polished": ["只有一段"]}, ensure_ascii=False)
-        )
-        self.assertEqual(Polisher(client, _cfg()).polish(["甲", "乙"], ["a", "b"]), ["甲", "乙"])
-
-    def test_polish_strict_retries_count_mismatch(self):
-        responses = iter([{"polished": ["只有一段"]}, {"polished": ["润色甲", "润色乙"]}])
+    def test_invalid_non_strict_item_keeps_only_its_original(self):
+        responses = iter([{"polished": []}, {"polished": ["润色乙"]}])
         client = FakeClient(
             handler=lambda m, a, o, j: json.dumps(next(responses), ensure_ascii=False)
         )
-        out = Polisher(client, _cfg()).polish(["甲", "乙"], ["a", "b"], strict=True)
-        self.assertEqual(out, ["润色甲", "润色乙"])
-        self.assertEqual(len(client.calls), 2)
-        self.assertIn("exactly 2 strings", client.calls[-1]["messages"][-1]["content"])
 
-    def test_polish_strict_recovers_each_segment(self):
-        responses = iter(
-            [
-                {"polished": ["批次段数错误"]},
-                {"polished": ["重试仍错误"]},
-                {"polished": ["润色甲"]},
-                {"polished": ["润色乙"]},
-            ]
-        )
+        out = Polisher(client, _cfg()).polish(["甲", "乙"], ["a", "b"])
+
+        self.assertEqual(out, ["甲", "润色乙"])
+
+    def test_invalid_strict_item_fails(self):
         client = FakeClient(
-            handler=lambda m, a, o, j: json.dumps(next(responses), ensure_ascii=False)
-        )
-        out = Polisher(client, _cfg()).polish(["甲", "乙"], ["a", "b"], strict=True)
-        self.assertEqual(out, ["润色甲", "润色乙"])
-        self.assertEqual(
-            [c["operation"] for c in client.calls],
-            ["polish.batch", "polish.batch", "polish.segment", "polish.segment"],
+            handler=lambda m, a, o, j: json.dumps({"polished": []}, ensure_ascii=False)
         )
 
-    def test_polish_prompt_includes_source_for_fidelity(self):
+        with self.assertRaisesRegex(Exception, "polish_item_invalid"):
+            Polisher(client, _cfg()).polish(["甲"], ["a"], strict=True)
+
+    def test_each_prompt_contains_only_its_source(self):
         client = FakeClient(
-            handler=lambda m, a, o, j: json.dumps(
-                {"polished": ["润色甲", "润色乙"]}, ensure_ascii=False
-            )
+            handler=lambda m, a, o, j: json.dumps({"polished": ["润色"]}, ensure_ascii=False)
         )
+
         Polisher(client, _cfg()).polish(["甲", "乙"], sources=["ALPHA_SRC", "BETA_SRC"], style="S")
-        messages = client.calls[-1]["messages"]
-        user = messages[-1]["content"]
-        i_src, i_tgt = user.index("【源文对照】"), user.index("【待润色中文译文】")
-        for token in ("ALPHA_SRC", "BETA_SRC"):
-            self.assertLess(i_src, user.index(token))
-            self.assertLess(user.index(token), i_tgt)
-        system = messages[0]["content"]
-        self.assertIn("源文", system)
-        self.assertTrue("不得遗漏" in system or "增改" in system)
+
+        first = client.calls[0]["messages"][-1]["content"]
+        second = client.calls[1]["messages"][-1]["content"]
+        self.assertIn("ALPHA_SRC", first)
+        self.assertNotIn("BETA_SRC", first)
+        self.assertIn("BETA_SRC", second)
+        self.assertNotIn("ALPHA_SRC", second)

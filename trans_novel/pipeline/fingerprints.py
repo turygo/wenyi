@@ -18,8 +18,11 @@ def translator_model_profile(config) -> str:
 
 
 def translation_model_profile(config) -> str:
-    """正文翻译和富文本边界对齐共用的模型候选。"""
-    return _role_profile(config, "translator", "analyst")
+    """正文翻译模型候选；单段模式还消费标题分析模型。"""
+    roles = (
+        ("translator", "analyst") if config.pipeline.single_segment_translation else ("translator",)
+    )
+    return _role_profile(config, *roles)
 
 
 def analyst_model_profile(config) -> str:
@@ -33,8 +36,8 @@ def editor_model_profile(config) -> str:
 
 
 def polish_model_profile(config) -> str:
-    """润色及富文本边界对齐共同消费的模型候选。"""
-    return _role_profile(config, "editor", "analyst")
+    """润色模型候选。"""
+    return _role_profile(config, "editor")
 
 
 def fast_model_profile(config) -> str:
@@ -43,8 +46,8 @@ def fast_model_profile(config) -> str:
 
 
 def fast_translation_model_profile(config) -> str:
-    """附属章翻译及富文本边界对齐共同消费的模型候选。"""
-    return _role_profile(config, "fast", "analyst")
+    """附属章翻译模型候选。"""
+    return _role_profile(config, "fast")
 
 
 def _role_profile(config, *roles: str) -> str:

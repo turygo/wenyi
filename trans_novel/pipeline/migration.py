@@ -1,4 +1,4 @@
-"""Atomic migration of legacy V1/V2 run stores to V3."""
+"""Atomic migration of legacy V1/V2 run stores to the current schema."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from trans_novel.pipeline.state import (
     NODE_SUCCEEDED,
     NODE_TITLES,
     NODE_TRANSLATE,
-    RUN_INPUT_SCHEMA_VERSION,
     RUN_STATE_SCHEMA_VERSION,
     STATUS_DONE,
     AnalysisFlags,
@@ -48,7 +47,7 @@ _PIPELINE_META_KEYS = frozenset(
 def _identity(manifest: dict[str, Any]) -> RunIdentity:
     return RunIdentity(
         source_bytes_sha256=source_bytes_hash(str(manifest.get("source_path") or "")),
-        run_input_schema_version=RUN_INPUT_SCHEMA_VERSION,
+        run_input_schema_version=1,
         source_lang=normalize_lang_code(manifest.get("source_lang", "")),
         target_lang=normalize_lang_code(manifest.get("target_lang", "")),
     )
@@ -152,6 +151,12 @@ def migrate_v1_to_v2(store) -> RunState:
     return _write_state(store, state)
 
 
+def migrate_v3_to_v4(store) -> RunState:
+    """Add the issue-level Repair ledger without touching chapter targets."""
+    state = RunState.model_validate(store._read_json(store.manifest_path))
+    return _write_state(store, state)
+
+
 def migrate_v2_to_v3(store) -> RunState:
     manifest = store._read_json(store.manifest_path)
     raw_progress = manifest.get("progress")
@@ -223,11 +228,9 @@ def _write_state(store, state: RunState) -> RunState:
         raw = store._read_json(journal)
         if not isinstance(raw, dict) or raw.get("node") in {
             "naturalize",
-            "review",
-            "backtranslate",
         }:
             os.remove(journal)
     return state
 
 
-__all__ = ["migrate_v1_to_v2", "migrate_v2_to_v3"]
+__all__ = ["migrate_v1_to_v2", "migrate_v2_to_v3", "migrate_v3_to_v4"]

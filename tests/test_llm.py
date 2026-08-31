@@ -16,7 +16,7 @@ from trans_novel.llm import (
     parse_json_loose,
 )
 from trans_novel.llm.errors import JSONParseError
-from trans_novel.pipeline.fingerprints import translator_model_profile
+from trans_novel.pipeline.fingerprints import translation_model_profile, translator_model_profile
 
 
 class TestParseJsonLoose(unittest.TestCase):
@@ -230,6 +230,27 @@ class TestRoleProfiles(unittest.TestCase):
                         self.assertNotEqual(role_profile(base), role_profile(changed))
                     else:
                         self.assertEqual(role_profile(base), role_profile(changed))
+
+    def test_translation_profile_tracks_only_models_used_by_preset(self):
+        models = {
+            "translator": ["fake/t"],
+            "analyst": ["fake/a"],
+            "editor": ["fake/e"],
+            "fast": ["fake/f"],
+        }
+
+        def profile(quality, changed_role=None):
+            changed = {role: list(values) for role, values in models.items()}
+            if changed_role:
+                changed[changed_role] = [f"fake/{changed_role}-changed"]
+            return translation_model_profile(
+                Config.from_dict({"llm": {"models": changed}, "quality": quality})
+            )
+
+        self.assertNotEqual(profile("quality"), profile("quality", "translator"))
+        self.assertNotEqual(profile("quality"), profile("quality", "analyst"))
+        self.assertEqual(profile("quality"), profile("quality", "editor"))
+        self.assertEqual(profile("economy"), profile("economy", "analyst"))
 
     def test_role_profile_serializes_candidate_boundaries(self):
         single = Config.from_dict({"llm": {"models": {"translator": ["fake/a|fake/b"]}}})

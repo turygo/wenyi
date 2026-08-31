@@ -144,7 +144,7 @@ GOAL_TRANSLATE = ExecutionGoal(
 )
 GOAL_RUN_ALL = ExecutionGoal(
     name="run_all",
-    phases=("prepare", "prescan", "translate", "titles", "qa", "report", "assemble"),
+    phases=("prepare", "prescan", "translate", "titles", "qa", "repair", "report", "assemble"),
 )
 
 

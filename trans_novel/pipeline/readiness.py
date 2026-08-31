@@ -15,6 +15,7 @@ from trans_novel.pipeline.state import (
     NODE_FAILED_RETRYABLE,
     NODE_POLISH,
     NODE_PREPARE,
+    NODE_REPAIR,
     NODE_REPORT,
     NODE_SKIPPED,
     NODE_SUCCEEDED,
@@ -72,7 +73,14 @@ def assemble_readiness_problems(store: RunStore) -> list[str]:
         else:
             problems.append(f"节点 {node_id} 状态为 {node.status}（必需上游未完成）")
 
-    for node_id in (NODE_PREPARE, NODE_ANALYZE, NODE_TITLES, NODE_DETERMINISTIC_QA, NODE_REPORT):
+    for node_id in (
+        NODE_PREPARE,
+        NODE_ANALYZE,
+        NODE_TITLES,
+        NODE_DETERMINISTIC_QA,
+        NODE_REPAIR,
+        NODE_REPORT,
+    ):
         check_book(node_id)
 
     for idx in state.chapters:

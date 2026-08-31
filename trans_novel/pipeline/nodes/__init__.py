@@ -14,7 +14,6 @@ import threading
 from typing import Any
 
 from trans_novel.agents.analyzer import Analyzer
-from trans_novel.agents.boundary_aligner import TextBoundaryAligner
 from trans_novel.agents.namer import CastNamer
 from trans_novel.agents.polisher import Polisher
 from trans_novel.agents.translator import Translator
@@ -36,14 +35,12 @@ class AgentBundle:
         self.src = src
         self.tgt = tgt
         self.analyzer = Analyzer(client, config)
-        self.boundary_aligner = TextBoundaryAligner(client, config)
         self.translator = Translator(client, config)
         self.polisher = Polisher(client, config)
         self.extractor = GlossaryExtractor(client, config)
         self.namer = CastNamer(client, config)
         for agent in (
             self.analyzer,
-            self.boundary_aligner,
             self.translator,
             self.polisher,
             self.extractor,

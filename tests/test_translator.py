@@ -4,18 +4,37 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 import unittest
 
 from tests.fake_llm import fake_llm_dict
 from trans_novel.agents.translator import AlignmentError, Translator
 from trans_novel.config import Config, ModelRef
+from trans_novel.glossary.store import GlossaryTerm
+from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Segment
 from trans_novel.llm import FakeClient
 from trans_novel.llm.errors import AllModelsFailedError
 from trans_novel.pipeline.checks import count_aligned, length_flags
+from trans_novel.pipeline.nodes.translate import TranslateNode
 
 
 def _count_segments(user_content: str) -> int:
     return len(re.findall(r"^\[(\d+)\]", user_content, re.M))
+
+
+class TestTranslatorImportSurface(unittest.TestCase):
+    def test_public_translator_import_does_not_cycle_in_clean_process(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from trans_novel.agents.translator import Translator",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class TestTranslatorPlainContract(unittest.TestCase):
@@ -25,40 +44,38 @@ class TestTranslatorPlainContract(unittest.TestCase):
         config.pipeline.align_retry_limit = 1
         return config
 
-    def test_translation_and_feedback_return_plain_strings(self):
-        responses = iter(
-            [
-                {"translations": ["甲乙"]},
-                {"translations": ["改甲乙"]},
-            ]
-        )
+    def test_translation_and_editor_repair_contract(self):
         client = FakeClient(
-            handler=lambda messages, agent, operation, json_mode: json.dumps(
-                next(responses), ensure_ascii=False
+            handler=lambda messages, agent, operation, json_mode: (
+                json.dumps({"translations": ["甲乙"]}, ensure_ascii=False)
+                if json_mode
+                else "改甲乙"
             )
         )
         translator = Translator(client, self._config())
 
+        result = translator.translate_batch(["Alpha Beta"], agent="translator")
+        self.assertEqual(result.translations, ("甲乙",))
+        self.assertEqual(result.request_count, 1)
         self.assertEqual(
-            translator.translate_batch(["Alpha Beta"], agent="translator"),
-            ["甲乙"],
-        )
-        self.assertEqual(
-            translator.retranslate_with_feedback(
+            translator.repair_issue(
                 "Alpha Beta",
-                feedback="修正译文",
-                operation="translate.lint_fix",
+                "甲乙",
+                issue_type="number_mismatch",
+                issue_detail="数字缺失",
             ),
             "改甲乙",
         )
+        repair_call = client.calls[-1]
+        self.assertEqual(repair_call["agent"], "editor")
+        self.assertEqual(repair_call["operation"], "translate.repair")
         self.assertNotIn("EPUB", client.calls[0]["messages"][-1]["content"])
 
     def test_non_linguistic_segment_preserves_source_without_call(self):
         client = FakeClient(handler=lambda *args: self.fail("LLM must not be called"))
-        self.assertEqual(
-            Translator(client, self._config()).translate_batch(["123"], agent="translator"),
-            ["123"],
-        )
+        result = Translator(client, self._config()).translate_batch(["123"], agent="translator")
+        self.assertEqual(result.translations, ("123",))
+        self.assertEqual(result.request_count, 0)
         self.assertEqual(client.calls, [])
 
 
@@ -76,11 +93,10 @@ class TestTranslatorAlignment(unittest.TestCase):
 
         client = FakeClient(handler=handler)
         t = Translator(client, self._config())
-        out = t.translate_batch(["あ", "い", "う"], agent="translator")
-        self.assertEqual(len(out), 3)
-        self.assertEqual(out, ["译0", "译1", "译2"])
-        # 路由归因：正文翻译显式走 translator Agent（translate.batch）
-        self.assertTrue(client.calls)
+        result = t.translate_batch(["あ", "い", "う"], agent="translator")
+        self.assertEqual(len(result.translations), 3)
+        self.assertEqual(result.translations, ("译0", "译1", "译2"))
+        self.assertEqual(result.request_count, 1)
         self.assertTrue(all(c["agent"] == "translator" for c in client.calls))
         self.assertTrue(all(c["operation"] == "translate.batch" for c in client.calls))
 
@@ -95,8 +111,10 @@ class TestTranslatorAlignment(unittest.TestCase):
         translated = translator.translate_batch(["-", "123", "Hello"], agent="translator")
         untouched = translator.translate_batch(["—", "2026"], agent="translator")
 
-        self.assertEqual(translated, ["-", "123", "你好"])
-        self.assertEqual(untouched, ["—", "2026"])
+        self.assertEqual(translated.translations, ("-", "123", "你好"))
+        self.assertEqual(untouched.translations, ("—", "2026"))
+        self.assertEqual(translated.request_count, 1)
+        self.assertEqual(untouched.request_count, 0)
         self.assertEqual(len(client.calls), 1)
 
     def test_back_matter_light_agent_routing(self):
@@ -108,18 +126,20 @@ class TestTranslatorAlignment(unittest.TestCase):
 
         client = FakeClient(handler=handler)
         t = Translator(client, self._config())
-        out = t.translate_batch(
+        result = t.translate_batch(
             ["あ", "い"], agent="light-translator", operation="translate.back_matter"
         )
-        self.assertEqual(len(out), 2)
+        self.assertEqual(len(result.translations), 2)
+        self.assertEqual(result.request_count, 1)
         self.assertEqual(client.calls[0]["agent"], "light-translator")
         self.assertEqual(client.calls[0]["operation"], "translate.back_matter")
 
     def test_fallback_to_per_segment_on_mismatch(self):
-        # 多段批次故意少返回一段；单段调用正常 → 触发逐段兜底
+        # 多段批次故意少返回一段；单段调用按源段返回不同译文 → 触发逐段兜底
         def handler(messages, agent, operation, json_mode):
             if not json_mode:
-                return "译文"
+                source = messages[-1]["content"].rsplit("】", 1)[-1].strip()
+                return {"あ": "译0", "い": "译1", "う": "译2"}[source]
             n = _count_segments(messages[-1]["content"])
             trans = [f"译{i}" for i in range(n)]
             if n > 1:
@@ -128,9 +148,10 @@ class TestTranslatorAlignment(unittest.TestCase):
 
         client = FakeClient(handler=handler)
         t = Translator(client, self._config())
-        out = t.translate_batch(["あ", "い", "う"], agent="translator")
-        self.assertEqual(len(out), 3)  # 兜底后仍保证 1:1
-        # 验证确实回退到了逐段（出现过 n==1 的调用）
+        result = t.translate_batch(["あ", "い", "う"], agent="translator")
+        self.assertEqual(len(result.translations), 3)  # 兜底后仍保证 1:1
+        self.assertEqual(result.translations, ("译0", "译1", "译2"))
+        self.assertEqual(result.request_count, 5)
         single_calls = [call for call in client.calls if not call["json_mode"]]
         self.assertEqual(len(single_calls), 3)
 
@@ -156,36 +177,6 @@ class TestTranslatorAlignment(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "索引为 0 的段落"):
             translator.translate_batch(["あ"], agent="translator")
 
-    def test_retranslate_batch_with_feedback_rejects_non_string_element(self):
-        """translations 数组中包含 dict 元素时应视为无效并返回 []，不应经 str() 强制转换后采纳。"""
-        client = FakeClient(
-            handler=lambda messages, agent, operation, json_mode: json.dumps(
-                {"translations": ["译0", {"text": "译1"}]}, ensure_ascii=False
-            )
-        )
-        translator = Translator(client, self._config())
-        out = translator.retranslate_batch_with_feedback(
-            [(0, "あ", "意见0"), (1, "い", "意见1")],
-            ["旧译0", "旧译1"],
-            operation="translate.lint_fix",
-        )
-        self.assertEqual(out, [])
-
-    def test_retranslate_batch_with_feedback_rejects_blank_element(self):
-        """translations 数组含空串元素时视为无效，返回 []。"""
-        client = FakeClient(
-            handler=lambda messages, agent, operation, json_mode: json.dumps(
-                {"translations": ["译0", "  "]}, ensure_ascii=False
-            )
-        )
-        translator = Translator(client, self._config())
-        out = translator.retranslate_batch_with_feedback(
-            [(0, "あ", "意见0"), (1, "い", "意见1")],
-            ["旧译0", "旧译1"],
-            operation="translate.lint_fix",
-        )
-        self.assertEqual(out, [])
-
     def test_malformed_json_recovers_via_per_segment_fallback(self):
         """整批翻译返回无法解析的内容 → JSONParseError 触发整批重试，再由逐段兜底恢复一一对应。"""
 
@@ -199,8 +190,9 @@ class TestTranslatorAlignment(unittest.TestCase):
 
         client = FakeClient(handler=handler)
         translator = Translator(client, self._config())
-        out = translator.translate_batch(["あ", "い"], agent="translator")
-        self.assertEqual(out, ["译0", "译0"])
+        result = translator.translate_batch(["あ", "い"], agent="translator")
+        self.assertEqual(result.translations, ("译0", "译0"))
+        self.assertEqual(result.request_count, 4)
         # align_retry_limit=1 → 2 次整批 + 逐段 2 次，全部计入逻辑调用
         self.assertEqual(len(client.calls), 4)
 
@@ -289,22 +281,19 @@ class TestTranslatorAlignment(unittest.TestCase):
         self.assertEqual(len(client.calls), 3)
 
 
-class TestTranslatorStrictSegmentContract(unittest.TestCase):
+class TestTranslatorSingleSegmentContract(unittest.TestCase):
     def _config(self):
         config = Config.from_dict({"llm": fake_llm_dict(), "quality": "balanced"})
         config.source_lang = "en"
         config.pipeline.align_retry_limit = 1
         return config
 
-    def test_each_source_has_its_own_strict_json_call(self):
+    def test_each_source_has_its_own_plain_text_call(self):
         def handler(messages, agent, operation, json_mode):
             user = messages[-1]["content"]
-            self.assertTrue(json_mode)
+            self.assertFalse(json_mode)
             self.assertNotEqual("Alpha" in user, "Beta" in user)
-            return json.dumps(
-                {"translation": "甲" if "Alpha" in user else "乙"},
-                ensure_ascii=False,
-            )
+            return "甲" if "Alpha" in user else "乙"
 
         client = FakeClient(handler=handler)
         result = Translator(client, self._config()).translate_batch(
@@ -313,45 +302,216 @@ class TestTranslatorStrictSegmentContract(unittest.TestCase):
         )
 
         self.assertEqual(
-            result,
-            ["甲", "乙", "123", "{var=dc:http_errors:rate10m,job=webserver}"],
+            result.translations,
+            ("甲", "乙", "123", "{var=dc:http_errors:rate10m,job=webserver}"),
         )
-        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(result.request_count, 2)
 
-    def test_invalid_single_value_schema_retries(self):
-        responses = iter(
-            [
-                {"translations": ["错误结构"]},
-                {"translation": "正确译文", "explanation": "多余字段"},
-                {"translation": "正确译文"},
-            ]
-        )
+    def test_invalid_plain_text_retries(self):
+        responses = iter(["", "译" * 300, "正确译文"])
         config = self._config()
         config.pipeline.align_retry_limit = 2
-        client = FakeClient(
-            handler=lambda messages, agent, operation, json_mode: json.dumps(
-                next(responses), ensure_ascii=False
-            )
-        )
+        client = FakeClient(handler=lambda messages, agent, operation, json_mode: next(responses))
 
-        self.assertEqual(
-            Translator(client, config).translate_batch(["Alpha"], agent="translator"),
-            ["正确译文"],
-        )
+        result = Translator(client, config).translate_batch(["Alpha"], agent="translator")
+        self.assertEqual(result.translations, ("正确译文",))
+        self.assertEqual(result.request_count, 3)
         self.assertEqual(len(client.calls), 3)
 
     def test_contract_exhaustion_fails_closed(self):
-        client = FakeClient(
-            handler=lambda messages, agent, operation, json_mode: json.dumps(
-                {"translations": ["错误结构"]}, ensure_ascii=False
-            )
-        )
+        client = FakeClient(handler=lambda messages, agent, operation, json_mode: "")
 
         with self.assertRaises(AlignmentError) as caught:
             Translator(client, self._config()).translate_batch(["Alpha"], agent="translator")
 
         self.assertEqual(caught.exception.reason, "translation_segment_contract_failed")
         self.assertEqual(len(client.calls), 2)
+
+    def test_overlong_primary_falls_back_to_analyst(self):
+        calls = []
+
+        def handler(messages, agent, operation, json_mode):
+            calls.append((agent, operation))
+            return "译" * 300 if agent == "translator" else "分析译文"
+
+        client = FakeClient(handler=handler)
+        result = Translator(client, self._config()).translate_batch(
+            ["Alpha"],
+            agent="translator",
+            operation="translate.single",
+            fallback_agent="analyst",
+        )
+
+        self.assertEqual(result.translations, ("分析译文",))
+        self.assertEqual(result.request_count, 3)
+        self.assertEqual(
+            calls,
+            [
+                ("translator", "translate.single"),
+                ("translator", "translate.single"),
+                ("analyst", "translate.single"),
+            ],
+        )
+        self.assertEqual(len(client.calls), 3)
+
+    def test_primary_and_analyst_exhaustion_fails_without_partial_result(self):
+        calls = []
+
+        def handler(messages, agent, operation, json_mode):
+            calls.append((agent, operation))
+            return "译" * 300
+
+        translator = Translator(FakeClient(handler=handler), self._config())
+        with self.assertRaises(AlignmentError) as caught:
+            translator.translate_batch(
+                ["Alpha"],
+                agent="translator",
+                operation="translate.single",
+                fallback_agent="analyst",
+            )
+
+        self.assertEqual(caught.exception.reason, "translation_segment_contract_failed")
+        self.assertEqual(
+            calls,
+            [
+                ("translator", "translate.single"),
+                ("translator", "translate.single"),
+                ("analyst", "translate.single"),
+                ("analyst", "translate.single"),
+            ],
+        )
+
+    def test_provider_exception_does_not_invoke_business_fallback(self):
+        provider_error = RuntimeError("provider failed")
+        calls = []
+
+        def handler(messages, agent, operation, json_mode):
+            calls.append((agent, operation))
+            raise provider_error
+
+        translator = Translator(FakeClient(handler=handler), self._config())
+        with self.assertRaises(RuntimeError) as caught:
+            translator.translate_batch(
+                ["Alpha"],
+                agent="translator",
+                operation="translate.single",
+                fallback_agent="analyst",
+            )
+
+        self.assertIs(caught.exception, provider_error)
+        self.assertEqual(calls, [("translator", "translate.single")])
+
+
+class TestTranslateNodeHeadingPrompt(unittest.TestCase):
+    def _node(self, client):
+        config = Config.from_dict({"llm": fake_llm_dict(), "quality": "balanced"})
+        config.source_lang = "en"
+        config.pipeline.align_retry_limit = 1
+        translator = Translator(client, config)
+        node = object.__new__(TranslateNode)
+        node.translator = translator
+        node.config = config
+        return node
+
+    def test_heading_uses_concise_prompt_and_matching_terms_only(self):
+        users = []
+
+        def handler(messages, agent, operation, json_mode):
+            self.assertFalse(json_mode)
+            self.assertEqual(agent, "analyst" if operation == "translate.heading" else "translator")
+            users.append((operation, messages[-1]["content"]))
+            user = messages[-1]["content"]
+            if operation == "translate.heading":
+                self.assertNotIn("STYLE_MARKER", user)
+                self.assertNotIn("CONTEXT_MARKER", user)
+                if "RED SUPERGIANT" in user:
+                    self.assertIn("红超巨星", user)
+                    self.assertNotIn("黑洞", user)
+                    return "红超巨星"
+                return "目录"
+            else:
+                self.assertIn("STYLE_MARKER", user)
+                self.assertIn("CONTEXT_MARKER", user)
+                return "正文译文"
+
+        client = FakeClient(handler=handler)
+        node = self._node(client)
+        terms = [
+            GlossaryTerm(source="RED SUPERGIANT", target="红超巨星"),
+            GlossaryTerm(source="BLACK HOLE", target="黑洞"),
+        ]
+        translated = node._process_batch(
+            [
+                Segment(index=0, source="Contents", kind=KIND_HEADING),
+                Segment(index=1, source="RED SUPERGIANT", kind=KIND_HEADING),
+                Segment(index=2, source="A paragraph.", kind=KIND_TEXT),
+            ],
+            terms,
+            "CONTEXT_MARKER",
+            "STYLE_MARKER",
+        )
+
+        self.assertEqual(translated[0], ["目录", "红超巨星", "正文译文"])
+        self.assertEqual(translated[1], 3)
+        self.assertEqual(
+            [operation for operation, _ in users],
+            ["translate.heading", "translate.heading", "translate.single"],
+        )
+
+    def test_heading_keeps_strict_length_rejection_and_retries(self):
+        client = FakeClient(handler=lambda messages, agent, operation, json_mode: "译" * 300)
+        node = self._node(client)
+
+        translated = node._process_batch(
+            [Segment(index=0, source="Contents", kind=KIND_HEADING)],
+            [],
+            "CONTEXT_MARKER",
+            "STYLE_MARKER",
+        )
+        self.assertEqual(translated, (["Contents"], 0))
+        self.assertEqual(len(client.calls), 2)
+        self.assertTrue(all(call["operation"] == "translate.heading" for call in client.calls))
+        self.assertTrue(all(call["agent"] == "analyst" for call in client.calls))
+
+    def test_prose_falls_back_to_analyst_after_translator_exhaustion(self):
+        def handler(messages, agent, operation, json_mode):
+            if agent == "translator":
+                return "译" * 300
+            return "分析译文"
+
+        client = FakeClient(handler=handler)
+        node = self._node(client)
+        translated = node._process_batch(
+            [Segment(index=0, source="A paragraph.", kind=KIND_TEXT)],
+            [],
+            "CONTEXT_MARKER",
+            "STYLE_MARKER",
+        )
+        self.assertEqual(translated[0], ["分析译文"])
+        self.assertEqual(translated[1], 3)
+        self.assertEqual(
+            [(call["agent"], call["operation"]) for call in client.calls],
+            [
+                ("translator", "translate.single"),
+                ("translator", "translate.single"),
+                ("analyst", "translate.single"),
+            ],
+        )
+
+    def test_generic_style_prompt_still_rejects_overlong_output(self):
+        def handler(messages, agent, operation, json_mode):
+            return "译" * 300 if "STYLE_MARKER" in messages[-1]["content"] else "目录"
+
+        client = FakeClient(handler=handler)
+        translator = Translator(client, self._node(client).config)
+
+        with self.assertRaises(AlignmentError):
+            translator.translate_batch(
+                ["Contents"],
+                agent="translator",
+                operation="translate.single",
+                style="STYLE_MARKER",
+            )
 
 
 class TestChecks(unittest.TestCase):

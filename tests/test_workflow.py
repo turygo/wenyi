@@ -18,6 +18,7 @@ from trans_novel.pipeline.state import (
     NODE_NAME_TERMS,
     NODE_POLISH,
     NODE_PREPARE,
+    NODE_REPAIR,
     NODE_REPORT,
     NODE_TITLES,
     NODE_TRANSLATE,
@@ -50,6 +51,7 @@ class TestWorkflowDefinition(unittest.TestCase):
                 NODE_POLISH,
                 NODE_TITLES,
                 NODE_DETERMINISTIC_QA,
+                NODE_REPAIR,
                 NODE_REPORT,
                 NODE_ASSEMBLE,
             },
@@ -128,6 +130,7 @@ class TestPlanner(unittest.TestCase):
                 "polish",
                 "titles",
                 "deterministic_qa",
+                "repair",
                 "report",
                 "assemble",
             }

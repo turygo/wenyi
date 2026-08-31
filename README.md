@@ -75,7 +75,9 @@ trans-novel translate book.epub --back-matter full
 
 `--quality` 只覆盖本次运行：`economy` 不润色且附属章走轻量路径，`balanced` 不润色但完整处理
 附属章，`quality` 开启润色并完整处理附属章。`--polish` 和 `--back-matter` 可以覆盖当前运行。
-确定性 QA 始终执行，不提供关闭开关；已经翻译完成的批次会被断点续跑跳过。
+确定性 QA 始终执行；随后由 `editor` 按单个 lint 问题自动 Repair，每个问题最多 10 次逻辑调用。
+候选必须通过完整段落复检才会写回；耗尽预算也会保留安全译文并继续生成单语和双语输出。
+已经翻译完成的批次会被断点续跑跳过，完成章节只会复检，不会重新调用正文翻译模型。
 
 ## 配置
 
@@ -97,13 +99,13 @@ llm:
 quality: balanced
 ```
 
-- `translator`：正文翻译和定向重译，默认使用 Hy-MT2 30B 的固定版本。
-- `analyst`：全局分析、定名、标题翻译和富文本译文的边界对齐。
-- `editor`：中文润色。
+- `translator`：正文翻译，默认使用 Hy-MT2 30B 的固定版本。
+- `analyst`：全局分析、定名和标题翻译。
+- `editor`：中文润色与 lint 问题 Repair。
 - `fast`：语言识别、术语挖掘、术语抽取和附属章轻量翻译。
 - 每个角色都必须是非空的 `provider/model-id` 列表；同一角色不能重复候选。
-- `quality`：`economy` 使用批量翻译；`balanced` 按单段严格 JSON 契约翻译；
-  `quality` 在同样的单段契约上增加润色。
+- `quality`：`economy` 使用批量翻译；`balanced` 每次只翻译一个段落并接收纯译文；
+  `quality` 在同样的单段调用上增加逐段润色。
 
 模型规格可在模型 ID 最右侧追加 `:off`、`:low`、`:medium`、`:high` 或 `:max`；
 Provider/模型 ID 中间的 `/` 只分割第一个斜杠，因此 OpenRouter 的嵌套模型 ID 可直接使用。
@@ -213,14 +215,14 @@ trans-novel tools assemble book.epub
 但每个物理尝试仍分别记入用量和遥测。
 
 默认由 OpenRouter 的 Hy-MT2 30B 固定版本翻译正文，由 OpenCode Go 的
-Muse Spark 1.2 Contributor 承担分析、边界对齐、润色和快速任务。直接使用 DeepSeek、
+Muse Spark 1.2 Contributor 承担分析、润色和快速任务；富文本译文由代码按原文槽位长度确定性回填，保留完整源空白并逐字写入目标值。直接使用 DeepSeek、
 OpenAI、百炼或其他 OpenRouter 模型时走各自内置地址；Ollama 与 vLLM 使用本地默认地址；
 `openai-compatible` 必须设置 `llm.base_url`。
 
 内部 Agent 固定映射到四个用户模型角色：
 
 - `translator`：正文翻译和定向重译。
-- `analyst`：标题翻译、全局分析、定名和富文本译文的边界对齐。
+- `analyst`：标题翻译、全局分析和定名。
 - `editor`：润色。
 - `fast`：语言识别、术语挖掘、术语抽取和附属章轻量翻译。
 
