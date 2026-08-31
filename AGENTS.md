@@ -15,6 +15,8 @@
 
 `trans_novel/benchmark/` is a separate offline evaluation subsystem exposed under `tools benchmark`. It reuses the production `Application` with isolated state and records corpus, run, review, telemetry, and report artifacts; detailed operating rules live in `DOCS/benchmark-guide.md`.
 
+For any Python production, test, or architecture change, MUST read and follow `DOCS/architecture-governance.md`.
+
 ## Key Directories
 
 - `trans_novel/pipeline/`: composition, planning, lifecycle, resumable state, and stage nodes.
