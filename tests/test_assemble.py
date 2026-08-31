@@ -21,17 +21,17 @@ from tests.sample_data import (
     write_sample_txt,
 )
 from trans_novel.assemble.report import build_report
-from trans_novel.assemble.writer import (
-    assemble,
-)
+from trans_novel.assemble.writer import assemble
 from trans_novel.benchmark.epub_check import validate_epub_triplet
 from trans_novel.config import Config
+from trans_novel.epub.slots import assign_segment_translation, distribute_slot_translation
 from trans_novel.glossary.store import GlossaryStore
-from trans_novel.ingest.models import Chapter, assign_segment_translation
+from trans_novel.ingest.models import Chapter
 from trans_novel.ingest.segmenter import load_document
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline.bootstrap import Application
 from trans_novel.pipeline.runstore import RunStore
+from trans_novel.postprocess.punct import normalize_heading_numbering
 
 _FB2_WITH_IMAGES = """\
 <?xml version="1.0" encoding="utf-8"?>
@@ -105,11 +105,11 @@ def _run(input_path, state_dir):
 
 
 def _stamp_formal_prereqs(store):
-    """Direct writer tests stamp title, deterministic QA, and report prerequisites."""
-    from trans_novel.pipeline.state import NODE_DETERMINISTIC_QA, NodeState
+    """Direct writer tests stamp title, QA, Repair, and report prerequisites."""
+    from trans_novel.pipeline.state import NODE_DETERMINISTIC_QA, NODE_REPAIR, NodeState
 
     state = store.load_state()
-    for node_id in ("titles", NODE_DETERMINISTIC_QA, "report"):
+    for node_id in ("titles", NODE_DETERMINISTIC_QA, NODE_REPAIR, "report"):
         state.nodes.setdefault(node_id, NodeState(node_id=node_id, status="succeeded"))
     store.save_state(state)
     return store
@@ -169,7 +169,7 @@ class TestAssembleText(unittest.TestCase):
 
 
 class TestAssembleEpub(unittest.TestCase):
-    def test_schema3_epub_export_preserves_inline_image(self):
+    def test_schema4_epub_export_preserves_inline_image(self):
         with tempfile.TemporaryDirectory() as d:
             epub = os.path.join(d, "inline.epub")
             write_inline_sample_epub(epub)
@@ -197,7 +197,7 @@ class TestAssembleEpub(unittest.TestCase):
             self.assertEqual(image_data, b"inline-image")
             self.assertIsNone(rendered.find(attrs={"data-tn-inline-id": True}))
 
-    def test_schema3_source_epub_rebuild(self):
+    def test_schema4_source_epub_rebuild(self):
         with tempfile.TemporaryDirectory() as d:
             ep = os.path.join(d, "novel.epub")
             write_sample_epub(ep)
@@ -209,6 +209,30 @@ class TestAssembleEpub(unittest.TestCase):
             self.assertIn("润", html)  # 译文已替换
             self.assertNotIn("data-tn-id", html)  # 占位标记已清除
             self.assertNotIn("綾小路は教室", html)  # 原文已被替换
+
+    def test_source_epub_with_invalid_mimetype_is_normalized(self):
+        with tempfile.TemporaryDirectory() as d:
+            epub = os.path.join(d, "invalid-mimetype.epub")
+            write_sample_epub(epub)
+            with zipfile.ZipFile(epub) as source:
+                members = [(info.filename, source.read(info)) for info in source.infolist()]
+            members = members[1:] + members[:1]
+            with zipfile.ZipFile(epub, "w", zipfile.ZIP_DEFLATED) as source:
+                for name, data in members:
+                    source.writestr(
+                        name,
+                        b"application/epub+zip\r\n" if name == "mimetype" else data,
+                    )
+
+            store, _ = _run(epub, os.path.join(d, "state"))
+            output = assemble(store, epub, out_format="epub")
+
+            with zipfile.ZipFile(output) as translated:
+                mimetype = translated.infolist()[0]
+                self.assertEqual(mimetype.filename, "mimetype")
+                self.assertEqual(mimetype.compress_type, zipfile.ZIP_STORED)
+                self.assertEqual(translated.read("mimetype"), b"application/epub+zip")
+            self.assertTrue(store.load_epub_verification()["passed"])
 
     def test_vertical_epub_preserves_original_layout(self):
         with tempfile.TemporaryDirectory() as d:
@@ -237,7 +261,7 @@ class TestAssembleEpub(unittest.TestCase):
             store, _ = _run(source, os.path.join(directory, "state"))
             manifest = store.load_manifest()
             chapters = [store.load_chapter(entry["index"]) for entry in manifest["chapters"]]
-            self.assertEqual(manifest["meta"]["epub_schema"], 3)
+            self.assertEqual(manifest["meta"]["epub_schema"], 4)
             self.assertFalse(
                 os.path.exists(os.path.join(directory, "state", "resource_templates.json"))
             )
@@ -429,7 +453,7 @@ class TestTitleTranslation(unittest.TestCase):
 
 
 class TestHeadingNumberInWriter(unittest.TestCase):
-    """章节标题编号数字风格（阿拉伯 → 汉字）在回填输出侧统一。"""
+    """章节标题编号数字风格（阿拉伯 → 汉字）在槽位分配前统一。"""
 
     def test_epub_heading_and_toc_normalized(self):
         with tempfile.TemporaryDirectory() as d:
@@ -437,12 +461,10 @@ class TestHeadingNumberInWriter(unittest.TestCase):
             write_sample_epub(ep)
             store, _ = _run(ep, os.path.join(d, "state"))
             ch = store.load_chapter(0)
+            complete = normalize_heading_numbering("第5章 迫击炮")
             assign_segment_translation(
                 ch.segments[0],
-                [
-                    {"id": slot.id, "core": "第5章 迫击炮"}
-                    for slot in ch.segments[0].epub_state.slots
-                ],
+                distribute_slot_translation(ch.segments[0], complete),
             )
             store.save_chapter(ch)
             m = store.load_manifest()
@@ -579,7 +601,7 @@ class TestAssembleEpubPhysicalResourceGrouping(unittest.TestCase):
 
 
 class TestAssembleEpubLegacySchema(unittest.TestCase):
-    """旧 EPUB 状态必须在导出边界拒绝；请重新开始 schema 3 翻译。"""
+    """旧 EPUB 状态必须在导出边界拒绝；请重新开始 schema 4 翻译。"""
 
     def test_schema1_chapter_template_state_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:

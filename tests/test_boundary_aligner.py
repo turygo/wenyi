@@ -1,41 +1,30 @@
 from __future__ import annotations
 
-import json
 import unittest
 
-from tests.fake_llm import fake_llm_dict
-from trans_novel.agents.base import WorkflowProtocolError
-from trans_novel.agents.boundary_aligner import TextBoundaryAligner
-from trans_novel.config import Config
-from trans_novel.ingest.models import (
-    SLOT_BOUNDARY_MARKER,
+from trans_novel.epub.slots import (
     EpubSegmentState,
     EpubTextSlot,
-    Segment,
     assign_segment_translation,
+    distribute_slot_translation,
+    source_passthrough_transport,
 )
-from trans_novel.llm import FakeClient
+from trans_novel.ingest.models import Segment
 
 
-def _segment() -> Segment:
+def _segment(source_parts: list[str]) -> Segment:
     slots = [
         EpubTextSlot(
-            id="private-a",
-            field="text",
-            source_value="The ",
-            source_core="The",
-            trailing_whitespace=" ",
-        ),
-        EpubTextSlot(
-            id="private-b",
-            field="tail",
-            source_value="book",
-            source_core="book",
-        ),
+            id=f"slot-{index}",
+            element_path=() if index == 0 else (index,),
+            field="text" if index == 0 else "tail",
+            source_value=part,
+        )
+        for index, part in enumerate(source_parts)
     ]
     return Segment(
         index=0,
-        source="The book",
+        source="".join(source_parts),
         epub_state=EpubSegmentState(
             resource_href="OEBPS/chapter.xhtml",
             resource_sha256="resource",
@@ -47,56 +36,51 @@ def _segment() -> Segment:
     )
 
 
-class TestTextBoundaryAligner(unittest.TestCase):
-    def test_retries_then_assigns_without_exposing_epub_coordinates(self):
-        responses = iter(
-            [
-                {"aligned": ["这本书"]},
-                {"aligned": [f"这本{SLOT_BOUNDARY_MARKER}书"]},
-            ]
+class TestSlotDistribution(unittest.TestCase):
+    def test_distributes_by_source_length_without_changing_translation(self):
+        segment = _segment(
+            ["a" * 292, "b" * 135, "c" * 14, "d" * 708, "e" * 114, "f" * 22, "g" * 14, "h" * 169]
         )
-        client = FakeClient(
-            handler=lambda messages, agent, operation, json_mode: json.dumps(
-                next(responses), ensure_ascii=False
-            )
+        translation = (
+            "母亲去上班，女儿去上学。母亲回到家，把手提包扔到桌上。女儿写作业，母亲在厨房唱歌。"
         )
-        config = Config.from_dict({"llm": fake_llm_dict()})
-        config.pipeline.align_retry_limit = 1
-        aligned = TextBoundaryAligner(client, config).align_batch([["The", "book"]], ["这本书"])
 
-        segment = _segment()
-        assign_segment_translation(segment, aligned[0])
-        self.assertEqual(segment.target, "这本 书")
-        self.assertEqual([slot.target_core for slot in segment.epub_state.slots], ["这本", "书"])
-        prompt = client.calls[0]["messages"][-1]["content"]
-        self.assertNotIn("private-a", prompt)
-        self.assertNotIn("OEBPS/chapter.xhtml", prompt)
+        transport = distribute_slot_translation(segment, translation)
+
+        self.assertEqual("".join(item["value"] for item in transport), translation)
+        self.assertTrue(all(item["value"] for item in transport))
+        assign_segment_translation(segment, transport)
         self.assertEqual(
-            [call["agent"] for call in client.calls],
-            ["analyst", "analyst"],
+            [slot.target_value for slot in segment.epub_state.slots],
+            [item["value"] for item in transport],
         )
 
-    def test_rejects_translation_mutation(self):
-        client = FakeClient(
-            handler=lambda messages, agent, operation, json_mode: json.dumps(
-                {"aligned": [f"这一本{SLOT_BOUNDARY_MARKER}书"]}, ensure_ascii=False
-            )
-        )
-        config = Config.from_dict({"llm": fake_llm_dict()})
-        config.pipeline.align_retry_limit = 0
-        with self.assertRaisesRegex(WorkflowProtocolError, "边界对齐失败"):
-            TextBoundaryAligner(client, config).align_batch([["The", "book"]], ["这本书"])
+    def test_short_translation_remains_lossless_even_when_a_slot_is_empty(self):
+        segment = _segment(["long source", "another source"])
 
-    def test_rejects_empty_translation_part(self):
-        client = FakeClient(
-            handler=lambda messages, agent, operation, json_mode: json.dumps(
-                {"aligned": [f"{SLOT_BOUNDARY_MARKER}这本书"]}, ensure_ascii=False
-            )
+        transport = distribute_slot_translation(segment, "译")
+
+        self.assertEqual("".join(item["value"] for item in transport), "译")
+        assign_segment_translation(segment, transport)
+        self.assertEqual(segment.target, "译")
+
+    def test_source_passthrough_preserves_whitespace_slot_exactly(self):
+        segment = _segment(["你好", " ", "世界"])
+        assign_segment_translation(segment, source_passthrough_transport(segment))
+        self.assertEqual(
+            [slot.target_value for slot in segment.epub_state.slots],
+            ["你好", " ", "世界"],
         )
-        config = Config.from_dict({"llm": fake_llm_dict()})
-        config.pipeline.align_retry_limit = 0
-        with self.assertRaisesRegex(WorkflowProtocolError, "边界对齐失败"):
-            TextBoundaryAligner(client, config).align_batch([["The", "book"]], ["这本书"])
+        self.assertEqual(segment.target, "你好 世界")
+
+    def test_whitespace_slots_are_empty_and_target_spaces_are_preserved(self):
+        segment = _segment(["你好", " ", "世界"])
+        translation = "甲 乙"
+        transport = distribute_slot_translation(segment, translation)
+        self.assertEqual("".join(item["value"] for item in transport), translation)
+        assign_segment_translation(segment, transport)
+        self.assertEqual(segment.target, translation)
+        self.assertEqual(segment.epub_state.slots[1].target_value, "")
 
 
 if __name__ == "__main__":

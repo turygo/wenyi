@@ -38,11 +38,11 @@ def _run(input_path, state_dir, output=None):
 
 
 def _stamp_formal_prereqs(store):
-    """Direct writer tests stamp title, deterministic QA, and report prerequisites."""
-    from trans_novel.pipeline.state import NODE_DETERMINISTIC_QA, NodeState
+    """Direct writer tests stamp title, QA, Repair, and report prerequisites."""
+    from trans_novel.pipeline.state import NODE_DETERMINISTIC_QA, NODE_REPAIR, NodeState
 
     state = store.load_state()
-    for node_id in ("titles", NODE_DETERMINISTIC_QA, "report"):
+    for node_id in ("titles", NODE_DETERMINISTIC_QA, NODE_REPAIR, "report"):
         state.nodes.setdefault(node_id, NodeState(node_id=node_id, status="succeeded"))
     store.save_state(state)
     return store
@@ -160,8 +160,8 @@ class TestMultiOutput(unittest.TestCase):
             self.assertEqual(os.path.basename(outputs[0]), "novel.zh.epub")
 
 
-class TestAssembleEpubSchema3Bilingual(unittest.TestCase):
-    def test_schema3_epub_rebuild_bilingual(self):
+class TestAssembleEpubSchema4Bilingual(unittest.TestCase):
+    def test_schema4_epub_rebuild_bilingual(self):
         with tempfile.TemporaryDirectory() as d:
             ep = os.path.join(d, "novel.epub")
             write_sample_epub(ep)

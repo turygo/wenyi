@@ -1,4 +1,4 @@
-"""EPUB 读取器：提取 schema-3 lxml 文本槽位状态。
+"""EPUB 读取器：提取 schema-4 lxml 文本槽位状态。
 
 EPUB 即一个 zip：
   META-INF/container.xml → 指向 OPF
@@ -24,16 +24,14 @@ from urllib.parse import urlsplit
 from lxml import etree
 
 from trans_novel.assemble.zip_safety import ZipSafetyError, preflight_zip, read_member
+from trans_novel.epub.slots import EpubSegmentState, EpubTextSlot, slot_contract_digest
 from trans_novel.ingest.epub_toc import parse_toc_entries, resolve_epub_href, select_boundaries
 from trans_novel.ingest.models import (
     KIND_HEADING,
     KIND_TEXT,
     Chapter,
     Document,
-    EpubSegmentState,
-    EpubTextSlot,
     Segment,
-    _slot_contract_digest,
 )
 
 _CONTAINER = "META-INF/container.xml"
@@ -332,15 +330,6 @@ def _is_footnote_marker(element: etree._Element) -> bool:
     return False
 
 
-def _slot_parts(value: str) -> tuple[str, str, str]:
-    leading_match = re.match(r"[ \t\r\n\f\v]*", value)
-    trailing_match = re.search(r"[ \t\r\n\f\v]*$", value)
-    leading = leading_match.group(0) if leading_match else ""
-    trailing = trailing_match.group(0) if trailing_match else ""
-    end = len(value) - len(trailing) if trailing else len(value)
-    return leading, trailing, value[len(leading) : end]
-
-
 def _block_slots(
     root: etree._Element,
     block: etree._Element,
@@ -349,18 +338,13 @@ def _block_slots(
     resource_sha256: str,
     parse_mode: str,
     anchor: str,
-) -> list:
-    from trans_novel.ingest.models import EpubTextSlot
-
+) -> list[EpubTextSlot]:
     slots: list[EpubTextSlot] = []
     slot_index = 0
 
     def add(owner: etree._Element, field: str, value: str | None) -> None:
         nonlocal slot_index
-        if not value or not value.strip():
-            return
-        leading, trailing, core = _slot_parts(value)
-        if not core:
+        if value is None:
             return
         relative = tuple(index for index in _element_path(block, owner))
         slot_index += 1
@@ -370,9 +354,6 @@ def _block_slots(
                 element_path=relative,
                 field=field,
                 source_value=value,
-                leading_whitespace=leading,
-                trailing_whitespace=trailing,
-                source_core=core,
             )
         )
 
@@ -382,7 +363,7 @@ def _block_slots(
             return
         add(owner, "text", owner.text)
         for child in owner:
-            # Comment/PI nodes have no QName-bearing path step.  Their tails
+            # Comment/PI nodes have no QName-bearing path step. Their tails
             # remain immutable rather than being guessed by source text later.
             if not isinstance(child.tag, str):
                 continue
@@ -391,6 +372,26 @@ def _block_slots(
 
     walk(block)
     return slots
+
+
+def _designated_slot_values(block: etree._Element) -> list[tuple[tuple[int, ...], str, str]]:
+    designated: list[tuple[tuple[int, ...], str, str]] = []
+
+    def walk(owner: etree._Element) -> None:
+        tag = owner.tag.rsplit("}", 1)[-1].lower() if isinstance(owner.tag, str) else ""
+        if tag in _IMMUTABLE_TEXT_TAGS or tag in _ATOMIC_TEXT_TAGS or _is_footnote_marker(owner):
+            return
+        if owner.text is not None:
+            designated.append((tuple(_element_path(block, owner)), "text", owner.text))
+        for child in owner:
+            if not isinstance(child.tag, str):
+                continue
+            walk(child)
+            if child.tail is not None:
+                designated.append((tuple(_element_path(block, child)), "tail", child.tail))
+
+    walk(block)
+    return designated
 
 
 def _resource_fingerprint(block: etree._Element) -> str:
@@ -514,9 +515,14 @@ def _annotate_lxml_resource(
             parse_mode=parse_mode,
             anchor=anchor,
         )
+        persisted_locations = [
+            (tuple(slot.element_path), slot.field, slot.source_value) for slot in slots
+        ]
+        if persisted_locations != _designated_slot_values(block):
+            raise ValueError(f"EPUB source slot coverage mismatch: {href}")
         if not slots:
             continue
-        runs: list[list] = [[]]
+        runs: list[list[EpubTextSlot]] = [[]]
         direct_children = _element_children(block)
         for slot in slots:
             if not slot.element_path:
@@ -534,7 +540,7 @@ def _annotate_lxml_resource(
 
         kind = KIND_HEADING if block.tag.rsplit("}", 1)[-1].lower() in _HEADING_TAGS else KIND_TEXT
         for run_index, run_slots in enumerate(runs):
-            if not run_slots:
+            if not run_slots or not any(slot.source_value.strip() for slot in run_slots):
                 continue
             run_anchor = anchor if run_index == 0 else f"{anchor}_br{run_index}"
             if run_anchor != anchor:
@@ -542,13 +548,7 @@ def _annotate_lxml_resource(
                     slot.model_copy(update={"id": f"{run_anchor}:s{slot_index}"})
                     for slot_index, slot in enumerate(run_slots, 1)
                 ]
-            source = _WS_RE.sub(
-                " ",
-                "".join(
-                    slot.leading_whitespace + slot.source_core + slot.trailing_whitespace
-                    for slot in run_slots
-                ),
-            ).strip()
+            source = _WS_RE.sub(" ", "".join(slot.source_value for slot in run_slots)).strip()
             state = EpubSegmentState(
                 resource_href=href,
                 resource_sha256=digest,
@@ -556,7 +556,7 @@ def _annotate_lxml_resource(
                 block_fingerprint=_resource_fingerprint(block),
                 parse_mode=parse_mode,
                 slots=run_slots,
-                slot_contract_sha256=_slot_contract_digest(run_slots),
+                slot_contract_sha256=slot_contract_digest(run_slots),
             )
             segments.append(
                 Segment(
@@ -849,7 +849,7 @@ def _logical_chapters(
 
 
 def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
-    """Read a source EPUB into schema-3 structural text-slot state."""
+    """Read a source EPUB into schema-4 structural text-slot state."""
     try:
         with zipfile.ZipFile(path, "r") as zf:
             preflight_zip(zf)
@@ -900,7 +900,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
         source_path=os.path.abspath(path),
         chapters=chapters,
         meta={
-            "epub_schema": 3,
+            "epub_schema": 4,
             "epub_sha256": archive_hash.hexdigest(),
             "opf_path": opf_path,
             "toc_paths": toc_paths,

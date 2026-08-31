@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import json
 import os
 import tempfile
 import unittest
@@ -20,6 +18,7 @@ from tests.sample_data import (
     write_sample_txt,
 )
 from trans_novel.assemble.zip_safety import safe_name
+from trans_novel.epub.slots import slot_contract_digest
 from trans_novel.ingest.epub_reader import (
     _find_opf_path,
     _parse_opf,
@@ -400,7 +399,7 @@ class TestEpubIngest(unittest.TestCase):
         self.assertEqual(resolved.fragment, "section 1")
         self.assertEqual(resolved.target_key, "OEBPS/text/A+B C.xhtml#section 1")
 
-    # ── schema-3 EPUB extraction and chapter-boundary behavior ─────────────
+    # ── schema-4 EPUB extraction and chapter-boundary behavior ─────────────
 
     def test_missing_required_opf_attributes_are_reported_or_skipped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -506,7 +505,7 @@ class TestEpubIngest(unittest.TestCase):
 
         self.assertEqual([chapter.href for chapter in document.chapters], ["body.xhtml"])
         self.assertEqual(document.meta["toc_paths"], ["nav.xhtml"])
-        self.assertEqual(document.meta["epub_schema"], 3)
+        self.assertEqual(document.meta["epub_schema"], 4)
         nav_resource = next(
             resource
             for resource in document.meta["epub_resources"]
@@ -683,7 +682,7 @@ class TestEpubIngest(unittest.TestCase):
         self.assertEqual(ch1.title, "第一章　出会い")
         self.assertEqual(len(ch1.text_segments), 3)  # h1 + 2 p
         self.assertNotIn("toc_entry_id", ch1.meta)
-        self.assertEqual(doc.meta["epub_schema"], 3)
+        self.assertEqual(doc.meta["epub_schema"], 4)
         self.assertNotIn("epub_resource_templates", doc.meta)
         self.assertIsNotNone(ch1.href)
         for s in ch1.text_segments:
@@ -694,27 +693,7 @@ class TestEpubIngest(unittest.TestCase):
             self.assertEqual(state.parse_mode, "xml")
             self.assertTrue(state.resource_sha256)
             self.assertTrue(state.block_fingerprint)
-            self.assertEqual(
-                state.slot_contract_sha256,
-                hashlib.sha256(
-                    json.dumps(
-                        [
-                            {
-                                "id": slot.id,
-                                "element_path": list(slot.element_path),
-                                "field": slot.field,
-                                "source_value": slot.source_value,
-                                "leading_whitespace": slot.leading_whitespace,
-                                "trailing_whitespace": slot.trailing_whitespace,
-                                "source_core": slot.source_core,
-                            }
-                            for slot in state.slots
-                        ],
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest(),
-            )
+            self.assertEqual(state.slot_contract_sha256, slot_contract_digest(state.slots))
 
     def test_epub_ignores_internal_file_title_when_no_heading(self):
         with tempfile.TemporaryDirectory() as d:

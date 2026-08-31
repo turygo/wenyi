@@ -149,7 +149,7 @@ class TestEpubStage2(unittest.TestCase):
                 def load_manifest(self):
                     return {
                         "meta": {
-                            "epub_schema": 3,
+                            "epub_schema": 4,
                             "epub_sha256": digest,
                             "epub_resources": [],
                         },
@@ -176,7 +176,7 @@ class TestEpubStage2(unittest.TestCase):
             report_two = verify_epub(two, mode="generated")
             self.assertEqual(report_one, report_two)
 
-    def test_real_schema3_mono_report_counts_actual_authorized_changes(self) -> None:
+    def test_real_schema4_mono_report_counts_actual_authorized_changes(self) -> None:
         from tests.test_assemble import _run
         from trans_novel.assemble.writer import assemble
 
@@ -195,7 +195,7 @@ class TestEpubStage2(unittest.TestCase):
                 {"text_slots": 19, "toc_labels": 4, "language_fields": 1, "bilingual_nodes": 0},
             )
 
-    def test_real_schema3_bilingual_report_proves_both_orders(self) -> None:
+    def test_real_schema4_bilingual_report_proves_both_orders(self) -> None:
         from tests.test_assemble import _run
         from trans_novel.assemble.writer import assemble
 
@@ -228,8 +228,7 @@ class TestEpubStage2(unittest.TestCase):
                     element_path=(),
                     field="text",
                     source_value="One",
-                    source_core="One",
-                    target_core="Uno",
+                    target_value="Uno",
                 )
             ],
         )
@@ -240,8 +239,7 @@ class TestEpubStage2(unittest.TestCase):
                     element_path=(0,),
                     field="tail",
                     source_value="Two",
-                    source_core="Two",
-                    target_core="Dos",
+                    target_value="Dos",
                 )
             ],
         )
@@ -579,37 +577,25 @@ class TestEpubStage2(unittest.TestCase):
                 element_path=(),
                 field="text",
                 source_value="One ",
-                source_core="One",
-                target_core="Uno",
-                leading_whitespace="",
-                trailing_whitespace=" ",
+                target_value="Uno",
             ),
             SimpleNamespace(
                 element_path=(0,),
                 field="text",
                 source_value="two",
-                source_core="two",
-                target_core="dos",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="dos",
             ),
             SimpleNamespace(
                 element_path=(0,),
                 field="tail",
                 source_value=" tail",
-                source_core="tail",
-                target_core="cola",
-                leading_whitespace=" ",
-                trailing_whitespace="",
+                target_value="cola",
             ),
             SimpleNamespace(
                 element_path=(1,),
                 field="tail",
                 source_value="Next",
-                source_core="Next",
-                target_core="Siguiente",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="Siguiente",
             ),
         ]
         state = SimpleNamespace(block_path=(1, 0), slots=slots)
@@ -648,7 +634,7 @@ class TestEpubStage2(unittest.TestCase):
                 failures=failures,
             )
             self.assertEqual(count, 4)
-            self.assertNotIn("source_node_order", {item["code"] for item in failures})
+            self.assertEqual(failures, [])
         corrupt = etree.fromstring(etree.tostring(source))
         corrupt_block = corrupt.xpath(".//p")[0]
         _add_bilingual_sources(
@@ -678,6 +664,59 @@ class TestEpubStage2(unittest.TestCase):
         )
         self.assertIn("source_node_order", {item["code"] for item in corrupt_failures})
 
+    def test_direct_br_whitespace_source_is_coalesced_and_paired(self) -> None:
+        source = etree.fromstring(
+            b"<html><head></head><body><p>One<em>two</em> "
+            b"<span>Next</span><br/>After</p></body></html>"
+        )
+        slots = [
+            SimpleNamespace(element_path=(), field="text", source_value="One", target_value="Uno"),
+            SimpleNamespace(
+                element_path=(0,), field="text", source_value="two", target_value="dos"
+            ),
+            SimpleNamespace(element_path=(0,), field="tail", source_value=" ", target_value=""),
+            SimpleNamespace(
+                element_path=(1,), field="text", source_value="Next", target_value="Siguiente"
+            ),
+        ]
+        segment = SimpleNamespace(
+            kind="text",
+            source="One two Next",
+            target="Uno dos Siguiente",
+            epub_state=SimpleNamespace(block_path=(1, 0), slots=slots),
+        )
+        for order in ("target_first", "source_first"):
+            output = etree.fromstring(etree.tostring(source))
+            output_block = output.xpath(".//p")[0]
+            added = _add_bilingual_sources(
+                output,
+                [segment],
+                order=order,
+                source_blocks={(1, 0): etree.fromstring(etree.tostring(output_block))},
+                block_refs={(1, 0): output_block},
+            )
+            self.assertEqual(added, 3)
+            self.assertEqual(
+                [node.text for node in output.xpath(".//p//span[contains(@class, 'tn-source')]")],
+                ["One", "two ", "Next"],
+            )
+            self.assertEqual(
+                len(output.xpath(".//p//span[@class='tn-bilingual-target']")),
+                3,
+            )
+            failures: list[dict[str, str]] = []
+            count = _bilingual_proof(
+                source,
+                output,
+                [segment],
+                source_lang="en",
+                order=order,
+                resource="chapter.xhtml",
+                failures=failures,
+            )
+            self.assertEqual(count, 3)
+            self.assertNotIn("source_node_empty", {item["code"] for item in failures})
+
     def test_direct_run_active_link_and_original_span_both_orders(self) -> None:
         source = etree.fromstring(
             b"<html><head></head><body><p><a href='next.xhtml'>One</a>"
@@ -689,19 +728,13 @@ class TestEpubStage2(unittest.TestCase):
                 element_path=(0,),
                 field="text",
                 source_value="One",
-                source_core="One",
-                target_core="Uno",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="Uno",
             ),
             SimpleNamespace(
                 element_path=(2,),
                 field="tail",
                 source_value="Two",
-                source_core="Two",
-                target_core="Dos",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="Dos",
             ),
         ]
         segment = SimpleNamespace(
@@ -812,19 +845,13 @@ class TestEpubStage2(unittest.TestCase):
                         element_path=(0,),
                         field="text",
                         source_value="One",
-                        source_core="One",
-                        target_core="Uno",
-                        leading_whitespace="",
-                        trailing_whitespace="",
+                        target_value="Uno",
                     ),
                     SimpleNamespace(
                         element_path=(1,),
                         field="tail",
                         source_value="Two",
-                        source_core="Two",
-                        target_core="Dos",
-                        leading_whitespace="",
-                        trailing_whitespace="",
+                        target_value="Dos",
                     ),
                 ],
             ),
@@ -837,19 +864,13 @@ class TestEpubStage2(unittest.TestCase):
                         element_path=(0,),
                         field="text",
                         source_value="One",
-                        source_core="One",
-                        target_core="Uno",
-                        leading_whitespace="",
-                        trailing_whitespace="",
+                        target_value="Uno",
                     ),
                     SimpleNamespace(
                         element_path=(1,),
                         field="tail",
                         source_value="Two",
-                        source_core="Two",
-                        target_core="Dos",
-                        leading_whitespace="",
-                        trailing_whitespace="",
+                        target_value="Dos",
                     ),
                 ],
             ),
@@ -862,19 +883,13 @@ class TestEpubStage2(unittest.TestCase):
                         element_path=(0,),
                         field="tail",
                         source_value=" tail",
-                        source_core="tail",
-                        target_core=" 尾",
-                        leading_whitespace="",
-                        trailing_whitespace="",
+                        target_value=" 尾",
                     ),
                     SimpleNamespace(
                         element_path=(1,),
                         field="tail",
                         source_value="Next",
-                        source_core="Next",
-                        target_core="下",
-                        leading_whitespace="",
-                        trailing_whitespace="",
+                        target_value="下",
                     ),
                 ],
             ),
@@ -1017,28 +1032,19 @@ class TestEpubStage2(unittest.TestCase):
                 element_path=(0, 0),
                 field="text",
                 source_value="One",
-                source_core="One",
-                target_core="Uno",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="Uno",
             ),
             SimpleNamespace(
                 element_path=(0, 1),
                 field="text",
                 source_value="Two",
-                source_core="Two",
-                target_core="Dos",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="Dos",
             ),
             SimpleNamespace(
                 element_path=(1,),
                 field="tail",
                 source_value="Tail",
-                source_core="Tail",
-                target_core="尾",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="尾",
             ),
         ]
         segment = SimpleNamespace(
@@ -1423,7 +1429,7 @@ class TestEpubStage2(unittest.TestCase):
             self.assertFalse(report["passed"])
             self.assertTrue(any(item["code"] == "durability_failed" for item in report["failures"]))
 
-    def test_recovered_schema3_resource_reports_recovered_assurance(self) -> None:
+    def test_recovered_schema4_resource_reports_recovered_assurance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "recovered.epub"
@@ -1455,7 +1461,7 @@ class TestEpubStage2(unittest.TestCase):
                         "target_lang": "zh",
                         "chapters": [],
                         "meta": {
-                            "epub_schema": 3,
+                            "epub_schema": 4,
                             "epub_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                             "epub_resources": [
                                 {
@@ -1533,7 +1539,7 @@ class TestEpubStage2(unittest.TestCase):
                 {item["code"] for item in report["failures"]},
             )
 
-    def test_multi_base_ruby_direct_run_does_not_duplicate_source_cores(self) -> None:
+    def test_multi_base_ruby_direct_run_does_not_duplicate_source_values(self) -> None:
         source = etree.fromstring(
             "<html><head></head><body><p><ruby><rb>漢</rb><rt>かん</rt>"
             "<rb>字</rb><rt>じ</rt></ruby>です<br/>次</p></body></html>".encode()
@@ -1543,37 +1549,25 @@ class TestEpubStage2(unittest.TestCase):
                 element_path=(0, 0),
                 field="text",
                 source_value="漢",
-                source_core="漢",
-                target_core="Kan",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="Kan",
             ),
             SimpleNamespace(
                 element_path=(0, 2),
                 field="text",
                 source_value="字",
-                source_core="字",
-                target_core="Ji",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="Ji",
             ),
             SimpleNamespace(
                 element_path=(0,),
                 field="tail",
                 source_value="です",
-                source_core="です",
-                target_core="Desu",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="Desu",
             ),
             SimpleNamespace(
                 element_path=(1,),
                 field="tail",
                 source_value="次",
-                source_core="次",
-                target_core="Next",
-                leading_whitespace="",
-                trailing_whitespace="",
+                target_value="Next",
             ),
         ]
         segment = SimpleNamespace(

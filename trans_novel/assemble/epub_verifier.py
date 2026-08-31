@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
+from bs4.element import Tag
 from lxml import etree
 
 from trans_novel.assemble.bilingual_dom import (
@@ -34,6 +35,7 @@ from trans_novel.assemble.bilingual_dom import (
     BILINGUAL_SOURCE_CLASS,
     BILINGUAL_STYLE_ID,
     dedupe_segment_mappings,
+    direct_run_add_whitespace,
     direct_run_boundary,
     direct_run_has_active_ancestor,
     direct_run_is_active,
@@ -56,6 +58,7 @@ from trans_novel.assemble.zip_safety import (
 from trans_novel.assemble.zip_safety import (
     read_member as _safe_read_member,
 )
+from trans_novel.epub.slots import normalized_source_text, slot_contract_digest
 from trans_novel.ingest.epub_toc import nav_toc_scopes
 
 _SCHEMA_VERSION = 1
@@ -1649,7 +1652,7 @@ _REPORT_DETAILS = {
     "properties",
     "recovered",
     "rejected",
-    "schema3_required",
+    "schema4_required",
     "source",
     "source_mode",
     "state",
@@ -1685,8 +1688,8 @@ def _state_resources(store: Any) -> tuple[dict[str, Any], list[Any], list[dict[s
         return {}, [], [_item("state", "state_unreadable", "<state>", "unreadable")]
     meta = manifest.get("meta") if isinstance(manifest.get("meta"), dict) else {}
     schema = meta.get("epub_schema")
-    if schema != 3:
-        failures.append(_item("state", "unsupported_schema", "<state>", "schema3_required"))
+    if schema != 4:
+        failures.append(_item("state", "unsupported_schema", "<state>", "schema4_required"))
     resources = {
         str(item.get("href")): item
         for item in meta.get("epub_resources", [])
@@ -1710,7 +1713,7 @@ def _resolve_path_lxml(root: etree._Element, path: tuple[int, ...]) -> etree._El
 
 
 def _element_path_lxml(root: etree._Element, target: etree._Element) -> tuple[int, ...] | None:
-    """Return the element-only path used by the persisted schema3 locators."""
+    """Return the element-only path used by the persisted schema4 locators."""
     if root is target:
         return ()
     parent = target.getparent()
@@ -1926,7 +1929,7 @@ def _bilingual_proof(
     resource: str,
     failures: list[dict[str, str]],
 ) -> int:
-    """Validate and remove only the current schema3 bilingual insertions."""
+    """Validate and remove only the current schema4 bilingual insertions."""
     source_nodes = [
         node
         for node in root_output.iter()
@@ -1958,6 +1961,8 @@ def _bilingual_proof(
         )
         if direct_segment:
             for slot_index, slot in enumerate(state.slots):
+                if not slot.source_value.strip():
+                    continue
                 owner = _resolve_path_lxml(source_block, tuple(slot.element_path))
                 ruby = (
                     next(
@@ -2157,6 +2162,81 @@ def _bilingual_proof(
             boundary = resolve_owner(tuple(boundary_path[len(block_path) :]))
             return boundary if boundary is not None else target_block
 
+        run_plans: dict[
+            int, tuple[list[tuple[Any, ...]], list[int], dict[int, str], dict[int, str]]
+        ] = {}
+        for segment in direct_segments:
+            state = segment.epub_state
+            assert state is not None
+            records: list[tuple[Any, ...]] = []
+            processed_rubies: set[tuple[int, ...]] = set()
+            source_wrapper_slots: list[int] = []
+            source_prefixes: dict[int, str] = {}
+            source_suffixes: dict[int, str] = {}
+            leading_whitespace = ""
+            for slot_index, slot in enumerate(state.slots):
+                owner = resolve_owner(tuple(slot.element_path))
+                original_owner = _resolve_path_lxml(
+                    root_source,
+                    (*block_path, *slot.element_path),
+                )
+                ruby = (
+                    next(
+                        (
+                            node
+                            for node in (original_owner, *original_owner.iterancestors())
+                            if node is not source_block
+                            and isinstance(node.tag, str)
+                            and _local_name(node.tag) == "ruby"
+                        ),
+                        None,
+                    )
+                    if original_owner is not None
+                    else None
+                )
+                if ruby is not None and slot.field == "tail" and original_owner is ruby:
+                    ruby = None
+                if ruby is not None and ruby_base_count(ruby) <= 1:
+                    ruby = None
+                ruby_path = _element_path_lxml(root_source, ruby) if ruby is not None else None
+                grouped_ruby = ruby_path is not None
+                source_duplicate = grouped_ruby and ruby_path in processed_rubies
+                boundary = source_boundary(original_owner) if original_owner is not None else None
+                records.append(
+                    (
+                        slot_index,
+                        slot,
+                        owner,
+                        original_owner,
+                        ruby_path,
+                        grouped_ruby,
+                        source_duplicate,
+                        boundary,
+                    )
+                )
+                if not slot.source_value.strip():
+                    if grouped_ruby:
+                        continue
+                    if source_wrapper_slots:
+                        previous = source_wrapper_slots[-1]
+                        source_suffixes[previous] += slot.source_value
+                    else:
+                        leading_whitespace += slot.source_value
+                    continue
+                if not source_duplicate:
+                    if grouped_ruby:
+                        processed_rubies.add(ruby_path)
+                    source_wrapper_slots.append(slot_index)
+                    source_prefixes[slot_index] = leading_whitespace
+                    source_suffixes[slot_index] = ""
+                    leading_whitespace = ""
+            run_plans[id(segment)] = (
+                records,
+                source_wrapper_slots,
+                source_prefixes,
+                source_suffixes,
+            )
+
         block_direct_sources = [
             node
             for node in source_nodes
@@ -2164,13 +2244,23 @@ def _bilingual_proof(
         ]
         assigned: set[tuple[int, ...]] = set()
         last_source_index: dict[int, int] = {}
-        processed_rubies: set[tuple[int, ...]] = set()
         for segment in direct_segments:
-            state = segment.epub_state
-            assert state is not None
-            for slot in state.slots:
-                owner = resolve_owner(tuple(slot.element_path))
-                original_owner = _resolve_path_lxml(root_source, (*block_path, *slot.element_path))
+            (
+                records,
+                _source_wrapper_slots,
+                source_prefixes,
+                source_suffixes,
+            ) = run_plans[id(segment)]
+            for (
+                slot_index,
+                slot,
+                owner,
+                original_owner,
+                _ruby_path,
+                grouped_ruby,
+                source_duplicate,
+                boundary,
+            ) in records:
                 if owner is None or original_owner is None:
                     failures.append(
                         _item(
@@ -2181,29 +2271,10 @@ def _bilingual_proof(
                         )
                     )
                     continue
-                ruby = next(
-                    (
-                        node
-                        for node in (original_owner, *original_owner.iterancestors())
-                        if node is not source_block
-                        and isinstance(node.tag, str)
-                        and _local_name(node.tag) == "ruby"
-                    ),
-                    None,
-                )
-                if ruby is not None and slot.field == "tail" and original_owner is ruby:
-                    ruby = None
-                if ruby is not None and ruby_base_count(ruby) <= 1:
-                    ruby = None
-                ruby_path = _element_path_lxml(root_source, ruby) if ruby is not None else None
-                grouped_ruby = ruby_path is not None
-                boundary = source_boundary(original_owner)
-                leading = getattr(slot, "leading_whitespace", "")
-                trailing = getattr(slot, "trailing_whitespace", "")
-                target_core = getattr(slot, "target_core", None)
-                source_core = getattr(slot, "source_core", slot.source_value)
+                if not slot.source_value.strip():
+                    continue
                 expected_target = (
-                    leading + (target_core if target_core is not None else source_core) + trailing
+                    slot.target_value if slot.target_value is not None else slot.source_value
                 )
 
                 if slot.field == "text":
@@ -2216,7 +2287,7 @@ def _bilingual_proof(
                         (
                             child
                             for child in target_candidates
-                            if _source_node_visible_text(child) == _norm_text(expected_target)
+                            if (child.text or "") == expected_target
                         ),
                         None,
                     )
@@ -2241,8 +2312,7 @@ def _bilingual_proof(
                                     child
                                     for child in siblings[owner_index + 1 :]
                                     if dict(child.attrib) == BILINGUAL_DIRECT_TARGET_ATTRS
-                                    and _source_node_visible_text(child)
-                                    == _norm_text(expected_target)
+                                    and (child.text or "") == expected_target
                                 ),
                                 None,
                             )
@@ -2257,10 +2327,8 @@ def _bilingual_proof(
                     )
                 else:
                     direct_target_used += 1
-                if grouped_ruby and ruby_path in processed_rubies:
+                if source_duplicate:
                     continue
-                if grouped_ruby and ruby_path is not None:
-                    processed_rubies.add(ruby_path)
 
                 if source_parent is None:
                     failures.append(
@@ -2272,23 +2340,20 @@ def _bilingual_proof(
                         )
                     )
                     continue
-                expected_source_node = (
-                    direct_run_source_copy(
-                        source_block,
-                        original_owner,
-                        source_lang=source_lang,
-                        source_tag="span",
-                        source_value=slot.source_value,
-                        ruby_source=True,
-                    )
-                    if grouped_ruby
-                    else None
+                expected_source_node = direct_run_source_copy(
+                    source_block,
+                    original_owner,
+                    source_lang=source_lang,
+                    source_tag="span",
+                    source_value=slot.source_value,
+                    ruby_source=grouped_ruby,
                 )
-                source_match_value = (
-                    _source_node_visible_text(expected_source_node)
-                    if expected_source_node is not None
-                    else _norm_text(slot.source_value)
+                direct_run_add_whitespace(
+                    expected_source_node,
+                    prefix=source_prefixes[slot_index],
+                    suffix=source_suffixes[slot_index],
                 )
+                source_match_value = _source_node_visible_text(expected_source_node)
                 candidates = [
                     node
                     for node in _element_children_lxml(source_parent)
@@ -2385,7 +2450,12 @@ def _bilingual_proof(
                     source_lang=source_lang,
                     source_tag=source_node.tag,
                     source_value=slot.source_value,
-                    ruby_source=slot.field == "text",
+                    ruby_source=grouped_ruby,
+                )
+                direct_run_add_whitespace(
+                    expected_source,
+                    prefix=source_prefixes[slot_index],
+                    suffix=source_suffixes[slot_index],
                 )
                 if _source_subtree_signature(expected_source) != _source_subtree_signature(
                     source_node
@@ -2608,7 +2678,7 @@ def _slot_proof(
     try:
         deduped_segments = dedupe_segment_mappings(all_segments)
     except ValueError:
-        failures.append(_item("state", "slot_mapping_ambiguous", "<state>", "schema3"))
+        failures.append(_item("state", "slot_mapping_ambiguous", "<state>", "schema4"))
         deduped_segments = all_segments
     by_resource: dict[str, list[Any]] = defaultdict(list)
     for segment in deduped_segments:
@@ -2650,7 +2720,7 @@ def _slot_proof(
         output_names = set(output_zip.namelist())
         for resource, segments in sorted(by_resource.items()):
             if resource not in source_names or resource not in output_names:
-                failures.append(_item("state", "resource_missing", resource, "schema3_locator"))
+                failures.append(_item("state", "resource_missing", resource, "schema4_locator"))
                 continue
             try:
                 source_data = _read_member(source_zip, source_zip.getinfo(resource))
@@ -2746,9 +2816,9 @@ def _slot_proof(
                 ).hexdigest()
                 if fingerprint != state.block_fingerprint:
                     failures.append(_item("dom", "block_fingerprint_mismatch", resource, "state"))
-                from trans_novel.ingest.models import _slot_contract_digest
-
-                if state.slot_contract_sha256 != _slot_contract_digest(state.slots):
+                if segment.source != normalized_source_text(state.slots):
+                    failures.append(_item("state", "source_derivation_mismatch", resource, "state"))
+                if state.slot_contract_sha256 != slot_contract_digest(state.slots):
                     failures.append(_item("state", "slot_contract_mismatch", resource, "state"))
                 seen_slot_locations: set[tuple[tuple[int, ...], str]] = set()
                 for slot in state.slots:
@@ -2869,17 +2939,12 @@ def _slot_proof(
                     continue
                 slot = allowed
                 expected_value = (
-                    slot.leading_whitespace
-                    + (slot.target_core if slot.target_core is not None else slot.source_core)
-                    + slot.trailing_whitespace
+                    slot.target_value if slot.target_value is not None else slot.source_value
                 )
-                if owner.tag.rsplit("}", 1)[-1].lower() in _HEADING_TAGS:
-                    from trans_novel.postprocess.punct import normalize_heading_numbering
-
-                    expected_value = normalize_heading_numbering(expected_value)
                 actual_value = getattr(owner, field)
                 cleared = actual_value is None and (location, field) in direct_cleared
-                if actual_value != expected_value and not cleared:
+                empty_serialized = actual_value is None and expected_value == ""
+                if actual_value != expected_value and not cleared and not empty_serialized:
                     failures.append(_item("dom", "slot_value_mismatch", resource, "target"))
                 if cleared or actual_value != slot.source_value:
                     differences["text_slots"] += 1
@@ -2915,7 +2980,7 @@ def verify_epub(
             try:
                 persisted_sha = store.load_manifest().get("meta", {}).get("epub_sha256")
                 if persisted_sha != source_sha:
-                    failures.append(_item("state", "source_digest_mismatch", "<source>", "schema3"))
+                    failures.append(_item("state", "source_digest_mismatch", "<source>", "schema4"))
             except Exception:
                 failures.append(_item("state", "state_unreadable", "<state>", "digest"))
     if target_lang is None and store is not None:
@@ -2956,12 +3021,17 @@ def verify_epub(
                 output_infos = output_zip.infolist()
                 source_names = [info.filename for info in source_infos]
                 output_names = [info.filename for info in output_infos]
-                if source_names != output_names:
+                expected_output_names = ["mimetype"] + [
+                    name for name in source_names if name != "mimetype"
+                ]
+                if output_names != expected_output_names:
                     failures.append(_item("zip", "member_set_mismatch", "<archive>", "source"))
                 elif len(source_names) != len(set(source_names)):
                     failures.append(_item("zip", "duplicate_source_member", "<archive>", "source"))
                 else:
-                    for source_info, output_info in zip(source_infos, output_infos, strict=True):
+                    output_by_name = {info.filename: info for info in output_infos}
+                    for source_info in source_infos:
+                        output_info = output_by_name[source_info.filename]
                         metadata = (
                             "compress_type",
                             "date_time",
@@ -2970,6 +3040,8 @@ def verify_epub(
                             "extra",
                             "comment",
                         )
+                        if source_info.filename == "mimetype":
+                            metadata = tuple(key for key in metadata if key != "compress_type")
                         flags_match = source_info.flag_bits == output_info.flag_bits
                         if (
                             any(
@@ -2988,7 +3060,7 @@ def verify_epub(
                             )
                             break
         except (OSError, zipfile.BadZipFile):
-            failures.append(_item("zip", "source_reopen_failed", "<source>", "archive"))
+            failures.append(_item("zip", "source_unreadable", "<source>", "archive"))
         try:
             with (
                 zipfile.ZipFile(source, "r") as source_zip,

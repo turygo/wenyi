@@ -15,8 +15,12 @@ from typing import Any
 
 from trans_novel.agents import prompts
 from trans_novel.agents.base import Agent
+from trans_novel.epub.slots import (
+    assign_segment_translation,
+    distribute_slot_translation,
+    target_slot_text,
+)
 from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
-from trans_novel.ingest.models import assign_segment_translation
 from trans_novel.pipeline.runstore import RunStore
 
 
@@ -220,54 +224,33 @@ class GlossaryAuditor(Agent):
             dirty = False
             entries: list[dict[str, Any]] = []
             for idx, seg in enumerate(ch.segments):
-                if not seg.target:
-                    continue
-                if seg.epub_state is not None:
-                    executed: list[dict[str, str]] = []
-                    slot_records = [
-                        {
-                            "id": slot.id,
-                            "core": _apply(slot.target_core or slot.source_core, executed),
-                        }
-                        for slot in seg.epub_state.slots
-                    ]
-                    changed_slot = any(
-                        record["core"]
-                        != (slot.target_core if slot.target_core is not None else slot.source_core)
-                        for record, slot in zip(slot_records, seg.epub_state.slots, strict=True)
-                    )
-                    if not changed_slot:
-                        continue
-                    old = seg.target
-                    assign_segment_translation(seg, slot_records)
-                    dirty = True
-                    changed += 1
-                    entries.append(
-                        {
-                            "chapter": c["index"],
-                            "index": idx,
-                            "before": old,
-                            "after": seg.target,
-                            "replacements": executed,
-                        }
-                    )
+                if seg.target is None:
                     continue
                 executed: list[dict[str, str]] = []
-                new = _apply(seg.target, executed)
-                if new != seg.target:
+                if seg.epub_state is not None:
+                    old = target_slot_text(seg.epub_state.slots)
+                    new = _apply(old, executed)
+                    if new == old:
+                        continue
+                    slot_records = distribute_slot_translation(seg, new)
+                    assign_segment_translation(seg, slot_records)
+                else:
                     old = seg.target
+                    new = _apply(old, executed)
+                    if new == old:
+                        continue
                     assign_segment_translation(seg, new)
-                    dirty = True
-                    changed += 1
-                    entries.append(
-                        {
-                            "chapter": c["index"],
-                            "index": idx,
-                            "before": old,
-                            "after": new,
-                            "replacements": executed,
-                        }
-                    )
+                dirty = True
+                changed += 1
+                entries.append(
+                    {
+                        "chapter": c["index"],
+                        "index": idx,
+                        "before": old,
+                        "after": seg.target,
+                        "replacements": executed,
+                    }
+                )
             if dirty:
                 store.save_chapter(ch)
                 for e in entries:
@@ -331,50 +314,44 @@ class GlossaryAuditor(Agent):
             for idx, seg in enumerate(ch.segments):
                 for t, pattern in compiled:
                     if seg.epub_state is not None:
-                        full_target = seg.target or ""
+                        full_target = target_slot_text(seg.epub_state.slots)
                         if not _has_cjk(full_target) or t.target in full_target:
                             continue
-                        records = []
+                        matches = list(pattern.finditer(full_target))
+                        if not matches:
+                            continue
+                        pieces: list[str] = []
+                        last = 0
                         replaced_any = False
-                        for slot in seg.epub_state.slots:
-                            core = (
-                                slot.target_core
-                                if slot.target_core is not None
-                                else slot.source_core
-                            )
-                            matches = list(pattern.finditer(core))
-                            if not matches:
-                                records.append({"id": slot.id, "core": core})
+                        for match in matches:
+                            left = full_target[max(0, match.start() - 12) : match.start()]
+                            right = full_target[match.end() : match.end() + 12]
+                            if not (_has_cjk(left) or _has_cjk(right)):
                                 continue
-                            pieces: list[str] = []
-                            last = 0
-                            for match in matches:
-                                left = core[max(0, match.start() - 12) : match.start()]
-                                right = core[match.end() : match.end() + 12]
-                                if not (_has_cjk(left) or _has_cjk(right)):
-                                    continue
-                                pieces.extend((core[last : match.start()], t.target))
-                                last = match.end()
-                                replaced_any = True
-                            pieces.append(core[last:])
-                            records.append(
-                                {"id": slot.id, "core": _CJK_SPACE_GAP_RE.sub("", "".join(pieces))}
-                            )
-                        if replaced_any:
-                            old = seg.target
-                            assign_segment_translation(seg, records)
-                            dirty = True
-                            touched_sources.add(t.source)
-                            entries.append(
-                                {
-                                    "chapter": c["index"],
-                                    "index": idx,
-                                    "before": old,
-                                    "after": seg.target,
-                                    "term_source": t.source,
-                                    "term_target": t.target,
-                                }
-                            )
+                            pieces.extend((full_target[last : match.start()], t.target))
+                            last = match.end()
+                            replaced_any = True
+                        if not replaced_any:
+                            continue
+                        pieces.append(full_target[last:])
+                        new = _CJK_SPACE_GAP_RE.sub("", "".join(pieces))
+                        old = seg.target
+                        assign_segment_translation(
+                            seg,
+                            distribute_slot_translation(seg, new),
+                        )
+                        dirty = True
+                        touched_sources.add(t.source)
+                        entries.append(
+                            {
+                                "chapter": c["index"],
+                                "index": idx,
+                                "before": old,
+                                "after": seg.target,
+                                "term_source": t.source,
+                                "term_target": t.target,
+                            }
+                        )
                         continue
                     text = seg.target
                     if not text or not _has_cjk(text) or t.target in text:

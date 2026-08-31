@@ -1,7 +1,7 @@
 """Write translated output files.
 
 Source EPUBs are reopened from their original archive and rendered through
-the schema-3 lxml slot contract. TXT/FB2 inputs use the generated EbookLib
+the schema-4 lxml slot contract. TXT/FB2 inputs use the generated EbookLib
 path. Missing translations fall back to source text so output is complete.
 """
 
@@ -22,6 +22,7 @@ from trans_novel.assemble.bilingual_dom import (
     BILINGUAL_STYLE_ID,
     append_bilingual_style,
     dedupe_segment_mappings,
+    direct_run_add_whitespace,
     direct_run_boundary,
     direct_run_is_active,
     direct_run_source_copy,
@@ -37,13 +38,16 @@ from trans_novel.assemble.zip_safety import (
     preflight_zip,
     read_member,
 )
+from trans_novel.epub.slots import (
+    normalized_source_text,
+    normalized_target_text,
+    slot_contract_digest,
+)
 from trans_novel.ingest.fb2_reader import read_fb2_binaries
 from trans_novel.ingest.models import (
     KIND_HEADING,
     Chapter,
     Segment,
-    _normalized_slot_text,
-    _slot_contract_digest,
 )
 from trans_novel.pipeline.runstore import RunStore
 from trans_novel.postprocess.punct import normalize_heading_numbering
@@ -561,10 +565,12 @@ def _add_bilingual_sources(
                     etree._Element,
                 ]
             ] = []
-            seen_rubies: set[int] = set()
             for segment in block_segments:
                 state = segment.epub_state
                 assert state is not None
+                seen_rubies: set[int] = set()
+                leading_whitespace = ""
+                last_source: etree._Element | None = None
                 for slot, owner, boundary in owner_map[id(segment)]:
                     original_owner = (
                         _resolve_element_path(original, slot.element_path)
@@ -586,6 +592,17 @@ def _add_bilingual_sources(
                     if ruby is not None and ruby_base_count(ruby) <= 1:
                         ruby = None
                     ruby_id = id(ruby) if ruby is not None else None
+                    if not slot.source_value.strip():
+                        if ruby_id is None:
+                            if last_source is None:
+                                leading_whitespace += slot.source_value
+                            else:
+                                direct_run_add_whitespace(last_source, suffix=slot.source_value)
+                        if slot.field == "text":
+                            owner.text = None
+                        else:
+                            owner.tail = None
+                        continue
                     source = None
                     if ruby_id is None or ruby_id not in seen_rubies:
                         source = direct_run_source_copy(
@@ -596,13 +613,16 @@ def _add_bilingual_sources(
                             source_value=slot.source_value,
                             ruby_source=ruby_id is not None,
                         )
+                        if leading_whitespace:
+                            direct_run_add_whitespace(source, prefix=leading_whitespace)
+                            leading_whitespace = ""
                         if ruby_id is not None:
                             seen_rubies.add(ruby_id)
+                        last_source = source
                     target = etree.Element(span_name, **BILINGUAL_DIRECT_TARGET_ATTRS)
-                    target_core = (
-                        slot.target_core if slot.target_core is not None else slot.source_core
+                    target.text = (
+                        slot.target_value if slot.target_value is not None else slot.source_value
                     )
-                    target.text = slot.leading_whitespace + target_core + slot.trailing_whitespace
                     if slot.field == "text":
                         owner.text = None
                         owner.insert(0, target)
@@ -736,7 +756,7 @@ def _render_source_resource(
             raise ValueError(f"EPUB segment missing slot state: {href}")
         if state.resource_href != href or state.resource_sha256 != actual_digest:
             raise ValueError(f"EPUB segment resource contract mismatch: {href}")
-        if state.slot_contract_sha256 != _slot_contract_digest(state.slots):
+        if state.slot_contract_sha256 != slot_contract_digest(state.slots):
             raise ValueError(f"EPUB slot contract digest mismatch: {href}")
         block = _resolve_element_path(root, state.block_path)
         block_refs.setdefault(state.block_path, block)
@@ -747,27 +767,21 @@ def _render_source_resource(
         ).hexdigest()
         if expected_fingerprint != state.block_fingerprint:
             raise ValueError(f"EPUB block fingerprint mismatch: {href}")
-        if segment.source != _normalized_slot_text(state.slots, target=False):
+        if segment.source != normalized_source_text(state.slots):
             raise ValueError(f"EPUB segment source derivation mismatch: {href}")
-        expected_target = _normalized_slot_text(state.slots, target=True)
+        assigned = all(slot.target_value is not None for slot in state.slots)
         if segment.target is None:
-            if any(slot.target_core is not None for slot in state.slots):
+            if any(slot.target_value is not None for slot in state.slots):
                 raise ValueError(f"EPUB segment target derivation mismatch: {href}")
-        elif segment.target != expected_target:
+        elif not assigned or segment.target != normalized_target_text(state.slots):
             raise ValueError(f"EPUB segment target derivation mismatch: {href}")
         for slot in state.slots:
             owner = _resolve_element_path(block, slot.element_path)
             value = owner.text if slot.field == "text" else owner.tail
             if value != slot.source_value:
                 raise ValueError(f"EPUB slot source mismatch: {href}")
-            core = slot.target_core if slot.target_core is not None else slot.source_core
-            if segment.kind == KIND_HEADING:
-                core = normalize_heading_numbering(core)
-            if not slot.source_core.strip() and core.strip():
-                raise ValueError(f"EPUB whitespace-only slot target: {href}")
-            writes.append(
-                (owner, slot.field, slot.leading_whitespace + core + slot.trailing_whitespace)
-            )
+            replacement = slot.target_value if slot.target_value is not None else slot.source_value
+            writes.append((owner, slot.field, replacement))
     for owner, field, replacement in writes:
         if field == "text":
             owner.text = replacement
@@ -803,9 +817,9 @@ def _assemble_source_epub(
     source_lang = raw_source_lang if isinstance(raw_source_lang, str) else ""
     meta = raw_meta if isinstance(raw_meta, dict) else {}
     schema = meta.get("epub_schema")
-    if schema != 3:
+    if schema != 4:
         raise ValueError(
-            f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
+            f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 4"
         )
     if order not in {"target_first", "source_first"}:
         raise ValueError(f"invalid bilingual order: {order!r}")
@@ -828,9 +842,9 @@ def _assemble_source_epub(
     grouped: dict[str, list[Segment]] = {}
     for segment in deduped_segments:
         if segment.epub_state is None or not segment.resource_href:
-            raise ValueError("EPUB state contains a segment without schema-3 slot metadata")
+            raise ValueError("EPUB state contains a segment without schema-4 slot metadata")
         state = segment.epub_state
-        if state.slot_contract_sha256 != _slot_contract_digest(state.slots):
+        if state.slot_contract_sha256 != slot_contract_digest(state.slots):
             raise ValueError(f"EPUB slot contract digest mismatch: {segment.resource_href}")
         grouped.setdefault(segment.resource_href, []).append(segment)
     toc_entries = [entry for entry in meta.get("toc_entries", []) if isinstance(entry, dict)]
@@ -842,8 +856,22 @@ def _assemble_source_epub(
         with _MetadataZipFile(out_path, "w") as zout:
             zout.comment = zin.comment
             opf_path = str(meta.get("opf_path") or "")
+            mimetype_info = next(
+                (info for info in zin.infolist() if info.filename == "mimetype"),
+                None,
+            )
+            if mimetype_info is None:
+                raise ValueError("EPUB archive missing mimetype")
+            _write_source_member(
+                zout,
+                mimetype_info,
+                b"application/epub+zip",
+                compress_type=zipfile.ZIP_STORED,
+            )
             for info in zin.infolist():
                 name = info.filename
+                if name == "mimetype":
+                    continue
                 data = read_member(zin, info)
                 low = name.lower()
                 resource_info = resources_meta.get(name)
@@ -851,8 +879,6 @@ def _assemble_source_epub(
                     resource_info.get("resource_sha256", "")
                 ):
                     raise ValueError(f"EPUB resource digest mismatch: {name}")
-                if name == "mimetype":
-                    _write_source_member(zout, info, data, compress_type=zipfile.ZIP_STORED)
                 elif name == opf_path:
                     tree, mode = _parse_source_markup(data)
                     _rewrite_opf_language_lxml(tree, target_lang)
@@ -924,13 +950,13 @@ def _assemble_epub(
     bilingual: bool = False,
     order: str = "target_first",
 ) -> str:
-    """Render a schema-3 source EPUB from its original archive and slot state."""
+    """Render a schema-4 source EPUB from its original archive and slot state."""
     manifest = store.load_manifest()
     meta = manifest.get("meta") if isinstance(manifest.get("meta"), dict) else {}
     schema = meta.get("epub_schema")
-    if schema != 3:
+    if schema != 4:
         raise ValueError(
-            f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 3"
+            f"Unsupported EPUB state schema {schema!r}; start a fresh translation for schema 4"
         )
     return _assemble_source_epub(
         store,

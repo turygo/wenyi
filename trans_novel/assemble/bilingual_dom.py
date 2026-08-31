@@ -1,4 +1,4 @@
-"""Shared schema-3 bilingual DOM contracts for writer and verifier."""
+"""Shared schema-4 bilingual DOM contracts for writer and verifier."""
 
 from __future__ import annotations
 
@@ -146,6 +146,24 @@ def direct_run_source_copy(
         source.text = source_value
     source.set("class", BILINGUAL_SOURCE_CLASS)
     return source
+
+
+def direct_run_add_whitespace(
+    source: etree._Element,
+    *,
+    prefix: str = "",
+    suffix: str = "",
+) -> None:
+    if prefix:
+        source.text = prefix + (source.text or "")
+    if suffix:
+        if len(source) == 0:
+            source.text = (source.text or "") + suffix
+        else:
+            last = source
+            while len(last):
+                last = last[-1]
+            last.tail = (last.tail or "") + suffix
 
 
 def ruby_base_count(ruby: etree._Element) -> int:
@@ -544,9 +562,9 @@ __all__ = [
     "SAFE_SOURCE_INLINE_QNAMES",
     "append_bilingual_style",
     "dedupe_segment_mappings",
+    "direct_run_add_whitespace",
     "direct_run_boundary",
     "direct_run_has_active_ancestor",
-    "direct_run_source_copy",
     "is_bilingual_container_tag",
     "japanese_ruby_source_copy",
     "local_name",

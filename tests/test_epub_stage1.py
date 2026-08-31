@@ -8,12 +8,12 @@ import zipfile
 from lxml import etree
 
 from trans_novel.assemble.writer import _assemble_source_epub
-from trans_novel.ingest.epub_reader import read_epub
-from trans_novel.ingest.models import (
+from trans_novel.epub.slots import (
     assign_segment_translation,
     normalize_slot_transport,
     validate_slot_transport,
 )
+from trans_novel.ingest.epub_reader import read_epub
 from trans_novel.pipeline.runstore import RunStore
 from trans_novel.pipeline.state import RunIdentity, RunState
 from trans_novel.postprocess.punct import normalize_zh, normalize_zh_parts
@@ -52,7 +52,13 @@ class TestEpubStage1(unittest.TestCase):
         segment = document.chapters[0].segments[0]
         assign_segment_translation(
             segment,
-            [{"id": slot.id, "core": f"译{i}"} for i, slot in enumerate(segment.epub_state.slots)],
+            [
+                {
+                    "id": slot.id,
+                    "value": f"译{i}" if slot.source_value.strip() else "",
+                }
+                for i, slot in enumerate(segment.epub_state.slots)
+            ],
         )
         output = path + ".out.epub"
         self.addCleanup(os.unlink, output)
@@ -100,7 +106,13 @@ class TestEpubStage1(unittest.TestCase):
         before_structure = snapshot(original_root)
         assign_segment_translation(
             segment,
-            [{"id": slot.id, "core": f"译{i}"} for i, slot in enumerate(segment.epub_state.slots)],
+            [
+                {
+                    "id": slot.id,
+                    "value": f"译{i}" if slot.source_value.strip() else "",
+                }
+                for i, slot in enumerate(segment.epub_state.slots)
+            ],
         )
         output = path + ".topology.epub"
         self.addCleanup(os.unlink, output)
@@ -141,10 +153,29 @@ class TestEpubStage1(unittest.TestCase):
             self.assertEqual(before_value, slot.source_value)
             self.assertEqual(
                 after_value,
-                slot.leading_whitespace + slot.target_core + slot.trailing_whitespace,
+                slot.target_value,
             )
 
-    def test_schema3_runstore_save_load_preserves_slot_state(self):
+    def test_whitespace_tail_inside_inline_pagebreak_run_is_persisted(self):
+        path = self._book(
+            b"<html xmlns='http://www.w3.org/1999/xhtml'><body>"
+            b"<p>One<em>two</em> <span>Next</span><br/>After</p></body></html>"
+        )
+        document = read_epub(path, "en", "zh")
+        first, second = document.chapters[0].segments
+        self.assertEqual(first.source, "Onetwo Next")
+        self.assertEqual(second.source, "After")
+        self.assertEqual(
+            [(slot.element_path, slot.field, slot.source_value) for slot in first.epub_state.slots],
+            [
+                ((), "text", "One"),
+                ((0,), "text", "two"),
+                ((0,), "tail", " "),
+                ((1,), "text", "Next"),
+            ],
+        )
+
+    def test_schema4_runstore_save_load_preserves_slot_state(self):
         path = self._book(
             b"<html xmlns='http://www.w3.org/1999/xhtml'><body><p>Alpha <em>Beta</em></p></body></html>"
         )
@@ -162,7 +193,7 @@ class TestEpubStage1(unittest.TestCase):
             store.save_state(RunState.model_validate(manifest))
             reopened = RunStore(store.run_dir)
             loaded = reopened.load_chapter(0).segments[0]
-            self.assertEqual(reopened.load_manifest()["meta"]["epub_schema"], 3)
+            self.assertEqual(reopened.load_manifest()["meta"]["epub_schema"], 4)
             self.assertEqual(
                 [slot.id for slot in loaded.epub_state.slots],
                 [slot.id for slot in document.chapters[0].segments[0].epub_state.slots],
@@ -175,7 +206,7 @@ class TestEpubStage1(unittest.TestCase):
         )
         segment = read_epub(path, "en", "zh").chapters[0].segments[0]
         transport = [
-            {"id": slot.id, "core": value}
+            {"id": slot.id, "value": value}
             for slot, value in zip(segment.epub_state.slots, ["“甲,", "乙..."], strict=True)
         ]
         normalized = normalize_slot_transport(segment, transport)
@@ -183,7 +214,7 @@ class TestEpubStage1(unittest.TestCase):
             [item["id"] for item in normalized],
             [slot.id for slot in segment.epub_state.slots],
         )
-        flattened = "".join(item["core"] for item in normalized)
+        flattened = "".join(item["value"] for item in normalized)
         self.assertEqual(flattened, normalize_zh("“甲,乙..."))
         self.assertEqual(normalize_zh_parts(["“甲,", "乙..."]), ["“甲，", "乙……"])
 
@@ -195,7 +226,7 @@ class TestEpubStage1(unittest.TestCase):
                 )
                 segment = read_epub(path, "en", "zh").chapters[0].segments[0]
                 transport = [
-                    {"id": slot.id, "core": value}
+                    {"id": slot.id, "value": value}
                     for slot, value in zip(segment.epub_state.slots, values, strict=True)
                 ]
                 normalized = normalize_slot_transport(segment, transport)
@@ -204,8 +235,8 @@ class TestEpubStage1(unittest.TestCase):
                     [item["id"] for item in normalized],
                     [slot.id for slot in segment.epub_state.slots],
                 )
-                self.assertEqual([item["core"] for item in normalized], expected)
-                self.assertEqual("".join(item["core"] for item in normalized), "".join(expected))
+                self.assertEqual([item["value"] for item in normalized], expected)
+                self.assertEqual("".join(item["value"] for item in normalized), "".join(expected))
                 self.assertEqual(segment.target, "".join(expected))
 
     def test_invalid_slot_assignment_does_not_collapse_or_mutate(self):
@@ -213,11 +244,11 @@ class TestEpubStage1(unittest.TestCase):
             b"<html xmlns='http://www.w3.org/1999/xhtml'><body><p>Alpha<em>Beta</em></p></body></html>"
         )
         segment = read_epub(path, "en", "zh").chapters[0].segments[0]
-        invalid = [{"id": slot.id, "core": "."} for slot in reversed(segment.epub_state.slots)]
+        invalid = [{"id": slot.id, "value": "."} for slot in reversed(segment.epub_state.slots)]
         with self.assertRaisesRegex(ValueError, "IDs/order"):
             assign_segment_translation(segment, invalid)
         self.assertIsNone(segment.target)
-        self.assertTrue(all(slot.target_core is None for slot in segment.epub_state.slots))
+        self.assertTrue(all(slot.target_value is None for slot in segment.epub_state.slots))
 
     def test_quote_normalization_shares_state_across_inline_slots(self):
         path = self._book(
@@ -225,13 +256,13 @@ class TestEpubStage1(unittest.TestCase):
         )
         segment = read_epub(path, "en", "zh").chapters[0].segments[0]
         transport = [
-            {"id": slot.id, "core": value}
+            {"id": slot.id, "value": value}
             for slot, value in zip(segment.epub_state.slots, ['"甲', '乙"'], strict=True)
         ]
         normalized = normalize_slot_transport(segment, transport)
         assign_segment_translation(segment, normalized)
-        self.assertEqual([slot.target_core for slot in segment.epub_state.slots], ["“甲", "乙”"])
-        self.assertEqual(segment.target, "“甲 乙”")
+        self.assertEqual([slot.target_value for slot in segment.epub_state.slots], ["“甲", "乙”"])
+        self.assertEqual(segment.target, "“甲乙”")
 
     def test_unhinted_short_footnote_marker_is_immutable(self):
         path = self._book(
@@ -242,7 +273,7 @@ class TestEpubStage1(unittest.TestCase):
         segment = read_epub(path, "en", "zh").chapters[0].segments[0]
         self.assertTrue(
             all(
-                marker not in slot.source_core
+                marker not in slot.source_value
                 for slot in segment.epub_state.slots
                 for marker in ("1", "2")
             )
@@ -255,11 +286,16 @@ class TestEpubStage1(unittest.TestCase):
         )
         document = read_epub(path, "en", "zh")
         segments = document.chapters[0].segments
-        self.assertEqual([segment.source for segment in segments], ["Line one", "Line two"])
         for index, segment in enumerate(segments):
             assign_segment_translation(
                 segment,
-                [{"id": slot.id, "core": f"译{index}"} for slot in segment.epub_state.slots],
+                [
+                    {
+                        "id": slot.id,
+                        "value": f"译{index}" if slot.source_value.strip() else "",
+                    }
+                    for slot in segment.epub_state.slots
+                ],
             )
         output = path + ".br.epub"
         self.addCleanup(os.unlink, output)
@@ -297,10 +333,14 @@ class TestEpubStage1(unittest.TestCase):
         document = read_epub(path, "en", "zh")
         segment = document.chapters[0].segments[0]
         assign_segment_translation(
-            segment, [{"id": slot.id, "core": "译"} for slot in segment.epub_state.slots]
+            segment,
+            [
+                {"id": slot.id, "value": "译" if slot.source_value.strip() else ""}
+                for slot in segment.epub_state.slots
+            ],
         )
-        self.assertEqual(segment.target, "译 译")
-        self.assertEqual([slot.target_core for slot in segment.epub_state.slots], ["译", "译"])
+        self.assertEqual(segment.target, "译译")
+        self.assertEqual([slot.target_value for slot in segment.epub_state.slots], ["译", "译"])
 
     def test_immutable_nodes_and_comment_pi_tails_are_preserved(self):
         source = (
@@ -313,10 +353,13 @@ class TestEpubStage1(unittest.TestCase):
         path = self._book(source)
         document = read_epub(path, "en", "zh")
         segment = document.chapters[0].segments[0]
-        self.assertTrue(all("1" not in slot.source_core for slot in segment.epub_state.slots))
+        self.assertTrue(all("1" not in slot.source_value for slot in segment.epub_state.slots))
         assign_segment_translation(
             segment,
-            [{"id": slot.id, "core": "译"} for slot in segment.epub_state.slots],
+            [
+                {"id": slot.id, "value": "译" if slot.source_value.strip() else ""}
+                for slot in segment.epub_state.slots
+            ],
         )
         output = path + ".out.epub"
         self.addCleanup(os.unlink, output)
@@ -336,10 +379,10 @@ class TestEpubStage1(unittest.TestCase):
         document = read_epub(path, "en", "zh")
         segment = document.chapters[0].segments[0]
         with self.assertRaisesRegex(ValueError, "IDs/order"):
-            validate_slot_transport(segment, [{"id": "unknown", "core": "译"}])
+            validate_slot_transport(segment, [{"id": "unknown", "value": "译"}])
         assign_segment_translation(
             segment,
-            [{"id": slot.id, "core": "译"} for slot in segment.epub_state.slots],
+            [{"id": slot.id, "value": "译"} for slot in segment.epub_state.slots],
         )
         segment.epub_state.slots.pop()
         with self.assertRaisesRegex(ValueError, "contract digest"):
