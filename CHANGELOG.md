@@ -18,6 +18,8 @@
 
 ### Fixed
 
+- Compound Chinese unit `万亿` now uses longest-token matching and normalizes to 10^12 without hiding genuine missing-number findings.
+
 - EPUB verification marks each matched source block before resolving later duplicates.
 - Reject review autofixes that introduce deterministic lint regressions or remove preserved dialogue quotes.
 - Preserve non-linguistic segments without sending them to the LLM, including EPUB text-slot records.

@@ -1,8 +1,8 @@
 """确定性译文 lint：机器可判定的硬伤（引号丢失/数字失配/锁定专名漂移/未译残留/
-长度异常），零 LLM、零 IO，纯函数。配合 workflow 翻译节点的定向重译闭环使用。
+长度异常），零 LLM、零 IO，纯函数。Repair 节点消费完整 issue 清单并负责模型修复。
 
 原则：宁漏勿误报——每个校验器都保守，只抓确凿证据；不确定的一律放过，交给
-审校 agent（LLM）去"猜"语义类问题。阈值/规则均以两本已交付书的真实数据回测校准过。
+Repair agent 去判断语义类问题。阈值/规则均以两本已交付书的真实数据回测校准过。
 """
 
 from __future__ import annotations
@@ -21,18 +21,6 @@ ISSUE_UNTRANSLATED = "untranslated"
 ISSUE_EMPTY = "empty"
 ISSUE_TOO_SHORT = "too_short"
 ISSUE_TOO_LONG = "too_long"
-
-# 定向重译闭环只对这些类型动手；too_short/too_long 波动太大（尤其 en→zh 合法压缩比
-# 实测跨度极大），只记录不重译，留给人工/审校 agent 判断（workflow 翻译节点消费本常量）。
-ACTIONABLE_TYPES = frozenset(
-    {
-        ISSUE_QUOTE_LOSS,
-        ISSUE_NUMBER_MISMATCH,
-        ISSUE_TERM_MISS,
-        ISSUE_UNTRANSLATED,
-        ISSUE_EMPTY,
-    }
-)
 
 
 @dataclass
@@ -113,6 +101,7 @@ _EN_MULT = {
     "thousand": 1000,
     "million": 1_000_000,
     "billion": 1_000_000_000,
+    "trillion": 1_000_000_000_000,
     "grand": 1000,
     "decade": 10,
     "decades": 10,
@@ -138,14 +127,13 @@ _CN_UNIT = {"十": 10, "百": 100, "千": 1000, "万": 10_000, "亿": 100_000_00
 _CN_NUM_RE = re.compile(r"[零一二两三四五六七八九十百千万亿]+")
 _CN_WILDCARD_YEAR_RE = re.compile(r"[零一二三四五六七八九]{2,}几")
 _CN_TENTH_RE = re.compile(r"[一二三四五六七八九]成")
-_TGT_SCALE = {"千": 1000, "万": 10_000, "亿": 100_000_000}
-_TGT_SCALE_RE = re.compile(r"[ \t\u3000]*([千万亿])")
+_TGT_SCALE = {"千": 1000, "万": 10_000, "亿": 100_000_000, "万亿": 1_000_000_000_000}
+_TGT_SCALE_RE = re.compile(r"[ \t\u3000]*(万亿|[千万亿])")
 _RANGE_CONNECTOR_RE = re.compile(r"\s*(to|-|~|–|—)\s*\$?\s*", re.I)
 
 
 def _is_glued_identifier(text: str, start: int, end: int) -> bool:
-    """数字紧贴字母（无空格/标点分隔）多为版式伪影（页码混入正文，如 "164Manufacturing"）
-    或字母-数字标识符（COVID-19、F-16、AD-A955）——均非真实数量，源侧不提取。"""
+    """数字紧贴字母（无空格/标点分隔）多为版式伪影或字母数字标识符。"""
     after = text[end : end + 1]
     if after.isalpha():
         return True
@@ -254,9 +242,20 @@ def _extract_source_numbers(text: str, src_lang: str) -> set[float]:
 
 
 def _cn_to_number(s: str) -> float | None:
-    """位值汉字数字解析：一..十、百、千、万 组合（如 三十→30、二十五→25）。"""
+    """位值汉字数字解析，优先识别复合单位 ``万亿``。"""
     if not s:
         return None
+    if "万亿" in s:
+        prefix, suffix = s.split("万亿", 1)
+        prefix_value = _cn_to_number(prefix) if prefix else 1.0
+        if prefix_value is None:
+            return None
+        if suffix:
+            tail = _cn_to_number(suffix)
+            if tail is None:
+                return None
+            prefix_value += tail / 1_000_000_000_000
+        return prefix_value * 1_000_000_000_000
     total = 0
     section = 0
     num = 0
@@ -474,7 +473,6 @@ def lint_targets(
 
     全部保守：宁漏勿误报。locked_terms 传入 locked=1 的 GlossaryTerm（人物术语）；
     src_lang 用于决定是否启用英文数词/未译判定（"zh" 源不启用未译判定）。
-    too_short/too_long 类型不在 ACTIONABLE_TYPES 内，翻译节点只记录不重译。
     """
     issues: list[LintIssue] = []
     for lf in checks.length_flags(sources, targets):

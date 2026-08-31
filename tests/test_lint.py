@@ -405,6 +405,16 @@ class TestNumberMismatchFixPass(unittest.TestCase):
         )
         self.assertNotIn("number_mismatch", _types(issues, 0))
 
+    def test_compound_wan_yi_matches_trillion(self):
+        issues = lint_targets(
+            ["The fund reached 420 trillion dollars."], ["该基金达到420万亿。"], src_lang="en"
+        )
+        self.assertNotIn("number_mismatch", _types(issues, 0))
+
+    def test_missing_24_still_flags(self):
+        issues = lint_targets(["The fund reached 24 dollars."], ["该基金达到金额。"], src_lang="en")
+        self.assertIn("number_mismatch", _types(issues, 0))
+
 
 class TestUntranslatedFixPass(unittest.TestCase):
     def test_url_token_exempted(self):
