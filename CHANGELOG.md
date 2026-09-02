@@ -3,6 +3,8 @@
 本项目的所有重要变更都记录在此文件中，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-09-03
 ### Changed
 
 - Reorganized pipeline, EPUB assembly, and benchmark packages and mirrored tests by capability; enforced their explicit dependency directions in the architecture gate.
@@ -22,7 +24,6 @@
 - benchmark 候选 schema 升级为四角色完整模型 ID，并横向比较 Hy-MT2 30B、GLM-5.3-Flash 与 Muse Spark 1.2 Contributor 的 minimal/polish 两臂。
 - Benchmark validation now accepts independent translator, analyst, editor, and fast model IDs per candidate.
 - Configuration examples now expose independent translator, analyst, editor, and fast model chains.
-
 
 ### Fixed
 
