@@ -31,11 +31,18 @@ class WorkflowProtocolError(RuntimeError, LLMError):
 
 
 class Agent:
-    def __init__(self, client: LLMClient, config: Config):
+    def __init__(
+        self,
+        client: LLMClient,
+        config: Config,
+        *,
+        src: str | None = None,
+        tgt: str | None = None,
+    ):
         self.client = client
         self.config = config
-        self.src = config.source_lang
-        self.tgt = config.target_lang
+        self.src = config.source_lang if src is None else src
+        self.tgt = config.target_lang if tgt is None else tgt
 
     def _ask_json(
         self,

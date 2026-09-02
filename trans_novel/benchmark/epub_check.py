@@ -1,45 +1,40 @@
-"""Compatibility facade for the production EPUB verifier.
-
-Benchmark callers retain the historical ``validate_epub`` and
-``validate_epub_triplet`` APIs.  Validation rules live in
-:mod:`trans_novel.assemble.epub_verifier` so benchmark and production exports
-cannot diverge.
-"""
+"""Facade for canonical production EPUB verification."""
 
 from __future__ import annotations
 
-from trans_novel.assemble import epub_verifier
+from trans_novel.assemble.epub.verification import (
+    MAX_ARCHIVE_BYTES,
+    MAX_MEMBER_BYTES,
+)
+from trans_novel.assemble.epub.verification import (
+    validate_epub_triplet_with_limits as _validate_epub_triplet,
+)
+from trans_novel.assemble.epub.verification import (
+    validate_epub_with_limits as _validate_epub,
+)
 
-_MAX_MEMBER_BYTES = epub_verifier._MAX_MEMBER_BYTES
-_MAX_ARCHIVE_BYTES = epub_verifier._MAX_ARCHIVE_BYTES
+_MAX_MEMBER_BYTES = MAX_MEMBER_BYTES
+_MAX_ARCHIVE_BYTES = MAX_ARCHIVE_BYTES
 
 
 def validate_epub(path, *, source_path=None, bilingual=None):
-    previous_member_limit = epub_verifier._MAX_MEMBER_BYTES
-    previous_archive_limit = epub_verifier._MAX_ARCHIVE_BYTES
-    epub_verifier._MAX_MEMBER_BYTES = _MAX_MEMBER_BYTES
-    epub_verifier._MAX_ARCHIVE_BYTES = _MAX_ARCHIVE_BYTES
-    try:
-        return epub_verifier.validate_epub(
-            path,
-            source_path=source_path,
-            bilingual=bilingual,
-        )
-    finally:
-        epub_verifier._MAX_MEMBER_BYTES = previous_member_limit
-        epub_verifier._MAX_ARCHIVE_BYTES = previous_archive_limit
+    return _validate_epub(
+        path,
+        source_path=source_path,
+        bilingual=bilingual,
+        max_member_bytes=_MAX_MEMBER_BYTES,
+        max_archive_bytes=_MAX_ARCHIVE_BYTES,
+    )
 
 
 def validate_epub_triplet(source_path, mono_path, bilingual_path):
-    previous_member_limit = epub_verifier._MAX_MEMBER_BYTES
-    previous_archive_limit = epub_verifier._MAX_ARCHIVE_BYTES
-    epub_verifier._MAX_MEMBER_BYTES = _MAX_MEMBER_BYTES
-    epub_verifier._MAX_ARCHIVE_BYTES = _MAX_ARCHIVE_BYTES
-    try:
-        return epub_verifier.validate_epub_triplet(source_path, mono_path, bilingual_path)
-    finally:
-        epub_verifier._MAX_MEMBER_BYTES = previous_member_limit
-        epub_verifier._MAX_ARCHIVE_BYTES = previous_archive_limit
+    return _validate_epub_triplet(
+        source_path,
+        mono_path,
+        bilingual_path,
+        max_member_bytes=_MAX_MEMBER_BYTES,
+        max_archive_bytes=_MAX_ARCHIVE_BYTES,
+    )
 
 
 __all__ = ["validate_epub", "validate_epub_triplet"]

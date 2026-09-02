@@ -25,9 +25,9 @@ from trans_novel.llm.generation import GenerationOptions
 from trans_novel.llm.retrying import (
     MODEL_NOT_FOUND,
     EmptyResponseError,
-    _status_code,
     classify_fallback,
     classify_retry,
+    status_code,
 )
 from trans_novel.llm.telemetry import CallAttemptTelemetry, CallTelemetrySink
 from trans_novel.llm.usage import UsageTracker, has_response_usage, normalize_response_usage
@@ -176,7 +176,7 @@ def _safe_text(value: object) -> str | None:
     return value.strip() or None if isinstance(value, str) else None
 
 
-def _warn_telemetry_failure() -> None:
+def warn_telemetry_failure() -> None:
     with suppress(Exception):
         warnings.warn("LLM telemetry write failed", RuntimeWarning, stacklevel=2)
 
@@ -353,7 +353,7 @@ class OpenAICompatibleTransport:
                     )
                 )
             except Exception:
-                _warn_telemetry_failure()
+                warn_telemetry_failure()
 
         client = self._ensure_client()
 
@@ -401,7 +401,7 @@ class OpenAICompatibleTransport:
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                     status="error",
                     retry_class=classify_retry(error),
-                    http_status=_status_code(error),
+                    http_status=status_code(error),
                 )
                 raise
             try:

@@ -6,10 +6,9 @@
 
 from __future__ import annotations
 
-from trans_novel.agents import prompts
+from trans_novel.agents import langprofile, prompts
 from trans_novel.agents.base import Agent, WorkflowProtocolError
 from trans_novel.glossary.store import GlossaryTerm
-from trans_novel.pipeline import checks
 
 
 class Polisher(Agent):
@@ -26,7 +25,7 @@ class Polisher(Agent):
             raise ValueError("polish source/target count mismatch")
         polished = []
         for source, target in zip(sources, targets, strict=True):
-            if checks.is_machine_literal(source):
+            if langprofile.is_machine_literal(source):
                 polished.append(target)
                 continue
             system = prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=1)

@@ -60,3 +60,21 @@ def term_guidance(src: str) -> str:
     if src == "en":
         return "reading 可留空（英文无需读音）；人物依姓名常识与上下文判断性别。"
     return "reading 可留空；人物依上下文判断性别。"
+
+
+def is_machine_literal(source: str) -> bool:
+    """Whether a single token is machine-readable content that must pass through unchanged."""
+    value = source.strip()
+    if not value or any(char.isspace() for char in value):
+        return False
+    if value.upper().startswith("ISBN") or any(char in value for char in "@/#"):
+        return True
+    if any(char in value for char in "{}[]="):
+        return True
+    if ":" in value and ("_" in value or any(char.isdigit() for char in value)):
+        return True
+    if "." not in value or value.endswith("."):
+        return False
+    return all(
+        part and all(char.isalnum() or char in "-_" for char in part) for part in value.split(".")
+    )

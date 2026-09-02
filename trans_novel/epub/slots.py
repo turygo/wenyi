@@ -5,12 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-if TYPE_CHECKING:
-    from trans_novel.ingest.models import Segment
 
 _WS_RE = re.compile(r"[ \t\r\n\f\v]+")
 
@@ -99,8 +96,7 @@ def normalized_target_text(slots: list[EpubTextSlot]) -> str:
     return _WS_RE.sub(" ", target_slot_text(slots)).strip()
 
 
-def source_slot_transport(segment: Segment) -> list[dict[str, str]]:
-    state = segment.epub_state
+def source_slot_transport(state: EpubSegmentState | None) -> list[dict[str, str]]:
     if state is None:
         raise ValueError("slot transport requires an EPUB segment")
     return [
@@ -109,16 +105,14 @@ def source_slot_transport(segment: Segment) -> list[dict[str, str]]:
     ]
 
 
-def source_passthrough_transport(segment: Segment) -> list[dict[str, str]]:
+def source_passthrough_transport(state: EpubSegmentState | None) -> list[dict[str, str]]:
     """Return an atomic transport preserving each source XML value exactly."""
-    state = segment.epub_state
     if state is None:
         raise ValueError("slot transport requires an EPUB segment")
     return [{"id": slot.id, "value": slot.source_value} for slot in state.slots]
 
 
-def target_slot_transport(segment: Segment) -> list[dict[str, str]]:
-    state = segment.epub_state
+def target_slot_transport(state: EpubSegmentState | None) -> list[dict[str, str]]:
     if state is None:
         raise ValueError("slot transport requires an EPUB segment")
     if any(slot.target_value is None for slot in state.slots):
@@ -126,9 +120,10 @@ def target_slot_transport(segment: Segment) -> list[dict[str, str]]:
     return [{"id": slot.id, "value": slot.target_value} for slot in state.slots]
 
 
-def distribute_slot_translation(segment: Segment, translation: str) -> list[dict[str, str]]:
+def distribute_slot_translation(
+    state: EpubSegmentState | None, translation: str
+) -> list[dict[str, str]]:
     """Distribute complete translation losslessly by source-content weight."""
-    state = segment.epub_state
     if state is None:
         raise ValueError("slot distribution requires an EPUB segment")
     if not isinstance(translation, str):
@@ -158,8 +153,9 @@ def distribute_slot_translation(segment: Segment, translation: str) -> list[dict
     ]
 
 
-def validate_slot_transport(segment: Segment, translation: object) -> list[tuple[str, str]]:
-    state = segment.epub_state
+def validate_slot_transport(
+    state: EpubSegmentState | None, translation: object
+) -> list[tuple[str, str]]:
     if state is None:
         raise ValueError("slot transport requires an EPUB segment")
     if not isinstance(translation, list) or len(translation) != len(state.slots):
@@ -186,69 +182,41 @@ def validate_slot_transport(segment: Segment, translation: object) -> list[tuple
     return parsed
 
 
-def translation_text(segment: Segment, translation: object) -> str:
-    if segment.epub_state is None:
+def translation_text(state: EpubSegmentState | None, translation: object) -> str:
+    if state is None:
         if not isinstance(translation, str):
             raise ValueError("non-EPUB segment translation must be a string")
         return translation
-    parsed = validate_slot_transport(segment, translation)
+    parsed = validate_slot_transport(state, translation)
     slots = [
         slot.model_copy(update={"target_value": value})
-        for slot, (_slot_id, value) in zip(segment.epub_state.slots, parsed, strict=True)
+        for slot, (_slot_id, value) in zip(state.slots, parsed, strict=True)
     ]
     return _WS_RE.sub(" ", target_slot_text(slots)).strip()
 
 
-def assign_segment_translation(
-    segment: Segment, translation: str | list[dict[str, str]] | list[tuple[str, str]]
-) -> None:
-    """Validate then atomically assign every EPUB slot and its public target."""
-    state = segment.epub_state
-    if state is None:
-        if not isinstance(translation, str):
-            raise ValueError("non-EPUB segment translation must be a string")
-        segment.target = translation
-        return
-    parsed = validate_slot_transport(segment, translation)
-    new_slots = [
-        slot.model_copy(update={"target_value": value})
-        for slot, (_slot_id, value) in zip(state.slots, parsed, strict=True)
-    ]
-    state.slots = new_slots
-    segment.target = _WS_RE.sub(" ", target_slot_text(new_slots)).strip()
-
-
-def normalize_slot_transport(segment: Segment, translation: object) -> list[dict[str, str]]:
+def normalize_slot_transport(
+    state: EpubSegmentState | None, translation: object
+) -> list[dict[str, str]]:
     """Normalize the complete target before deterministic slot distribution."""
-    parsed = validate_slot_transport(segment, translation)
-    if [value for _slot_id, value in parsed] == [
-        slot.source_value for slot in segment.epub_state.slots
-    ]:
+    if state is None:
+        raise ValueError("slot transport requires an EPUB segment")
+    parsed = validate_slot_transport(state, translation)
+    if [value for _slot_id, value in parsed] == [slot.source_value for slot in state.slots]:
         return [{"id": slot_id, "value": value} for slot_id, value in parsed]
     from trans_novel.postprocess.punct import normalize_zh
 
     complete = normalize_zh("".join(value for _slot_id, value in parsed))
-    return distribute_slot_translation(segment, complete)
-
-
-def reset_segment_translation(segment: Segment) -> None:
-    state = segment.epub_state
-    if state is None:
-        segment.target = None
-        return
-    state.slots = [slot.model_copy(update={"target_value": None}) for slot in state.slots]
-    segment.target = None
+    return distribute_slot_translation(state, complete)
 
 
 __all__ = [
     "EpubSegmentState",
     "EpubTextSlot",
-    "assign_segment_translation",
     "distribute_slot_translation",
     "normalize_slot_transport",
     "normalized_source_text",
     "normalized_target_text",
-    "reset_segment_translation",
     "slot_contract_digest",
     "source_passthrough_transport",
     "source_slot_text",

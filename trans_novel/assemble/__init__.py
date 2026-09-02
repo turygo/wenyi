@@ -1,1 +1,5 @@
-"""回填组装：把译文写回 EPUB / 纯文本，并生成 QA 报告。"""
+"""Assembly public API."""
+
+from trans_novel.assemble.writer import assemble, bilingual_out_path
+
+__all__ = ["assemble", "bilingual_out_path"]

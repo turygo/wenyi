@@ -9,14 +9,15 @@ from trans_novel.benchmark.pricing import (
     load_price_snapshot,
     quote_usage,
 )
-from trans_novel.benchmark.runner import (
+from trans_novel.benchmark.run import (
     BenchmarkError,
     CanaryRunner,
+    CollectingCallTelemetrySink,
     FullRunner,
+    JsonlCallTelemetrySink,
     load_candidate_spec,
     validate_candidate_capabilities,
 )
-from trans_novel.benchmark.telemetry import CollectingCallTelemetrySink, JsonlCallTelemetrySink
 
 __all__ = [
     "BenchmarkError",

@@ -13,12 +13,16 @@ from typing import Any, Literal, Protocol
 from trans_novel.agents.base import WorkflowProtocolError
 from trans_novel.llm.errors import AllModelsFailedError, JSONParseError
 from trans_novel.llm.retrying import classify_retry
-from trans_novel.pipeline.readiness import ReadinessError
 from trans_novel.pipeline.state import IdentityMismatchError
 
 Scope = Literal["book", "chapter"]
 FailurePolicy = Literal["required", "best_effort"]
 NodeAction = Literal["run", "skip"]
+
+
+class ReadinessError(RuntimeError):
+    """正式回填被拒：运行身份失配或状态不完整。"""
+
 
 # 失败 kind 与状态契约一一对应（见 state.NodeFailure）。
 FAILURE_PROTOCOL = "protocol"

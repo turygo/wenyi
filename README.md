@@ -238,10 +238,11 @@ trans_novel/
   llm/          LLM 抽象接口、provider factory、内置 providers、FakeClient
   glossary/     SQLite 术语库、源文候选挖掘、译后抽取（可选）、冲突处理
   agents/       分析、翻译、润色、定名、提示词
-  pipeline/     workflow（节点/planner/runner）、断点状态、滚动上下文、确定性 lint/QA、校验
+  pipeline/     application、composition、execution、nodes、planning、quality、state 能力模块
   postprocess/  标点规范化
-  assemble/     EPUB/TXT 回填导出、QA 报告
-tests/          离线测试
+  assemble/     EPUB/TXT 回填导出、QA 报告；epub/publication、verification、rendering 分层
+  benchmark/    corpus、run、integration、review、report 离线评估能力模块
+tests/          按能力模块组织的离线测试；共享测试夹具位于 tests/fixtures/
 ```
 
 ```bash

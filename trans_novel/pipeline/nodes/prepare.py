@@ -11,22 +11,22 @@ from __future__ import annotations
 
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
-from trans_novel.ingest.models import Document
+from trans_novel.ingest import Document
 from trans_novel.llm.base import LLMClient
-from trans_novel.pipeline.context import RollingContext
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
-from trans_novel.pipeline.fingerprints import (
+from trans_novel.pipeline.planning import (
     analyst_model_profile,
     analyze_input_fingerprint,
     frozen_input_fingerprint,
     prepare_input_fingerprint,
 )
-from trans_novel.pipeline.nodes.common import sample_text
+from trans_novel.pipeline.planning.prescan import sample_text
 from trans_novel.pipeline.state import (
     NODE_ANALYZE,
     NODE_PREPARE,
     RUN_INPUT_SCHEMA_VERSION,
     SCOPE_BOOK,
+    RollingContext,
     RunIdentity,
     normalize_lang_code,
     source_bytes_hash,

@@ -1,25 +1,13 @@
 """源文侧术语候选挖掘（翻译前，零 LLM 优先）。
 
-现架构在翻译后从 (源文,译文) 对里抽术语回灌术语库，把首译直译固化成全书铁律，
-还会把普通名词/一次性修辞误判为术语。改为：先在源文侧挖出候选表面形式（不给
-译名），交给 agents/namer.CastNamer 一次性定名，翻译期术语表只读（见 pipeline/nodes/prescan.py
-._build_understanding）。
-
-英文源双通道：确定性大写正则统计（mine_candidates_en，零成本、可复现，只抓大写词/
-缩写）∪ 逐章 LLM 挖掘（mine_candidates_llm，补大写通道的结构性盲区——领域
-术语与主题词多以小写反复出现，如 lithography/foundry/yield，大写正则天生抓不到；
-此类词译法不统一是实伤：Chip War 里 yield 曾译裂成"良率/产率"）。en 每章因此多一次
-LLM 调用，与逐章梗概同量级，成本可接受。其它语言没有可靠的大小写信号，只走
-逐章 LLM 挖掘（mine_candidates_llm）。
+英文源使用确定性大写正则统计（mine_candidates_en），LLM 通道由
+agents.term_miner.TermMiner 负责。
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any
 
 # 大写词序列中允许夹在中间的小写连接词（如 "University of Tokyo"）。
 _CONNECTORS = {
@@ -368,77 +356,7 @@ def mine_candidates_en(chapters: list[tuple[int, str]]) -> list[Candidate]:
     return out
 
 
-def mine_candidates_llm(
-    chapters: list[tuple[int, str]],
-    agent: Any,
-    *,
-    concurrency: int = 1,
-    on_progress: Callable[[int, int], None] | None = None,
-) -> list[Candidate]:
-    """非英文源退路：逐章 LLM 挖掘（只看源文，不给译名），本函数负责跨章合并计数。
-
-    各章调用相互独立 → 按 concurrency 并行（LLM 调用进线程池；合并计数在主线程，
-    且按输入章序合并，输出与串行完全一致）。on_progress(done, total) 按完成数回调
-    （主线程触发，供进度条使用）。
-    """
-    from trans_novel.agents import prompts
-
-    todo = [(ci, text) for ci, text in chapters if text.strip()]
-
-    def _mine_one(ci: int, text: str) -> list[str]:
-        system = prompts.render("term_miner_system", src=agent.src, tgt=agent.tgt)
-        user = prompts.render(
-            "term_miner_user", src=agent.src, tgt=agent.tgt, chapter=ci, source=text[:8000]
-        )
-        # 不设 default：某章挖掘失败若被兜成空列表，会让 term_mining_done 静默永久
-        # 落盘——异常整体冒泡，交由调用方（workflow 预扫节点）捕获并放弃本次落标记、下次续跑重试。
-        raw = agent._ask_json(
-            system, user, key="candidates", agent="preparer", operation="prescan.term_mine"
-        )
-        return [s.strip() for s in raw or [] if isinstance(s, str) and s.strip()]
-
-    results: dict[int, list[str]] = {}
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
-        futs = {ex.submit(_mine_one, ci, text): ci for ci, text in todo}
-        for i, fut in enumerate(as_completed(futs), 1):
-            results[futs[fut]] = fut.result()  # 异常冒泡；池随 with 收尾
-            if on_progress:
-                on_progress(i, len(todo))
-
-    # 按输入章序合并（与并发完成顺序无关，保证输出确定性）
-    candidates: dict[str, Candidate] = {}
-    for ci, _ in todo:
-        for surface in results.get(ci, []):
-            c = candidates.setdefault(surface, Candidate(surface=surface))
-            c.count += 1
-            if ci not in c.chapters:
-                c.chapters.append(ci)
-
-    out = list(candidates.values())
-    out.sort(key=lambda c: c.count, reverse=True)
-    return out
-
-
-def mine_candidates(
-    src_lang: str,
-    chapters: list[tuple[int, str]],
-    agent: Any,
-    *,
-    concurrency: int = 1,
-    on_progress: Callable[[int, int], None] | None = None,
-) -> list[Candidate]:
-    """入口：en 走"确定性大写通道 ∪ LLM 通道"双通道合并；其它语言只走 LLM 通道。"""
-    if not (src_lang or "").strip().lower().startswith("en"):
-        return mine_candidates_llm(
-            chapters, agent, concurrency=concurrency, on_progress=on_progress
-        )
-
-    det = mine_candidates_en(chapters)
-    llm = mine_candidates_llm(chapters, agent, concurrency=concurrency, on_progress=on_progress)
-    return _merge_candidates(det, llm)
-
-
-def _merge_candidates(*channels: list[Candidate]) -> list[Candidate]:
+def merge_candidates(*channels: list[Candidate]) -> list[Candidate]:
     """按 surface 大小写不敏感合并多通道候选：同 surface 两通道都命中时 count 取大者，
     chapters/contexts 取并集（contexts 仍受 ≤2 条上限）；先出现的通道决定保留的原样
     surface（en 双通道调用时传参顺序是"大写通道在前"，故大写通道产物保留原样 surface）。

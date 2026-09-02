@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "limits": {
+    "file": 800,
+    "function": 120,
+    "class": 400
+  },
+  "violations": {
+    "files": [
+      {
+        "path": "tests/llm/test_usage.py",
+        "lines": 871
+      }
+    ],
+    "symbols": [
+      {
+        "path": "trans_novel/llm/providers/transport.py",
+        "symbol": "OpenAICompatibleTransport.complete",
+        "kind": "function",
+        "lines": 212
+      },
+      {
+        "path": "trans_novel/pipeline/nodes/finish.py",
+        "symbol": "TitlesNode.execute",
+        "kind": "function",
+        "lines": 130
+      },
+      {
+        "path": "trans_novel/pipeline/nodes/translate.py",
+        "symbol": "TranslateNode",
+        "kind": "class",
+        "lines": 442
+      }
+    ],
+    "cycles": [],
+    "private_imports": [],
+    "forbidden_edges": [
+      {
+        "source": "trans_novel.assemble.report",
+        "target": "trans_novel.glossary.store"
+      },
+      {
+        "source": "trans_novel.assemble.report",
+        "target": "trans_novel.pipeline.state"
+      },
+      {
+        "source": "trans_novel.assemble.writer",
+        "target": "trans_novel.pipeline.execution"
+      },
+      {
+        "source": "trans_novel.assemble.writer",
+        "target": "trans_novel.pipeline.state"
+      },
+      {
+        "source": "trans_novel.cli.app",
+        "target": "trans_novel.glossary.store"
+      }
+    ],
+    "capability_edges": []
+  }
+}

@@ -1,0 +1,134 @@
+"""Call-local translation batching, alignment, fallback, and glossary stages."""
+
+from __future__ import annotations
+
+from trans_novel.epub.slots import (
+    distribute_slot_translation,
+    normalized_source_text,
+    source_passthrough_transport,
+)
+from trans_novel.ingest import KIND_HEADING
+from trans_novel.llm.errors import LLM_FALLBACK_ERRORS
+from trans_novel.pipeline.nodes.glossary import extract_and_store, store_extracted_terms
+from trans_novel.postprocess.punct import normalize_heading_numbering
+
+
+def align_epub_translations(segments, translations: list[str]) -> list[object]:
+    """Distribute complete translations across EPUB slots deterministically."""
+    result: list[object] = list(translations)
+    for index, (segment, translation) in enumerate(zip(segments, translations, strict=True)):
+        if segment.epub_state is None:
+            continue
+        complete = (
+            normalize_heading_numbering(translation) if segment.kind == "heading" else translation
+        )
+        result[index] = (
+            source_passthrough_transport(segment.epub_state)
+            if complete == segment.source
+            else distribute_slot_translation(segment.epub_state, complete)
+        )
+    return result
+
+
+def safe_batch_fallback(batch) -> tuple[list[object], int]:
+    return [
+        source_passthrough_transport(segment.epub_state)
+        if segment.epub_state is not None
+        else segment.source
+        for segment in batch
+    ], 0
+
+
+def translate_batch(
+    translator,
+    batch,
+    terms,
+    context: str,
+    style: str,
+    *,
+    single_segment_translation: bool = True,
+) -> tuple[list[object], int]:
+    """Translate one ordinary batch, preserving per-heading prompt semantics."""
+    for segment in batch:
+        if segment.epub_state is not None and segment.source != normalized_source_text(
+            segment.epub_state.slots
+        ):
+            raise ValueError(f"EPUB source slot coverage mismatch: {segment.resource_href}")
+    try:
+        if single_segment_translation:
+            translated: list[str] = []
+            request_count = 0
+            for segment in batch:
+                result = translator.translate_batch(
+                    [segment.source],
+                    agent="analyst" if segment.kind == KIND_HEADING else "translator",
+                    operation=(
+                        "translate.heading" if segment.kind == KIND_HEADING else "translate.single"
+                    ),
+                    fallback_agent=None if segment.kind == KIND_HEADING else "analyst",
+                    glossary_terms=terms,
+                    style=style if segment.kind != KIND_HEADING else "",
+                    context=context if segment.kind != KIND_HEADING else "",
+                    kind=KIND_HEADING if segment.kind == KIND_HEADING else None,
+                )
+                translated.extend(result.translations)
+                request_count += result.request_count
+        else:
+            result = translator.translate_batch(
+                [s.source for s in batch],
+                agent="translator",
+                glossary_terms=terms,
+                style=style,
+                context=context,
+            )
+            translated = list(result.translations)
+            request_count = result.request_count
+        return align_epub_translations(batch, translated), request_count
+    except LLM_FALLBACK_ERRORS:
+        return safe_batch_fallback(batch)
+
+
+def translate_back_matter_batch(translator, batch) -> tuple[list[object], int]:
+    """Translate one light back-matter batch with its dedicated prompt."""
+    try:
+        result = translator.translate_batch(
+            [s.source for s in batch],
+            agent="light-translator",
+            operation="translate.back_matter",
+            glossary_terms=[],
+            style="",
+            context="",
+        )
+        return align_epub_translations(batch, list(result.translations)), result.request_count
+    except LLM_FALLBACK_ERRORS:
+        return safe_batch_fallback(batch)
+
+
+def extract_batch_glossary(
+    extractor, glossary, store, chapter: int, start_index: int, batch, existing_terms=None
+):
+    """Extract and persist one batch's terms, including its event."""
+    src_text = "\n".join(s.source for s in batch)
+    tgt_text = "\n".join(s.target or "" for s in batch)
+    if existing_terms is None:
+        summary, changed = extract_and_store(extractor, glossary, src_text, tgt_text, chapter)
+    else:
+        terms = extractor.extract(src_text, tgt_text, existing_terms)
+        summary, changed = store_extracted_terms(glossary, terms, chapter)
+    store.log_event(
+        "batch_glossary_extracted",
+        chapter=chapter,
+        start_index=start_index,
+        count=len(batch),
+        summary=summary,
+    )
+    return summary, changed
+
+
+__all__ = [
+    "align_epub_translations",
+    "extract_batch_glossary",
+    "safe_batch_fallback",
+    "translate_back_matter_batch",
+    "translate_batch",
+]

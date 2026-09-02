@@ -4,7 +4,7 @@ __pycache__/
 venv/
 build/
 dist/
-state/
+/state/
 *.db
 .DS_Store
 config.yaml

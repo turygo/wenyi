@@ -8,17 +8,15 @@ import re
 from typing import Any
 
 from trans_novel.epub.slots import (
-    assign_segment_translation,
     distribute_slot_translation,
     target_slot_transport,
     translation_text,
 )
 from trans_novel.llm.errors import LLM_FALLBACK_ERRORS
-from trans_novel.pipeline import lint
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.nodes.common import chapter_term_snapshot
-from trans_novel.pipeline.runstore import stable_digest
-from trans_novel.pipeline.state import NODE_REPAIR, SCOPE_BOOK, RepairIssue
+from trans_novel.pipeline.quality import LintIssue, lint_targets
+from trans_novel.pipeline.state import NODE_REPAIR, SCOPE_BOOK, RepairIssue, stable_digest
 
 _MAX_ATTEMPTS = 10
 
@@ -127,16 +125,16 @@ class RepairNode:
                 grouped.setdefault(item["chapter"], []).append(item)
         return grouped or self._book_issues(request.store)
 
-    def _book_issues(self, store) -> dict[int, list[lint.LintIssue]]:
+    def _book_issues(self, store) -> dict[int, list[LintIssue]]:
         state = store.load_state()
         src_lang = state.identity.source_lang or getattr(self.translator, "src", "en") or "en"
-        result: dict[int, list[lint.LintIssue]] = {}
+        result: dict[int, list[LintIssue]] = {}
         for chapter_meta in state.chapters:
             ci = chapter_meta.index
             chapter = store.load_chapter(ci)
             text_segments = chapter.text_segments
             terms = [term for term in self.glossary.all_terms() if getattr(term, "locked", 0)]
-            found = lint.lint_targets(
+            found = lint_targets(
                 [s.source for s in text_segments],
                 [s.target or "" for s in text_segments],
                 locked_terms=terms,
@@ -144,7 +142,7 @@ class RepairNode:
             )
             if found:
                 result[ci] = [
-                    lint.LintIssue(text_segments[item.index].index, item.type, item.detail)
+                    LintIssue(text_segments[item.index].index, item.type, item.detail)
                     for item in sorted(found, key=lambda item: text_segments[item.index].index)
                 ]
         return result
@@ -172,7 +170,7 @@ class RepairNode:
                     )
             store.save_progress(ci, progress)
 
-    def _eligible(self, grouped, store) -> list[tuple[int, lint.LintIssue]]:
+    def _eligible(self, grouped, store) -> list[tuple[int, LintIssue]]:
         result = []
         for ci, values in grouped.items():
             progress = store.load_progress(ci)
@@ -247,8 +245,8 @@ class RepairNode:
         try:
             candidate_text = candidate.strip() if isinstance(candidate, str) else ""
             if segment.epub_state is not None:
-                transport = distribute_slot_translation(segment, candidate_text)
-                committed_text = translation_text(segment, transport)
+                transport = distribute_slot_translation(segment.epub_state, candidate_text)
+                committed_text = translation_text(segment.epub_state, transport)
             else:
                 transport = candidate_text
                 committed_text = candidate_text
@@ -259,7 +257,7 @@ class RepairNode:
             if not candidate_text or record.key in candidate_keys or candidate_keys - baseline_keys:
                 self._reject(record, store, ci, "candidate_rejected")
                 return
-            assign_segment_translation(segment, transport)
+            segment.assign_translation(transport)
         except ValueError:
             self._reject(record, store, ci, "candidate_invalid")
             return
@@ -291,11 +289,11 @@ class RepairNode:
     def _target(segment) -> str:
         if segment.epub_state is None:
             return segment.target or ""
-        return translation_text(segment, target_slot_transport(segment))
+        return translation_text(segment.epub_state, target_slot_transport(segment.epub_state))
 
     @staticmethod
     def _segment_issues(segment, locked, src_lang):
-        return lint.lint_targets(
+        return lint_targets(
             [segment.source],
             [RepairNode._target(segment)],
             locked_terms=locked,
@@ -304,7 +302,7 @@ class RepairNode:
 
     @staticmethod
     def _segment_issues_text(segment, target, locked, src_lang):
-        return lint.lint_targets(
+        return lint_targets(
             [segment.source],
             [target],
             locked_terms=locked,

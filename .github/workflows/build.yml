@@ -10,7 +10,7 @@ on:
       - scripts/prepare_release.py
       - trans_novel/config.example.yaml
       - trans_novel/__main__.py
-      - trans_novel/cli.py
+      - trans_novel/cli/**
       - trans_novel/config.py
   push:
     tags:

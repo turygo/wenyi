@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import unicodedata
@@ -135,6 +136,40 @@ def _matches_source(normalized_text: str, source: str) -> bool:
         if before_is_boundary and after_is_boundary:
             return True
         start = normalized_text.find(normalized_source, start + 1)
+
+
+_WORD_RE = re.compile(r"[^\W\d_]+")
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _person_mentioned(term, text: str, words: set[str]) -> bool:
+    """锁定人物是否以「部分形式」出现在文本里（全名/别名的整体匹配由 terms_in 负责）。"""
+    for name in (term.source, *(term.aliases or [])):
+        parts = [p for p in _WORD_RE.findall(name) if len(p) >= 2]
+        if len(parts) >= 2:
+            for part in parts:
+                if _HAN_RE.search(part):
+                    if part in text:
+                        return True
+                elif part[0].isupper() and part in words:
+                    return True
+        elif _HAN_RE.search(name):
+            for plen in (2, 3):
+                if plen < len(name) and name[:plen] in text:
+                    return True
+    return False
+
+
+def terms_matching_text(terms: list, text: str) -> list:
+    """按纯文本裁剪术语表：source/alias 命中 + 锁定人物以「部分形式」出现。"""
+    hit = {t.source for t in GlossaryStore.terms_in(terms, text)}
+    words = set(_WORD_RE.findall(text))
+    return [
+        t
+        for t in terms
+        if t.source in hit
+        or (t.type == TYPE_PERSON and t.locked and _person_mentioned(t, text, words))
+    ]
     return False
 
 

@@ -37,7 +37,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -46,6 +47,22 @@ jobs:
 
       - name: Install
         run: uv sync --locked --group dev --python ${{ matrix.python-version }}
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Architecture governance
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            uv run python scripts/check_architecture.py --base "$BASE_SHA" --head "$HEAD_SHA"
+          else
+            uv run python scripts/check_architecture.py
+          fi
 
       - name: Test
         run: uv run --no-sync python -m unittest discover -s tests

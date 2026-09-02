@@ -22,7 +22,7 @@ from typing import Any
 from trans_novel.config import LLMConfig, ModelRef
 from trans_novel.llm.base import LLMClient, Messages
 from trans_novel.llm.generation import GenerationOptions
-from trans_novel.llm.providers.transport import _warn_telemetry_failure, validate_generation_options
+from trans_novel.llm.providers.transport import validate_generation_options, warn_telemetry_failure
 from trans_novel.llm.telemetry import CallAttemptTelemetry, CallTelemetrySink
 from trans_novel.llm.usage import UsageTracker
 from trans_novel.model_profiles import capabilities_for
@@ -176,5 +176,5 @@ class FakeProviderTransport:
                     )
                 )
             except Exception:
-                _warn_telemetry_failure()
+                warn_telemetry_failure()
         return content

@@ -14,7 +14,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from trans_novel.epub.slots import EpubSegmentState
+from trans_novel.epub.slots import (
+    EpubSegmentState,
+    normalized_target_text,
+    validate_slot_transport,
+)
 
 KIND_TEXT = "text"
 KIND_HEADING = "heading"
@@ -32,6 +36,32 @@ class Segment(BaseModel):
     cont: bool = False  # 超长段被拆分后的续段：回填时并回上一段，不另起段落
     epub_state: EpubSegmentState | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
+
+    def assign_translation(
+        self, translation: str | list[dict[str, str]] | list[tuple[str, str]]
+    ) -> None:
+        """Validate then atomically assign the segment translation."""
+        state = self.epub_state
+        if state is None:
+            if not isinstance(translation, str):
+                raise ValueError("non-EPUB segment translation must be a string")
+            self.target = translation
+            return
+        parsed = validate_slot_transport(state, translation)
+        new_slots = [
+            slot.model_copy(update={"target_value": value})
+            for slot, (_slot_id, value) in zip(state.slots, parsed, strict=True)
+        ]
+        state.slots = new_slots
+        self.target = normalized_target_text(new_slots)
+
+    def reset_translation(self) -> None:
+        state = self.epub_state
+        if state is None:
+            self.target = None
+            return
+        state.slots = [slot.model_copy(update={"target_value": None}) for slot in state.slots]
+        self.target = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump()

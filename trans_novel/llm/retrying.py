@@ -80,7 +80,7 @@ def _as_status(value: Any) -> int | None:
     return None
 
 
-def _status_code(error: BaseException) -> int | None:
+def status_code(error: BaseException) -> int | None:
     """依次从异常 status_code、code、response.status_code 读取状态码。"""
     for attr in ("status_code", "code"):
         status = _as_status(getattr(error, attr, None))
@@ -169,7 +169,7 @@ def classify_retry(error: BaseException) -> str | None:
         return None
     if isinstance(error, EmptyResponseError):
         return EMPTY_RESPONSE
-    status = _status_code(error)
+    status = status_code(error)
     if status is not None:
         if status == 408:
             return HTTP_408
@@ -203,6 +203,6 @@ def _structured_model_not_found(error: BaseException) -> bool:
 
 def classify_fallback(error: BaseException) -> str | None:
     """Return a fixed reason only when an exhausted candidate may be skipped."""
-    if _status_code(error) == 404 or _structured_model_not_found(error):
+    if status_code(error) == 404 or _structured_model_not_found(error):
         return MODEL_NOT_FOUND
     return classify_retry(error)

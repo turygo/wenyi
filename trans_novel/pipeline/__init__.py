@@ -1,1 +1,7 @@
-"""流水线：编排、滚动上下文、对齐/漏译/回译校验。"""
+"""Pipeline public API."""
+
+from __future__ import annotations
+
+from trans_novel.pipeline.application import Application, build_workflow_definition
+
+__all__ = ["Application", "build_workflow_definition"]

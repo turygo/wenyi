@@ -5,6 +5,7 @@
 ## [Unreleased]
 ### Changed
 
+- Reorganized pipeline, EPUB assembly, and benchmark packages and mirrored tests by capability; enforced their explicit dependency directions in the architecture gate.
 - Deterministic QA now feeds one persisted issue-level Repair queue through the `editor` role, with an independent ten-call budget per issue, resumable ledger state, and guaranteed assembly after exhaustion.
 - Reports expose Repair detected/resolved/exhausted counts and logical attempts, always set `requires_user_action: false`, and generate mono/bilingual outputs for exhausted issues.
 - Heading segments in balanced/quality translation now use a concise plain-text prompt with source-matching glossary terms and the analyst role, while retaining strict retry/length validation.

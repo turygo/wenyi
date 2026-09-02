@@ -13,10 +13,10 @@ import os
 import re
 from copy import deepcopy
 
-from trans_novel.ingest.epub_reader import read_epub
-from trans_novel.ingest.fb2_reader import read_fb2
+from trans_novel.ingest.epub.reader import read_epub
+from trans_novel.ingest.fb2 import read_fb2
 from trans_novel.ingest.models import KIND_TEXT, Chapter, Document, Segment
-from trans_novel.ingest.text_reader import read_text
+from trans_novel.ingest.text import read_text
 
 # 常见句末标点，用于超长段的按句拆分
 _SENT_SPLIT = re.compile(r"(?<=[。．.!！？!?…\n])")

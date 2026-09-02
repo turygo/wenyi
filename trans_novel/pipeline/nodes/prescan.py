@@ -3,29 +3,23 @@
 from __future__ import annotations
 
 from trans_novel.agents.base import WorkflowProtocolError
+from trans_novel.agents.term_miner import TermMiner
 from trans_novel.config import Config
-from trans_novel.glossary.miner import mine_candidates
 from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore
-from trans_novel.pipeline.backmatter import is_back_matter
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
-from trans_novel.pipeline.fingerprints import (
+from trans_novel.pipeline.planning import is_back_matter
+from trans_novel.pipeline.planning.fingerprints import (
     analyst_model_profile,
     fast_model_profile,
     frozen_input_fingerprint,
+    mine_terms_input_fingerprint,
     name_terms_input_fingerprint,
 )
 from trans_novel.pipeline.state import (
     NODE_MINE_TERMS,
     NODE_NAME_TERMS,
     SCOPE_BOOK,
-    input_fingerprint,
 )
-
-
-def mine_terms_input_fingerprint(
-    chapter_texts: list[str], src_lang: str, concurrency: int, model: str = ""
-) -> str:
-    return input_fingerprint(chapter_texts, src_lang, concurrency, model)
 
 
 def _import_frozen_glossary(glossary: GlossaryStore, frozen_book) -> None:
@@ -41,8 +35,8 @@ class MineTermsNode:
     node_id = NODE_MINE_TERMS
     scope = SCOPE_BOOK
 
-    def __init__(self, *, namer, config: Config, frozen_book=None):
-        self.namer, self.config, self.frozen_book = namer, config, frozen_book
+    def __init__(self, *, miner: TermMiner, config: Config, frozen_book=None):
+        self.miner, self.config, self.frozen_book = miner, config, frozen_book
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
@@ -64,16 +58,14 @@ class MineTermsNode:
         on_progress = (
             (lambda i, n: request.progress(i, n, "查找专有名词…")) if request.progress else None
         )
-        candidates = mine_candidates(
-            self.namer.src,
+        candidates = self.miner.mine(
             src_chapters,
-            self.namer,
             concurrency=max(1, self.config.pipeline.prescan_concurrency),
             on_progress=on_progress,
         )
         fp = mine_terms_input_fingerprint(
             [text for _, text in src_chapters],
-            self.namer.src,
+            self.miner.src,
             self.config.pipeline.prescan_concurrency,
             fast_model_profile(self.config),
         )
@@ -140,6 +132,5 @@ class NameTermsNode:
 __all__ = [
     "MineTermsNode",
     "NameTermsNode",
-    "mine_terms_input_fingerprint",
     "name_terms_input_fingerprint",
 ]

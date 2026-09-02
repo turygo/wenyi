@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from trans_novel.agents import prompts
 from trans_novel.agents.base import WorkflowProtocolError
+from trans_novel.assemble import assemble, bilingual_out_path
 from trans_novel.assemble.report import build_report
-from trans_novel.assemble.writer import assemble, bilingual_out_path
 from trans_novel.config import Config
-from trans_novel.glossary.store import GlossaryStore
-from trans_novel.ingest.models import KIND_HEADING
+from trans_novel.glossary.store import GlossaryStore, terms_matching_text
+from trans_novel.ingest import KIND_HEADING
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
-from trans_novel.pipeline.fingerprints import (
+from trans_novel.pipeline.planning import (
     analyst_model_profile,
     assemble_input_fingerprint,
     deterministic_qa_input_fingerprint,
@@ -24,8 +24,7 @@ from trans_novel.pipeline.fingerprints import (
     report_input_fingerprint,
     titles_input_fingerprint,
 )
-from trans_novel.pipeline.lint import lint_targets
-from trans_novel.pipeline.nodes.common import terms_matching_text
+from trans_novel.pipeline.quality import lint_targets
 from trans_novel.pipeline.state import (
     NODE_ASSEMBLE,
     NODE_DETERMINISTIC_QA,
@@ -328,7 +327,7 @@ class AssembleNode:
 
     @staticmethod
     def _targets_text(store) -> str:
-        from trans_novel.pipeline.runstore import STATUS_DONE
+        from trans_novel.pipeline.state import STATUS_DONE
 
         parts: list[str] = []
         for c in store.load_state().chapters:
