@@ -8,7 +8,7 @@ from trans_novel.epub.slots import (
     distribute_slot_translation,
     source_passthrough_transport,
 )
-from trans_novel.ingest.models import Segment
+from trans_novel.ingest.models import Segment, sanitize_generated_text
 
 
 def _segment(source_parts: list[str]) -> Segment:
@@ -80,6 +80,49 @@ class TestSlotDistribution(unittest.TestCase):
         segment.assign_translation(transport)
         self.assertEqual(segment.target, translation)
         self.assertEqual(segment.epub_state.slots[1].target_value, "")
+
+    def test_assignment_removes_forbidden_controls_before_deriving_target(self):
+        segment = _segment(["source"])
+        segment.assign_translation([{"id": "slot-0", "value": "前\x02后"}])
+
+        self.assertEqual(segment.target, "前后")
+        self.assertEqual(segment.epub_state.slots[0].target_value, "前后")
+
+    def test_legacy_targets_are_cleaned_on_reconstruction(self):
+        segment = Segment.model_validate(
+            {
+                "index": 0,
+                "source": "前后",
+                "target": "前\x02后",
+                "epub_state": {
+                    "resource_href": "OEBPS/chapter.xhtml",
+                    "resource_sha256": "resource",
+                    "block_fingerprint": "block",
+                    "parse_mode": "xml",
+                    "slots": [
+                        {
+                            "id": "slot-0",
+                            "field": "text",
+                            "source_value": "前",
+                            "target_value": "前\x02",
+                        },
+                        {
+                            "id": "slot-1",
+                            "element_path": [1],
+                            "field": "tail",
+                            "source_value": "后",
+                            "target_value": "后",
+                        },
+                    ],
+                    "slot_contract_sha256": "contract",
+                },
+            }
+        )
+
+        self.assertEqual(segment.target, "前后")
+        self.assertEqual([slot.target_value for slot in segment.epub_state.slots], ["前", "后"])
+        self.assertEqual(segment.source, "前后")
+        self.assertEqual(sanitize_generated_text("\t\n\r中😀"), "\t\n\r中😀")
 
 
 if __name__ == "__main__":

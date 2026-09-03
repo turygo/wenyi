@@ -15,6 +15,7 @@ from trans_novel.assemble.report import build_report
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore, terms_matching_text
 from trans_novel.ingest import KIND_HEADING
+from trans_novel.ingest.models import sanitize_generated_text
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.planning import (
     analyst_model_profile,
@@ -156,7 +157,7 @@ class TitlesNode:
                     actual=len(out) if isinstance(out, list) else None,
                 )
                 raise WorkflowProtocolError("title_count_mismatch")
-            translated = str(out[0]).strip() if isinstance(out[0], str) else ""
+            translated = sanitize_generated_text(out[0]).strip() if isinstance(out[0], str) else ""
             if not translated:
                 store.log_event(
                     "titles_translation_rejected",
@@ -286,6 +287,25 @@ class AssembleNode:
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
+        manifest = store.load_manifest()
+        manifest_changed = False
+        for chapter in manifest.get("chapters", []):
+            if isinstance(chapter, dict) and isinstance(chapter.get("title_translated"), str):
+                cleaned = sanitize_generated_text(chapter["title_translated"])
+                if cleaned != chapter["title_translated"]:
+                    chapter["title_translated"] = cleaned
+                    manifest_changed = True
+        meta = manifest.get("meta")
+        toc_entries = meta.get("toc_entries", []) if isinstance(meta, dict) else []
+        for entry in toc_entries:
+            if isinstance(entry, dict) and isinstance(entry.get("title_translated"), str):
+                cleaned = sanitize_generated_text(entry["title_translated"])
+                if cleaned != entry["title_translated"]:
+                    entry["title_translated"] = cleaned
+                    manifest_changed = True
+        if manifest_changed:
+            store.save_manifest(manifest)
+
         if request.progress:
             request.progress(0, 0, "生成译文文件…")
         out_cfg = self.config.output

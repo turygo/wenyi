@@ -3,6 +3,7 @@
 本项目的所有重要变更都记录在此文件中，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ## [Unreleased]
+- Fixed XML-incompatible characters in model-generated translations and titles before persistence or publication, including resumed legacy state.
 
 ## [1.0.0] - 2026-09-03
 ### Changed

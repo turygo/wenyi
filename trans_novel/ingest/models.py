@@ -12,13 +12,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from trans_novel.epub.slots import (
     EpubSegmentState,
     normalized_target_text,
     validate_slot_transport,
 )
+
+_XML10_FORBIDDEN = frozenset(
+    (*range(0x09), 0x0B, 0x0C, *range(0x0E, 0x20), *range(0xD800, 0xE000), 0xFFFE, 0xFFFF)
+)
+_XML10_DELETE = dict.fromkeys(_XML10_FORBIDDEN)
+
+
+def sanitize_generated_text(value: str) -> str:
+    """Remove only characters forbidden by XML 1.0."""
+    return value.translate(_XML10_DELETE)
+
 
 KIND_TEXT = "text"
 KIND_HEADING = "heading"
@@ -37,6 +48,28 @@ class Segment(BaseModel):
     epub_state: EpubSegmentState | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _sanitize_targets(self) -> Segment:
+        self.target = sanitize_generated_text(self.target) if self.target is not None else None
+        state = self.epub_state
+        if state is None:
+            return self
+        state.slots = [
+            slot.model_copy(
+                update={
+                    "target_value": (
+                        sanitize_generated_text(slot.target_value)
+                        if slot.target_value is not None
+                        else None
+                    )
+                }
+            )
+            for slot in state.slots
+        ]
+        if self.target is not None and all(slot.target_value is not None for slot in state.slots):
+            self.target = normalized_target_text(state.slots)
+        return self
+
     def assign_translation(
         self, translation: str | list[dict[str, str]] | list[tuple[str, str]]
     ) -> None:
@@ -45,11 +78,11 @@ class Segment(BaseModel):
         if state is None:
             if not isinstance(translation, str):
                 raise ValueError("non-EPUB segment translation must be a string")
-            self.target = translation
+            self.target = sanitize_generated_text(translation)
             return
         parsed = validate_slot_transport(state, translation)
         new_slots = [
-            slot.model_copy(update={"target_value": value})
+            slot.model_copy(update={"target_value": sanitize_generated_text(value)})
             for slot, (_slot_id, value) in zip(state.slots, parsed, strict=True)
         ]
         state.slots = new_slots

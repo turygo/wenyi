@@ -10,8 +10,20 @@ from __future__ import annotations
 from typing import Any
 
 from trans_novel.config import Config
+from trans_novel.ingest.models import sanitize_generated_text
 from trans_novel.llm.base import LLMClient
 from trans_novel.llm.errors import JSONParseError, LLMError
+
+
+def _sanitize_json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return sanitize_generated_text(value)
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _sanitize_json_value(item) for key, item in value.items()}
+    return value
+
 
 _RAISE = object()  # 哨兵：未提供 default 时异常照常抛出，由调用方自理
 
@@ -81,6 +93,7 @@ class Agent:
                     raise WorkflowProtocolError("invalid_json") from exc
                 raise
             return default
+        data = _sanitize_json_value(data)
         if key is None:
             return data
         fb = None if default is _RAISE else default
@@ -89,7 +102,7 @@ class Agent:
                 value = data.get(key, fb)
                 if strict:
                     if value is None:
-                        # 必需节点：显式 null 不是合法的空结果（须为有效空列表）。
+                        # 必需节点：显式 null 是不合法的空结果（须为有效空列表）。
                         raise WorkflowProtocolError(f"null_value:{key}")
                     if not isinstance(value, list):
                         # 必需节点的键控响应必须是集合（列表）；错误形状不得被
@@ -121,7 +134,7 @@ class Agent:
     ) -> str:
         """complete 纯文本并 strip；异常返回 default（strict=True 时照常抛出）。"""
         try:
-            return (
+            return sanitize_generated_text(
                 self.client.complete(
                     [{"role": "system", "content": system}, {"role": "user", "content": user}],
                     max_tokens=max_tokens,

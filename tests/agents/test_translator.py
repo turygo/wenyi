@@ -72,6 +72,15 @@ class TestTranslatorPlainContract(unittest.TestCase):
         self.assertEqual(repair_call["operation"], "translate.repair")
         self.assertNotIn("EPUB", client.calls[0]["messages"][-1]["content"])
 
+    def test_plain_response_removes_forbidden_controls_but_preserves_text(self):
+        client = FakeClient(handler=lambda *args: "前\x02后\t行\n下一\r终😀")
+        translator = Translator(client, self._config())
+
+        self.assertEqual(
+            translator.repair_issue("Alpha", "旧译文", issue_type="style", issue_detail="格式"),
+            "前后\t行\n下一\r终😀",
+        )
+
     def test_non_linguistic_segment_preserves_source_without_call(self):
         client = FakeClient(handler=lambda *args: self.fail("LLM must not be called"))
         result = Translator(client, self._config()).translate_batch(["123"], agent="translator")
@@ -100,6 +109,27 @@ class TestTranslatorAlignment(unittest.TestCase):
         self.assertEqual(result.request_count, 1)
         self.assertTrue(all(c["agent"] == "translator" for c in client.calls))
         self.assertTrue(all(c["operation"] == "translate.batch" for c in client.calls))
+
+    def test_json_response_removes_escaped_forbidden_control(self):
+        client = FakeClient(
+            handler=lambda messages, agent, operation, json_mode: json.dumps(
+                {"translations": ["前\x02后"]}, ensure_ascii=False
+            )
+        )
+        result = Translator(client, self._config()).translate_batch(["Alpha"], agent="translator")
+        self.assertEqual(result.translations, ("前后",))
+
+    def test_all_forbidden_model_output_uses_retry_and_fallback_rejection(self):
+        client = FakeClient(
+            handler=lambda messages, agent, operation, json_mode: (
+                json.dumps({"translations": ["\x02"]}) if json_mode else "\x02"
+            )
+        )
+        translator = Translator(client, self._config())
+
+        with self.assertRaises(AlignmentError):
+            translator.translate_batch(["Alpha"], agent="translator")
+        self.assertEqual(len(client.calls), 4)
 
     def test_non_linguistic_segments_are_preserved_and_excluded_from_prompt(self):
         def handler(messages, agent, operation, json_mode):

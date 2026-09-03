@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
 import zipfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from tests.fixtures.books import (
     write_sample_epub,
@@ -15,8 +18,11 @@ from tests.fixtures.fake_llm import fake_llm_dict, routing_handler
 from trans_novel.assemble import assemble
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
+from trans_novel.ingest.models import Chapter
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline import Application
+from trans_novel.pipeline.contracts import NodeRequest
+from trans_novel.pipeline.nodes.finish import AssembleNode, TitlesNode
 
 _FB2_WITH_IMAGES = """\
 <?xml version="1.0" encoding="utf-8"?>
@@ -116,6 +122,106 @@ class TestTitleTranslation(unittest.TestCase):
             self.assertIn("サンプル小説", opf)  # OPF 书名保持原文
             self.assertIn("<dc:language>zh-Hans</dc:language>", opf)
             self.assertEqual(os.path.basename(out), "novel.zh.epub")
+
+    def test_model_title_controls_are_removed_before_persistence(self):
+        class FakeStore:
+            def __init__(self):
+                self.manifest = {
+                    "title": "Book",
+                    "chapters": [{"index": 0, "title": "Chapter"}],
+                    "meta": {},
+                }
+
+            @staticmethod
+            def pending_chapters():
+                return []
+
+            def load_manifest(self):
+                return self.manifest
+
+            @staticmethod
+            def load_chapter(_index):
+                return Chapter(index=0, title="Chapter")
+
+            def save_manifest(self, manifest):
+                self.manifest = manifest
+
+            @staticmethod
+            def log_event(*_args, **_kwargs):
+                pass
+
+        config = _config("state")
+        client = FakeClient(
+            handler=lambda *_args: json.dumps({"titles": ["前\x02后"]}, ensure_ascii=False)
+        )
+        node = TitlesNode(
+            client=client,
+            config=config,
+            src="en",
+            tgt="zh",
+            glossary=SimpleNamespace(all_terms=list),
+        )
+        store = FakeStore()
+        node.execute(
+            NodeRequest(
+                store=store,
+                node_id="titles",
+                key="titles",
+                ci=None,
+                scope="book",
+                input_path="input.epub",
+            )
+        )
+
+        self.assertEqual(store.manifest["chapters"][0]["title_translated"], "前后")
+
+    def test_assemble_cleans_legacy_manifest_titles_once(self):
+        class FakeStore:
+            def __init__(self):
+                self.manifest = {
+                    "chapters": [{"title_translated": "前\x02后"}],
+                    "meta": {"toc_entries": [{"title_translated": "目\x02录"}]},
+                }
+                self.saved = []
+
+            def load_manifest(self):
+                return self.manifest
+
+            def save_manifest(self, manifest):
+                self.saved.append(manifest)
+
+            def load_state(self):
+                return SimpleNamespace(chapters=[])
+
+            def log_event(self, *_args, **_kwargs):
+                pass
+
+        store = FakeStore()
+        config = Config.from_dict({"llm": fake_llm_dict()})
+        node = AssembleNode(config=config, out_format="epub")
+        request = NodeRequest(
+            store=store,
+            node_id="assemble",
+            key="assemble",
+            ci=None,
+            scope="book",
+            input_path="input.epub",
+        )
+
+        def fake_assemble(received_store, _input_path, **_kwargs):
+            self.assertIs(received_store, store)
+            self.assertEqual(received_store.manifest["chapters"][0]["title_translated"], "前后")
+            self.assertEqual(
+                received_store.manifest["meta"]["toc_entries"][0]["title_translated"], "目录"
+            )
+            return "output.epub"
+
+        with patch("trans_novel.pipeline.nodes.finish.assemble", side_effect=fake_assemble):
+            node.execute(request)
+
+        self.assertEqual(len(store.saved), 1)
+        self.assertEqual(store.saved[0]["chapters"][0]["title_translated"], "前后")
+        self.assertEqual(store.saved[0]["meta"]["toc_entries"][0]["title_translated"], "目录")
 
     def test_rewrite_targets_propagates_to_titles(self):
         from trans_novel.pipeline.quality import rewrite_targets
