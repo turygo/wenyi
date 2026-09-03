@@ -165,24 +165,38 @@ class TestRepairContracts(unittest.TestCase):
         self.assertEqual(self._record(store).status, "accepted_after_exhaustion")
         self.assertIn("repair", outcome.artifacts)
 
-    def test_ten_provider_failures_are_business_fallbacks(self):
+    def test_provider_failure_defers_repair_for_resume(self):
         store = self._store("He has 24 apples.", "他有苹果。")
-        translator = _RepairTranslator([AllModelsFailedError(())])
-        outcome = self._run(store, translator)
-        self.assertEqual(len(translator.calls), 10)
-        self.assertEqual(outcome.artifacts["repair"]["accepted_after_exhaustion"], 1)
-        self.assertEqual(store.load_chapter(0).segments[0].target, "他有苹果。")
+        translator = _RepairTranslator([AllModelsFailedError(()), "他有24个苹果。"])
 
-    def test_permanent_provider_failures_consume_repair_budget(self):
+        outcome = self._run(store, translator)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(self._record(store).attempts, 1)
+        self.assertEqual(self._record(store).status, "pending")
+        self.assertTrue(outcome.artifacts["repair"]["deferred"])
+        self.assertEqual(outcome.artifacts["repair"]["accepted_after_exhaustion"], 0)
+        self.assertEqual(store.load_chapter(0).segments[0].target, "他有苹果。")
+        self.assertTrue(build_report(store, _Glossary())["repair"]["deferred"])
+
+        outcome = self._run(store, translator)
+
+        self.assertEqual(len(translator.calls), 2)
+        self.assertFalse(outcome.artifacts["repair"]["deferred"])
+        self.assertEqual(self._record(store).status, "resolved")
+        self.assertEqual(store.load_chapter(0).segments[0].target, "他有24个苹果。")
+        self.assertFalse(build_report(store, _Glossary())["repair"]["deferred"])
+
+    def test_permanent_provider_failure_defers_repair_without_retries(self):
         store = self._store("He has 24 apples.", "他有苹果。")
         provider_error = _PermanentProviderError("unauthorized")
         self.assertIsNone(classify_retry(provider_error))
         translator = _RepairTranslator([provider_error])
         outcome = self._run(store, translator)
-        self.assertEqual(len(translator.calls), 10)
-        self.assertEqual(self._record(store).attempts, 10)
-        self.assertEqual(self._record(store).status, "accepted_after_exhaustion")
-        self.assertEqual(outcome.artifacts["repair"]["accepted_after_exhaustion"], 1)
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(self._record(store).attempts, 1)
+        self.assertEqual(self._record(store).status, "pending")
+        self.assertEqual(outcome.artifacts["repair"]["accepted_after_exhaustion"], 0)
         self.assertEqual(store.load_chapter(0).segments[0].target, "他有苹果。")
 
     def test_repair_programming_error_propagates(self):

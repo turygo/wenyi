@@ -68,6 +68,7 @@ class TestEpubStage2(unittest.TestCase):
             with self.assertRaises(EpubVerificationError) as raised:
                 publish_epub(state, None, final, mode="generated", writer=corrupt)
             self.assertFalse(raised.exception.published)
+            self.assertEqual(str(raised.exception), "EPUB verification failed")
             self.assertEqual(final.read_bytes(), b"previous-final")
             report = state.load_epub_verification()
             self.assertIsNotNone(report)
@@ -78,6 +79,33 @@ class TestEpubStage2(unittest.TestCase):
             self.assertEqual(raised.exception.report, report)
             self.assertFalse(list(root.glob(".book.epub.epub-verify-*.tmp")))
             self.assertTrue(state.report_path != state.epub_verification_path)
+
+    def test_writer_failure_report_includes_bounded_cause(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = RunStore(str(root / "state"))
+            cause = ValueError("x" * 600)
+
+            def writer(path: str) -> None:
+                raise cause
+
+            with self.assertRaises(EpubVerificationError) as raised:
+                publish_epub(
+                    store,
+                    None,
+                    root / "published.epub",
+                    mode="generated",
+                    writer=writer,
+                )
+
+            expected_detail = f"{type(cause).__name__}: {cause}"[:500]
+            failure = next(
+                item
+                for item in raised.exception.report["failures"]
+                if item["code"] == "writer_failed"
+            )
+            self.assertEqual(failure["detail"], expected_detail)
+            self.assertEqual(str(raised.exception), f"EPUB verification failed: {cause}")
 
     def test_success_publishes_report_and_stable_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

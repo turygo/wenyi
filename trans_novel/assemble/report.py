@@ -78,6 +78,7 @@ def build_report(store: RunStore, glossary: GlossaryStore) -> dict[str, Any]:
             )
         ),
         "attempts": int(raw_repair.get("attempts", sum(r.attempts for r in ledger))),
+        "deferred": bool(raw_repair.get("deferred", False)),
         "audit": [
             {**entry, "detail": _audit_detail(entry.get("detail"))}
             for entry in raw_repair.get("audit", [])

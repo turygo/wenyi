@@ -69,7 +69,10 @@ class EpubVerificationError(RuntimeError):
     def __init__(self, report: dict[str, Any], *, cause: BaseException | None = None):
         self.report = report
         self.published = False
-        super().__init__("EPUB verification failed")
+        message = "EPUB verification failed"
+        if cause is not None:
+            message = f"{message}: {cause}"
+        super().__init__(message)
         if cause is not None:
             self.__cause__ = cause
 

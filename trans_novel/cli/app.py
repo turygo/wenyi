@@ -21,7 +21,7 @@ from rich.table import Table
 from trans_novel.cli import common as cli_common
 from trans_novel.cli.tools import tools_app
 from trans_novel.config import Config
-from trans_novel.pipeline.execution import ReadinessError
+from trans_novel.pipeline.execution import ReadinessError, RequiredNodeFailed
 from trans_novel.pipeline.state import STATUS_DONE, IdentityMismatchError
 
 app = typer.Typer(
@@ -30,6 +30,7 @@ app = typer.Typer(
     help="多 Agent 小说翻译系统（多语言 → 中文）",
 )
 console = cli_common.console
+_TRANSLATION_ERRORS = (RequiredNodeFailed, IdentityMismatchError, ReadinessError, ValueError)
 
 
 def _show_version(value: bool) -> None:
@@ -50,6 +51,13 @@ def _root(
     ),
 ):
     cli_common.set_config_path(config)
+
+
+def _exit_translation_error(error: Exception) -> None:
+    console.print(f"[red]{error}[/]")
+    if isinstance(error, RequiredNodeFailed):
+        console.print("运行状态已保存；再次运行相同命令即可从失败位置继续。")
+    raise typer.Exit(2) from None
 
 
 @app.command("init")
@@ -136,9 +144,8 @@ def _translate_impl(
         if prepare:
             try:
                 store = application.prepare_for_translation(input_path, progress=cb)
-            except (IdentityMismatchError, ReadinessError, ValueError) as error:
-                console.print(f"[red]{error}[/]")
-                raise typer.Exit(2) from error
+            except _TRANSLATION_ERRORS as error:
+                _exit_translation_error(error)
             manifest = store.load_manifest()
             chapters = manifest.get("chapters", [])
             console.print(f"[bold green]准备完成[/]：解析 {len(chapters)} 章。")
@@ -150,12 +157,8 @@ def _translate_impl(
         if chapter is not None:
             try:
                 store = application.run(input_path, only_chapter=chapter, progress=cb)
-            except ValueError as error:
-                console.print(f"[red]{error}[/]")
-                raise typer.Exit(2) from error
-            except (IdentityMismatchError, ReadinessError) as error:
-                console.print(f"[red]{error}[/]")
-                raise typer.Exit(2) from error
+            except _TRANSLATION_ERRORS as error:
+                _exit_translation_error(error)
             console.print(f"[green]已翻第 {chapter} 章[/]，状态目录：{store.run_dir}")
             cli_common.print_usage({"usage": store.load_usage() or {}})
             return
@@ -167,12 +170,15 @@ def _translate_impl(
                 out_format=fmt,
                 out_path=out,
             )
-        except (IdentityMismatchError, ReadinessError, ValueError) as error:
-            console.print(f"[red]{error}[/]")
-            raise typer.Exit(2) from error
+        except _TRANSLATION_ERRORS as error:
+            _exit_translation_error(error)
 
     summary = result["report"]["summary"]
     repair = result["report"].get("repair", {})
+    if repair.get("deferred"):
+        console.print(
+            "[yellow]Repair 未完成：模型服务调用失败，译文仍已生成。再次运行 translate 可重试。[/]"
+        )
     console.print(
         f"术语 {summary['terms']}，Repair 检测 {repair.get('detected', 0)} 项，"
         f"解决 {repair.get('resolved', 0)} 项，耗尽 {repair.get('accepted_after_exhaustion', 0)} 项。"

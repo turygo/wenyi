@@ -14,6 +14,7 @@ from tests.fixtures.fake_llm import fake_llm_dict
 from trans_novel.cli import app
 from trans_novel.cli.common import configure_windows_console
 from trans_novel.config import Config
+from trans_novel.pipeline.execution import RequiredNodeFailed
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -264,6 +265,42 @@ class TestCliConfig(unittest.TestCase):
         self.assertIn("准备完成", result.output)
         self.assertIn("解析 2 章", result.output)
         self.assertNotIn("预扫 2/2 章", result.output)
+
+    def test_translate_required_node_failures_are_actionable(self):
+        config = Config.from_dict({"llm": fake_llm_dict()})
+        message = "required node failed: translate"
+        resume = "运行状态已保存；再次运行相同命令即可从失败位置继续。"
+
+        class FakeOrchestrator:
+            def __init__(self, loaded_config):
+                pass
+
+            @staticmethod
+            def _raise(*args, **kwargs):
+                raise RequiredNodeFailed(message)
+
+            prepare_for_translation = _raise
+            run = _raise
+            run_all = _raise
+
+        cases = (
+            ["translate", "input.txt", "--prepare"],
+            ["translate", "input.txt", "--chapter", "0"],
+            ["translate", "input.txt"],
+        )
+        with (
+            patch("trans_novel.cli.common.load_config", return_value=config),
+            patch("trans_novel.pipeline.Application", FakeOrchestrator),
+            patch("trans_novel.cli.common.os.path.isfile", return_value=True),
+        ):
+            for args in cases:
+                with self.subTest(args=args):
+                    result = CliRunner().invoke(app, args)
+                    output = plain(result.output)
+                    self.assertEqual(result.exit_code, 2, result.output)
+                    self.assertIn(message, output)
+                    self.assertIn(resume, output)
+                    self.assertNotIn("Traceback", output)
 
     def test_translate_prepare_rejects_chapter(self):
         config = Config.from_dict(

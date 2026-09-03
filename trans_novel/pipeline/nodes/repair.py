@@ -7,6 +7,7 @@ import json
 import re
 from typing import Any
 
+from trans_novel.agents.base import WorkflowProtocolError
 from trans_novel.epub.slots import (
     distribute_slot_translation,
     target_slot_transport,
@@ -43,16 +44,26 @@ class RepairNode:
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
+        if request.progress:
+            request.progress(0, 0, "修复译文问题…")
         initial = self._initial_issues(request)
         self._register(initial, store)
-        self._repair_queue(store, request)
-        while True:
+        deferred = not self._repair_queue(store, request)
+        if deferred and request.progress:
+            request.progress(0, 0, "Repair 服务调用失败，继续生成译文文件…")
+        if not deferred:
+            while True:
+                current = self._book_issues(store)
+                eligible = self._eligible(current, store)
+                if not eligible:
+                    break
+                self._register(current, store)
+                deferred = not self._repair_queue(store, request)
+                if deferred:
+                    current = self._book_issues(store)
+                    break
+        else:
             current = self._book_issues(store)
-            eligible = self._eligible(current, store)
-            if not eligible:
-                break
-            self._register(current, store)
-            self._repair_queue(store, request)
         state = store.load_state()
         for chapter_meta in state.chapters:
             ci = chapter_meta.index
@@ -96,6 +107,7 @@ class RepairNode:
                 "accepted_after_exhaustion": len(exhausted),
                 "attempts": attempts,
                 "audit": exhausted,
+                "deferred": deferred,
             },
             "issues": [
                 self._issue_dict(ci, item) for ci, values in current.items() for item in values
@@ -181,7 +193,7 @@ class RepairNode:
                     result.append((ci, item))
         return result
 
-    def _repair_queue(self, store, request: NodeRequest) -> None:
+    def _repair_queue(self, store, request: NodeRequest) -> bool:
         while True:
             current = self._book_issues(store)
             queue = []
@@ -193,18 +205,19 @@ class RepairNode:
                     if record and record.status != "accepted_after_exhaustion":
                         queue.append((ci, item, record))
             if not queue:
-                return
+                return True
             ci, item, record = queue[0]
-            self._attempt(ci, item, record, store, request)
+            if not self._attempt(ci, item, record, store, request):
+                return False
 
-    def _attempt(self, ci, target_issue, record, store, request) -> None:
+    def _attempt(self, ci, target_issue, record, store, request) -> bool:
         chapter = store.load_chapter(ci)
         segments = chapter.text_segments
         segment = next((s for s in segments if s.index == target_issue.index), None)
         if segment is None:
             record.status = "resolved"
             self._save_record(store, ci, record)
-            return
+            return True
         config = getattr(request.shared, "config", None) or self.config
         state = store.load_state()
         src_lang = state.identity.source_lang or getattr(self.translator, "src", "en") or "en"
@@ -220,11 +233,11 @@ class RepairNode:
         if record.key not in baseline_keys:
             record.status = "resolved"
             self._save_record(store, ci, record)
-            return
+            return True
         if record.attempts >= _MAX_ATTEMPTS:
             record.status = "accepted_after_exhaustion"
             self._save_record(store, ci, record)
-            return
+            return True
         record.attempts += 1
         record.status = "repairing"
         record.committed_target_fingerprint = stable_digest(current_target)
@@ -239,9 +252,12 @@ class RepairNode:
                 context_before=self._context(segments, segment, -1),
                 context_after=self._context(segments, segment, 1),
             )
+        except WorkflowProtocolError as exc:
+            self._reject(record, store, ci, f"{type(exc).__name__}: {exc}")
+            return True
         except LLM_FALLBACK_ERRORS as exc:
             self._reject(record, store, ci, f"{type(exc).__name__}: {exc}")
-            return
+            return False
         try:
             candidate_text = candidate.strip() if isinstance(candidate, str) else ""
             if segment.epub_state is not None:
@@ -256,11 +272,11 @@ class RepairNode:
             }
             if not candidate_text or record.key in candidate_keys or candidate_keys - baseline_keys:
                 self._reject(record, store, ci, "candidate_rejected")
-                return
+                return True
             segment.assign_translation(transport)
         except ValueError:
             self._reject(record, store, ci, "candidate_invalid")
-            return
+            return True
         store.save_chapter(chapter)
         after = self._segment_issues(segment, locked, src_lang)
         after_keys = {issue_key(ci, segment.index, x.type, x.detail) for x in after}
@@ -271,6 +287,7 @@ class RepairNode:
         record.status = "resolved" if record.key not in after_keys else "pending"
         record.last_detail = "accepted"
         self._save_record(store, ci, record, progress=progress)
+        return True
 
     def _reject(self, record, store, ci, detail: str) -> None:
         record.last_detail = detail[:500]

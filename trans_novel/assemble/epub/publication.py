@@ -113,9 +113,10 @@ def prepare_publication(
         )
         report["output_label"] = verify.output_label(final)
         report["passed"] = False
+        writer_detail = f"{type(cause).__name__}: {cause}"[:500]
         report["failures"] = archive_model.sort_items(
             report["failures"]
-            + [archive_model.item("publish", "writer_failed", "<output>", "writer")]
+            + [archive_model.item("publish", "writer_failed", "<output>", writer_detail)]
         )
         persist_failure(store, report, cause)
         raise EpubVerificationError(report, cause=cause) from cause
