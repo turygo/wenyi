@@ -7,6 +7,7 @@
 ## [1.0.1] - 2026-09-04
 ### Fixed
 
+- Locked package metadata now matches release version 1.0.1.
 - Repair now short-circuits the current pass after an LLM provider failure, preserving pending issues for the next resume while allowing report and EPUB assembly to continue.
 - Fixed XML-incompatible characters in model-generated translations and titles before persistence or publication, including resumed legacy state.
 - Source-preserving EPUB publication now accepts unchanged missing footnote backlinks inherited from the input while still rejecting new ones.
