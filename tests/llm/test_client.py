@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from typing import ClassVar
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -57,7 +59,7 @@ class TestConfigValidation(unittest.TestCase):
             cfg.llm.models.translator,
             ["openrouter/tencent/hy-mt2-30b-a3b-20260521:off"],
         )
-        general = ["opencode-go/muse-spark-1.2-contributor:low"]
+        general = ["opencode-go/muse-spark-1.3-contributor:low"]
         self.assertEqual(cfg.llm.models.analyst, general)
         self.assertEqual(cfg.llm.models.editor, general)
         self.assertEqual(cfg.llm.models.fast, general)
@@ -105,7 +107,7 @@ class TestConfigValidation(unittest.TestCase):
     def test_provider_endpoints_and_capabilities_are_keyed(self):
         from trans_novel.llm.registry import ProviderRegistry
         from trans_novel.llm.usage import UsageTracker
-        from trans_novel.model_profiles import DIALECT_BAILIAN, DIALECT_DEEPSEEK
+        from trans_novel.model_profiles import DIALECT_BAILIAN, DIALECT_DEEPSEEK, capabilities_for
 
         cfg = Config.from_dict(
             {
@@ -127,6 +129,8 @@ class TestConfigValidation(unittest.TestCase):
         self.assertEqual(go.provider, "opencode-go")
         self.assertEqual(bailian.provider, "bailian")
         self.assertEqual(go.capabilities_for("deepseek-v4-flash").request_dialect, DIALECT_DEEPSEEK)
+        hy3 = capabilities_for("openrouter", "tencent/hy3")
+        self.assertTrue(hy3.catalogued and hy3.supports_temperature)
         self.assertEqual(bailian.capabilities_for("qwen3.7-flash").request_dialect, DIALECT_BAILIAN)
 
     def test_model_thinking_suffix_is_validated_against_capabilities(self):
@@ -197,6 +201,26 @@ class TestProviderTransportConfiguration(unittest.TestCase):
         self.assertEqual(builtin.api_key_env, "DEEPSEEK_API_KEY")
         self.assertEqual(custom.base_url, "https://custom.example/v1")
         self.assertEqual(custom.api_key_env, "CUSTOM_API_KEY")
+
+    def test_opencode_go_sends_identity_and_session_headers(self):
+        from trans_novel.llm.registry import ProviderRegistry
+        from trans_novel.llm.usage import UsageTracker
+
+        cfg = LLMConfig(models={"translator": ["opencode-go/muse-spark-1.3-contributor"]})
+        registry = ProviderRegistry(cfg, UsageTracker())
+        with (
+            patch.dict(os.environ, {"OPENCODE_API_KEY": "test-key"}),
+            patch("openai.OpenAI") as openai,
+        ):
+            transport = registry.transport("opencode-go")
+            transport._ensure_client()
+
+        headers = openai.call_args.kwargs["default_headers"]
+        self.assertEqual(headers["User-Agent"], "wenyi")
+        self.assertRegex(
+            headers["x-opencode-session"],
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        )
 
 
 class TestRoleProfiles(unittest.TestCase):

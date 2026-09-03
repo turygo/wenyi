@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-09-04
+- Updated the default OpenCode Go Muse Spark Contributor model from 1.2 to 1.3 across runtime configuration, examples, and benchmark metadata.
+- OpenCode Go requests now identify Wenyi and include a stable per-run `x-opencode-session` header.
+
 ## [1.0.1] - 2026-09-04
 ### Fixed
 

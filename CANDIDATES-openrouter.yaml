@@ -6,37 +6,37 @@ replicates: 1
 candidates:
   - candidate_id: hy-mt2-30b-a3b-minimal
     translator_model: openrouter/tencent/hy-mt2-30b-a3b-20260521:off
-    analyst_model: opencode-go/muse-spark-1.2-contributor:low
-    editor_model: opencode-go/muse-spark-1.2-contributor:low
-    fast_model: opencode-go/muse-spark-1.2-contributor:low
+    analyst_model: opencode-go/muse-spark-1.3-contributor:low
+    editor_model: opencode-go/muse-spark-1.3-contributor:low
+    fast_model: opencode-go/muse-spark-1.3-contributor:low
     pipeline_variant: minimal
   - candidate_id: hy-mt2-30b-a3b-polish
     translator_model: openrouter/tencent/hy-mt2-30b-a3b-20260521:off
-    analyst_model: opencode-go/muse-spark-1.2-contributor:low
-    editor_model: opencode-go/muse-spark-1.2-contributor:low
-    fast_model: opencode-go/muse-spark-1.2-contributor:low
+    analyst_model: opencode-go/muse-spark-1.3-contributor:low
+    editor_model: opencode-go/muse-spark-1.3-contributor:low
+    fast_model: opencode-go/muse-spark-1.3-contributor:low
     pipeline_variant: polish
   - candidate_id: glm-5.3-flash-minimal
     translator_model: opencode-go/glm-5.3-flash:off
-    analyst_model: opencode-go/muse-spark-1.2-contributor:low
-    editor_model: opencode-go/muse-spark-1.2-contributor:low
-    fast_model: opencode-go/muse-spark-1.2-contributor:low
+    analyst_model: opencode-go/muse-spark-1.3-contributor:low
+    editor_model: opencode-go/muse-spark-1.3-contributor:low
+    fast_model: opencode-go/muse-spark-1.3-contributor:low
     pipeline_variant: minimal
   - candidate_id: glm-5.3-flash-polish
     translator_model: opencode-go/glm-5.3-flash:off
-    analyst_model: opencode-go/muse-spark-1.2-contributor:low
-    editor_model: opencode-go/muse-spark-1.2-contributor:low
-    fast_model: opencode-go/muse-spark-1.2-contributor:low
+    analyst_model: opencode-go/muse-spark-1.3-contributor:low
+    editor_model: opencode-go/muse-spark-1.3-contributor:low
+    fast_model: opencode-go/muse-spark-1.3-contributor:low
     pipeline_variant: polish
-  - candidate_id: muse-spark-1.2-contributor-minimal
-    translator_model: opencode-go/muse-spark-1.2-contributor:low
-    analyst_model: opencode-go/muse-spark-1.2-contributor:low
-    editor_model: opencode-go/muse-spark-1.2-contributor:low
-    fast_model: opencode-go/muse-spark-1.2-contributor:low
+  - candidate_id: muse-spark-1.3-contributor-minimal
+    translator_model: opencode-go/muse-spark-1.3-contributor:low
+    analyst_model: opencode-go/muse-spark-1.3-contributor:low
+    editor_model: opencode-go/muse-spark-1.3-contributor:low
+    fast_model: opencode-go/muse-spark-1.3-contributor:low
     pipeline_variant: minimal
-  - candidate_id: muse-spark-1.2-contributor-polish
-    translator_model: opencode-go/muse-spark-1.2-contributor:low
-    analyst_model: opencode-go/muse-spark-1.2-contributor:low
-    editor_model: opencode-go/muse-spark-1.2-contributor:low
-    fast_model: opencode-go/muse-spark-1.2-contributor:low
+  - candidate_id: muse-spark-1.3-contributor-polish
+    translator_model: opencode-go/muse-spark-1.3-contributor:low
+    analyst_model: opencode-go/muse-spark-1.3-contributor:low
+    editor_model: opencode-go/muse-spark-1.3-contributor:low
+    fast_model: opencode-go/muse-spark-1.3-contributor:low
     pipeline_variant: polish

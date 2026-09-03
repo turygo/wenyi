@@ -16,16 +16,16 @@ candidates:
     editor_model: opencode-go/deepseek-v4-flash:off
     fast_model: opencode-go/mimo-v2.5:off
     pipeline_variant: polish
-  - candidate_id: muse-spark-1.2-contributor-minimal
-    translator_model: opencode-go/muse-spark-1.2-contributor:low
-    analyst_model: opencode-go/muse-spark-1.2-contributor:low
-    editor_model: opencode-go/muse-spark-1.2-contributor:low
+  - candidate_id: muse-spark-1.3-contributor-minimal
+    translator_model: opencode-go/muse-spark-1.3-contributor:low
+    analyst_model: opencode-go/muse-spark-1.3-contributor:low
+    editor_model: opencode-go/muse-spark-1.3-contributor:low
     fast_model: opencode-go/mimo-v2.5:off
     pipeline_variant: minimal
-  - candidate_id: muse-spark-1.2-contributor-polish
-    translator_model: opencode-go/muse-spark-1.2-contributor:low
-    analyst_model: opencode-go/muse-spark-1.2-contributor:low
-    editor_model: opencode-go/muse-spark-1.2-contributor:low
+  - candidate_id: muse-spark-1.3-contributor-polish
+    translator_model: opencode-go/muse-spark-1.3-contributor:low
+    analyst_model: opencode-go/muse-spark-1.3-contributor:low
+    editor_model: opencode-go/muse-spark-1.3-contributor:low
     fast_model: opencode-go/mimo-v2.5:off
     pipeline_variant: polish
   - candidate_id: mimo-v2.5-minimal

@@ -90,11 +90,11 @@ llm:
     translator:
       - openrouter/tencent/hy-mt2-30b-a3b-20260521:off
     analyst:
-      - opencode-go/muse-spark-1.2-contributor:low
+      - opencode-go/muse-spark-1.3-contributor:low
     editor:
-      - opencode-go/muse-spark-1.2-contributor:low
+      - opencode-go/muse-spark-1.3-contributor:low
     fast:
-      - opencode-go/muse-spark-1.2-contributor:low
+      - opencode-go/muse-spark-1.3-contributor:low
 
 quality: balanced
 ```
@@ -130,9 +130,9 @@ llm:
       - bailian/deepseek-v4-flash:high
       - opencode-go/deepseek-v4-flash:high
     analyst:
-      - opencode-go/muse-spark-1.2-contributor:low
+      - opencode-go/muse-spark-1.3-contributor:low
     editor:
-      - opencode-go/muse-spark-1.2-contributor:low
+      - opencode-go/muse-spark-1.3-contributor:low
     fast:
       - bailian/qwen3.7-flash:off
       - opencode-go/deepseek-v4-flash:off

@@ -90,7 +90,7 @@ candidates:
 ```
 
 运行前在当前 shell 设置凭据，并在 OpenCode Go workspace 中为
-`muse-spark-1.2-contributor` 显式启用数据贡献：
+`muse-spark-1.3-contributor` 显式启用数据贡献：
 
 ```bash
 export OPENCODE_API_KEY='<secret>'
@@ -242,7 +242,7 @@ models:
         input_uncached_per_million: '0.44'
         input_cached_per_million: '0.014'
         output_per_million: '1.32'
-  # muse-spark-1.2-contributor and mimo-v2.5 follow the committed PRICE.yaml
+  # muse-spark-1.3-contributor and mimo-v2.5 follow the committed PRICE.yaml
 ```
 
 ```bash

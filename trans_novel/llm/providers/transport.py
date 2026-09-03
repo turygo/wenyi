@@ -232,6 +232,9 @@ class OpenAICompatibleTransport:
         self._client: Any = None
         self.generation_options = generation_options
         self.telemetry_sink = telemetry_sink
+        self._default_headers = {"User-Agent": "wenyi"}
+        if provider == "opencode-go":
+            self._default_headers["x-opencode-session"] = str(uuid.uuid4())
         self._client_lock = threading.Lock()
 
     def capabilities_for(self, model: str) -> ModelCapabilities:
@@ -254,6 +257,7 @@ class OpenAICompatibleTransport:
                     base_url=self.base_url,
                     timeout=_REQUEST_TIMEOUT_SECONDS,
                     max_retries=0,
+                    default_headers=self._default_headers,
                 )
         return self._client
 
