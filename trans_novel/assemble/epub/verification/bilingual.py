@@ -19,6 +19,27 @@ from trans_novel.assemble.epub.verification import archive_model, direct, dom, s
 MAX_MEMBER_BYTES = archive_model.MAX_MEMBER_BYTES
 
 
+def _structural_children(parent: etree._Element) -> list[etree._Element]:
+    return [
+        child
+        for child in dom.element_children_lxml(parent)
+        if (
+            "tn-source" not in str(child.get("class", "")).split()
+            and dict(child.attrib) != BILINGUAL_DIRECT_TARGET_ATTRS
+        )
+    ]
+
+
+def _resolve_output_path(root: etree._Element, path: tuple[int, ...]) -> etree._Element | None:
+    current = root
+    for index in path:
+        children = _structural_children(current)
+        if index < 0 or index >= len(children):
+            return None
+        current = children[index]
+    return current
+
+
 def _validate_direct_runs(
     root_source: etree._Element,
     root_output: etree._Element,
@@ -38,7 +59,7 @@ def _validate_direct_runs(
         source_block = dom.resolve_path_lxml(root_source, block_path)
         if source_block is None:
             continue
-        target_block = dom.resolve_path_lxml(root_output, block_path)
+        target_block = _resolve_output_path(root_output, block_path)
         if target_block is None:
             failures.append(
                 archive_model.item(
@@ -52,22 +73,12 @@ def _validate_direct_runs(
             if any(ancestor is target_block for ancestor in node.iterancestors())
         ]
 
-        def structural_children(parent: etree._Element) -> list[etree._Element]:
-            return [
-                child
-                for child in dom.element_children_lxml(parent)
-                if (
-                    "tn-source" not in str(child.get("class", "")).split()
-                    and dict(child.attrib) != BILINGUAL_DIRECT_TARGET_ATTRS
-                )
-            ]
-
         def resolve_owner(
             path: tuple[int, ...], target_block: etree._Element = target_block
         ) -> etree._Element | None:
             current = target_block
             for index in path:
-                children = structural_children(current)
+                children = _structural_children(current)
                 if index < 0 or index >= len(children):
                     return None
                 current = children[index]

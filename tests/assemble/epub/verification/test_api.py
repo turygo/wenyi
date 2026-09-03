@@ -14,8 +14,10 @@ from tests.fixtures.books import write_phase9_epub
 from tests.fixtures.fake_llm import fake_llm_dict, routing_handler
 from trans_novel.assemble.epub import verification as epub_verifier
 from trans_novel.assemble.epub.verification import verify_epub
+from trans_novel.assemble.epub.verification.bilingual import _resolve_output_path
 from trans_novel.assemble.epub.verification.navigation import nav_label_locations
 from trans_novel.assemble.epub.verification.slots import compare_dom
+from trans_novel.assemble.epub.verification.verify import _new_structural_failures
 from trans_novel.config import Config
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline import Application
@@ -48,6 +50,46 @@ def _stamp_formal_prereqs(store):
 
 
 class TestEpubStage2(unittest.TestCase):
+    def test_source_missing_backlinks_are_inherited_by_count(self) -> None:
+        inherited = {
+            "category": "footnotes",
+            "code": "missing_backlink",
+            "path": "chapter.xhtml",
+            "detail": "missing",
+        }
+        added = {**inherited, "path": "new.xhtml"}
+
+        failures = _new_structural_failures(
+            [inherited.copy(), inherited.copy(), added],
+            [inherited.copy()],
+        )
+
+        self.assertEqual(failures, [inherited, added])
+
+    def test_schema4_bilingual_proof_supersedes_legacy_source_heuristics(self) -> None:
+        failures = [
+            {"code": "source_node_count"},
+            {"code": "source_node_misplaced"},
+            {"code": "source_node_unexpected"},
+            {"code": "source_node_empty"},
+        ]
+
+        self.assertEqual(
+            _new_structural_failures(
+                failures,
+                [],
+                state_backed_bilingual=True,
+            ),
+            [{"code": "source_node_empty"}],
+        )
+
+    def test_output_paths_ignore_inserted_source_siblings(self) -> None:
+        root = etree.fromstring(
+            b"<html><body><p id='first'/><p class='tn-source'/><p id='second'/></body></html>"
+        )
+
+        self.assertEqual(_resolve_output_path(root, (0, 1)).get("id"), "second")
+
     def test_public_facade_signatures_preserve_annotations(self) -> None:
         validate = get_type_hints(epub_verifier.validate_epub)
         self.assertEqual(

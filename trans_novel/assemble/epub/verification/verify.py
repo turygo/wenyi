@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -292,6 +293,37 @@ def _check_source_archive(
             )
 
 
+def _new_structural_failures(
+    output_failures: list[dict[str, str]],
+    source_failures: list[dict[str, str]],
+    *,
+    state_backed_bilingual: bool = False,
+) -> list[dict[str, str]]:
+    inherited_codes = {"missing_toc", "unmanifested_resource", "missing_backlink"}
+    superseded_bilingual_codes = {
+        "source_node_count",
+        "source_node_misplaced",
+        "source_node_unexpected",
+    }
+    inherited = Counter(
+        (item.get("code"), item.get("path"))
+        for item in source_failures
+        if item.get("code") in inherited_codes
+    )
+    result: list[dict[str, str]] = []
+    for item in output_failures:
+        if state_backed_bilingual and item.get("code") in superseded_bilingual_codes:
+            continue
+        if item.get("code") in {"reopen_failed", "reopen_empty"}:
+            continue
+        key = (item.get("code"), item.get("path"))
+        if item.get("code") in inherited_codes and inherited[key]:
+            inherited[key] -= 1
+            continue
+        result.append(item)
+    return result
+
+
 def verify_epub(
     output_path: str | os.PathLike[str],
     *,
@@ -338,34 +370,18 @@ def verify_epub(
         source_path=source if mode in {"monolingual", "bilingual"} else None,
         bilingual=bilingual,
     )
-    if mode in {"monolingual", "bilingual"} and source is not None:
-        # A source EPUB may legitimately omit both navigation formats.  Keep
-        # that source contract, while still rejecting removal from a source
-        # which actually has a TOC.
-        source_probe = validation.validate_one(source, source_path=None, bilingual=None)
-        source_missing_toc = any(
-            item.get("code") == "missing_toc" for item in source_probe.get("failures", [])
-        )
-        source_unmanifested = {
-            item.get("path")
-            for item in source_probe.get("failures", [])
-            if item.get("code") == "unmanifested_resource"
-        }
-    else:
-        source_missing_toc = False
-        source_unmanifested = set()
+    source_failures = (
+        validation.validate_one(source, source_path=None, bilingual=None).get("failures", [])
+        if mode in {"monolingual", "bilingual"} and source is not None
+        else []
+    )
     _check_source_archive(source, output, mode, store, failures)
     _check_package(source, output, mode, target_lang, differences, failures)
     failures.extend(
-        item
-        for item in structural.get("failures", [])
-        if not (
-            item.get("code") in {"reopen_failed", "reopen_empty"}
-            or (item.get("code") == "missing_toc" and source_missing_toc)
-            or (
-                item.get("code") == "unmanifested_resource"
-                and item.get("path") in source_unmanifested
-            )
+        _new_structural_failures(
+            structural.get("failures", []),
+            source_failures,
+            state_backed_bilingual=mode == "bilingual" and store is not None and source is not None,
         )
     )
     warnings.extend(structural.get("warnings", []))

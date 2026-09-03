@@ -5,6 +5,8 @@
 ## [Unreleased]
 - Repair now short-circuits the current pass after an LLM provider failure, preserving pending issues for the next resume while allowing report and EPUB assembly to continue.
 - Fixed XML-incompatible characters in model-generated translations and titles before persistence or publication, including resumed legacy state.
+- Source-preserving EPUB publication now accepts unchanged missing footnote backlinks inherited from the input while still rejecting new ones.
+- State-backed bilingual EPUB verification now uses schema4 slot evidence and resolves persisted block paths independently of inserted source siblings.
 
 ## [1.0.0] - 2026-09-03
 ### Changed
