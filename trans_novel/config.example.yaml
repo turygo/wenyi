@@ -10,5 +10,11 @@ llm:
     fast:
       - opencode-go/muse-spark-1.3-contributor:low
 
+  # Optional OpenRouter provider constraints keyed by provider/model.
+  # provider_routing:
+  #   openrouter/tencent/hy3:
+  #     only: [tencent]
+  #     allow_fallbacks: false
+
 # economy（省钱）| balanced（均衡）| quality（最高质量）
 quality: balanced

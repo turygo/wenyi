@@ -19,7 +19,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from trans_novel.config import LLMConfig, ModelRef
+from trans_novel.config import LLMConfig, ModelRef, ProviderRouting
 from trans_novel.llm.base import Messages
 from trans_novel.llm.generation import GenerationOptions
 from trans_novel.llm.retrying import (
@@ -101,6 +101,7 @@ def build_request_kwargs(
     json_mode: bool = False,
     max_tokens: int | None = None,
     generation_options: GenerationOptions | None = None,
+    provider_routing: ProviderRouting | None = None,
 ) -> dict[str, Any]:
     """按逐模型能力构造请求；路由意图只在模型明确支持时下发。"""
     validate_generation_options(capabilities, model_ref, generation_options)
@@ -132,11 +133,14 @@ def build_request_kwargs(
         if reasoning_enabled:
             kwargs["reasoning_effort"] = model_ref.reasoning_effort
     elif dialect == DIALECT_OPENROUTER:
-        kwargs["extra_body"] = {
+        extra_body: dict[str, Any] = {
             "reasoning": (
                 {"effort": model_ref.reasoning_effort} if reasoning_enabled else {"enabled": False}
             )
         }
+        if provider_routing is not None:
+            extra_body["provider"] = provider_routing.model_dump(exclude_none=True)
+        kwargs["extra_body"] = extra_body
     if max_tokens is not None:
         kwargs["max_tokens"] = (
             max(max_tokens, _REASONING_FLOOR_TOKENS) if reasoning_enabled else max_tokens
@@ -183,6 +187,10 @@ def warn_telemetry_failure() -> None:
 
 def _started_at() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _telemetry_call_id(current: str | None, sink: CallTelemetrySink | None) -> str | None:
+    return current or uuid.uuid4().hex if sink is not None else None
 
 
 def _request_hash(kwargs: dict[str, Any]) -> str:
@@ -282,12 +290,12 @@ class OpenAICompatibleTransport:
             json_mode=json_mode,
             max_tokens=max_tokens,
             generation_options=self.generation_options,
+            provider_routing=self.cfg.provider_routing.get(f"{self.provider}/{model_ref.model}"),
         )
         if capabilities.responses_api:
             kwargs = build_responses_request_kwargs(kwargs)
-        telemetry_enabled = self.telemetry_sink is not None
-        logical_call_id = logical_call_id or uuid.uuid4().hex if telemetry_enabled else None
-        if telemetry_enabled:
+        logical_call_id = _telemetry_call_id(logical_call_id, self.telemetry_sink)
+        if self.telemetry_sink is not None:
             try:
                 request_digest = _request_hash(kwargs)
             except Exception:

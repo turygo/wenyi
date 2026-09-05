@@ -118,7 +118,13 @@ class TestConfigValidation(unittest.TestCase):
                             "bailian/qwen3.7-flash:off",
                         ],
                         "fast": ["bailian/qwen3.7-flash:off"],
-                    }
+                    },
+                    "provider_routing": {
+                        "openrouter/tencent/hy3": {
+                            "only": ["tencent"],
+                            "allow_fallbacks": False,
+                        }
+                    },
                 }
             }
         )
@@ -131,6 +137,10 @@ class TestConfigValidation(unittest.TestCase):
         self.assertEqual(go.capabilities_for("deepseek-v4-flash").request_dialect, DIALECT_DEEPSEEK)
         hy3 = capabilities_for("openrouter", "tencent/hy3")
         self.assertTrue(hy3.catalogued and hy3.supports_temperature)
+        self.assertEqual(
+            cfg.llm.provider_routing["openrouter/tencent/hy3"].only,
+            ["tencent"],
+        )
         self.assertEqual(bailian.capabilities_for("qwen3.7-flash").request_dialect, DIALECT_BAILIAN)
 
     def test_model_thinking_suffix_is_validated_against_capabilities(self):
@@ -426,6 +436,22 @@ class TestProviderRequestCapabilities(unittest.TestCase):
             self.messages,
         )
         self.assertEqual(router["extra_body"], {"reasoning": {"enabled": False}})
+
+    def test_configured_openrouter_provider_route_is_sent(self):
+        from trans_novel.config import ProviderRouting
+        from trans_novel.llm.providers.transport import build_request_kwargs
+        from trans_novel.model_profiles import DIALECT_OPENROUTER, ModelCapabilities
+
+        kwargs = build_request_kwargs(
+            ModelCapabilities(DIALECT_OPENROUTER),
+            ModelRef("openrouter", "any/model", reasoning_enabled=False),
+            self.messages,
+            provider_routing=ProviderRouting(only=["tencent"], allow_fallbacks=False),
+        )
+        self.assertEqual(
+            kwargs["extra_body"]["provider"],
+            {"only": ["tencent"], "allow_fallbacks": False},
+        )
 
     def test_responses_api_conversion_preserves_controls(self):
         from trans_novel.llm.providers.transport import (

@@ -77,12 +77,23 @@ class ModelRoles(BaseModel):
         return normalized
 
 
+class ProviderRouting(BaseModel):
+    """OpenRouter provider constraints for one configured model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    only: list[str] | None = Field(default=None, min_length=1)
+    order: list[str] | None = Field(default=None, min_length=1)
+    allow_fallbacks: bool | None = None
+
+
 class LLMConfig(BaseModel):
     """四模型角色的公开 LLM 配置。"""
 
     model_config = ConfigDict(extra="forbid")
 
     models: ModelRoles = Field(default_factory=ModelRoles)
+    provider_routing: dict[str, ProviderRouting] = Field(default_factory=dict)
     base_url: str | None = None
     api_key_env: str | None = None
 
@@ -98,6 +109,13 @@ class LLMConfig(BaseModel):
                     raise ValueError(f"llm.models.{role}：{error}") from None
                 if provider == "openai-compatible":
                     has_custom = True
+        for value in self.provider_routing:
+            try:
+                provider, model = parse_provider_model(value)
+            except ValueError as error:
+                raise ValueError(f"llm.provider_routing：{error}") from None
+            if provider != "openrouter":
+                raise ValueError(f"llm.provider_routing 仅支持 openrouter 模型：{provider}/{model}")
         if has_custom:
             if not (self.base_url or "").strip():
                 raise ValueError("llm.base_url：openai-compatible 必须配置服务地址")

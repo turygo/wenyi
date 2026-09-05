@@ -106,7 +106,7 @@ _MODEL_CAPABILITIES: dict[tuple[str, str], ModelCapabilities] = {
         supports_temperature=True,
     ),
     ("openrouter", "tencent/hy3"): ModelCapabilities(
-        request_dialect=DIALECT_GENERIC,
+        request_dialect=DIALECT_OPENROUTER,
         catalogued=True,
         supports_temperature=True,
     ),
