@@ -3,6 +3,7 @@
 本项目的所有重要变更都记录在此文件中，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ## [Unreleased]
+- Moved local benchmark specifications, corpora, and run artifacts from the repository root into one ignored `benchmarks/` workspace.
 
 ## [1.1.0] - 2026-09-05
 - OpenRouter models can now constrain provider selection through per-model routing settings.

@@ -20,5 +20,4 @@ config.yaml
 
 .worktrees
 *.spec
-benchmark_data/
-benchmark_runs/
+/benchmarks/

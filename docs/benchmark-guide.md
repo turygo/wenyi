@@ -1,10 +1,10 @@
 # 模型 Benchmark 操作指南
 
-本指南覆盖生产等价的章节 EPUB benchmark、自动分片评审和确定性报告。只处理已获授权的书籍；源书、运行状态、模型输出、评审 shard 和报告均是本地数据，不得提交。
+本指南覆盖生产等价的章节 EPUB benchmark、自动分片评审和确定性报告。所有规格、源书、运行状态、模型输出、评审 shard 和报告都保存在 Git 忽略的本地 `benchmarks/` 工作区。
 
 ## 核心不变量
 
-- benchmark 直接调用生产 `Application.run_all()`，输入是 `BOOK_SPEC.yaml` 指向的原始章节 EPUB。
+- benchmark 直接调用生产 `Application.run_all()`，输入是 `benchmarks/corpus/books.yaml` 指向的原始章节 EPUB。
 - 每个候选、章节和 replicate 使用独立状态目录；polish arm 只从同模型对的已关闭 minimal arm 克隆初译状态。
 - 不存在 benchmark 专用翻译 prompt、共享 preparation 或独立重译的 polish control。
 - minimal 使用 `balanced`（不润色），polish 使用 `quality`（仅新增润色及必要收尾）。
@@ -15,31 +15,31 @@
 ## 文件布局
 
 ```text
-BOOK_SPEC.yaml
-CANDIDATES.yaml
-REVIEW_SPEC.yaml
-PRICE.yaml
-benchmark_data/
-  sources/
-    screen-01.epub
-    ...
-    formal-01.epub
-    ...
-    formal-06.epub
-    hidden-01.epub
-benchmark_runs/
-  canary/
-  full/
-  review/
-  review-results/
-  report/
+benchmarks/                         # 整体由 Git 忽略
+  data/                             # 原始及切分后的 EPUB
+  corpus/
+    books.yaml
+    selections/
+      current.yaml
+      archive/initial.yaml
+  experiments/
+    opencode-ablation/
+      candidates.yaml
+      prices.yaml
+    three-translators/
+      candidates.yaml
+      prices.yaml
+    opencode-single-legacy/
+      review.yaml
+  runs/                             # canary、full、review 和 report 输出
 ```
 
-所有 `benchmark_runs/` 输出都应使用新目录。不要把旧架构生成的 preparation、attribution、evaluation pack 或 report 目录与新运行混用。
+共享语料定义放在 `corpus/`；候选、价格和评审规格按实验归组。所有新运行都使用
+`benchmarks/runs/` 下的新目录，不要混用不同输入身份的运行产物。
 
 ## 1. 准备书籍规范
 
-`BOOK_SPEC.yaml` 的路径相对于规范文件解析。语料约束是至少 3 个 `screen`、至少 6 个 `formal` 和至少 1 个 `hidden`；full runner 进一步要求 formal 恰好为 6 个。正式源文件应是已经切出的章节 EPUB，而不是整本原书。
+`benchmarks/corpus/books.yaml` 的路径相对于规范文件解析。语料约束是至少 3 个 `screen`、至少 6 个 `formal` 和至少 1 个 `hidden`；full runner 进一步要求 formal 恰好为 6 个。正式源文件应是已经切出的章节 EPUB，而不是整本原书。
 
 ```yaml
 schema_version: 1
@@ -47,20 +47,20 @@ source_language: en
 target_language: zh
 books:
   - book_id: screen-01
-    path: benchmark_data/sources/screen-01.epub
+    path: ../data/sources/screen-01.epub
     split: screen
   - book_id: screen-02
-    path: benchmark_data/sources/screen-02.epub
+    path: ../data/sources/screen-02.epub
     split: screen
   - book_id: screen-03
-    path: benchmark_data/sources/screen-03.epub
+    path: ../data/sources/screen-03.epub
     split: screen
   - book_id: formal-01
-    path: benchmark_data/sources/formal-01.epub
+    path: ../data/sources/formal-01.epub
     split: formal
   # formal-02 ... formal-06
   - book_id: hidden-01
-    path: benchmark_data/sources/hidden-01.epub
+    path: ../data/sources/hidden-01.epub
     split: hidden
 ```
 
@@ -68,7 +68,7 @@ books:
 
 ## 2. 配置候选
 
-`CANDIDATES.yaml` 决定实际 Provider、模型和 minimal/polish 变体，不继承本地 `config.yaml`：
+实验目录中的 `candidates.yaml` 决定实际 Provider、模型和 minimal/polish 变体，不继承本地 `config.yaml`：
 
 ```yaml
 schema_version: 2
@@ -104,9 +104,9 @@ canary 从按 `book_id` 排序后的第一个 `screen` 章节中选择一个；�
 
 ```bash
 uv run trans-novel tools benchmark run canary \
-  BOOK_SPEC.yaml CANDIDATES.yaml \
-  --book-id screen-01 \
-  --out benchmark_runs/canary
+  benchmarks/corpus/books.yaml \
+  benchmarks/experiments/three-translators/candidates.yaml \
+  --book-id screen-01 --out benchmarks/runs/three-translators/canary
 ```
 
 成功条件：候选都走完整生产质量流水线，生成 EPUB、`segments.jsonl` 和物理调用遥测，并写入完成状态。canary 不是缩短 prompt 的模拟请求。
@@ -115,8 +115,9 @@ uv run trans-novel tools benchmark run canary \
 
 ```bash
 uv run trans-novel tools benchmark run full \
-  BOOK_SPEC.yaml CANDIDATES.yaml \
-  --out benchmark_runs/full
+  benchmarks/corpus/books.yaml \
+  benchmarks/experiments/three-translators/candidates.yaml \
+  --out benchmarks/runs/three-translators/full
 ```
 
 输出结构：
@@ -137,10 +138,10 @@ full/
 
 ## 5. 准备自动评审
 
-先计算 `run.json` 的原始字节 SHA-256，并创建 `REVIEW_SPEC.yaml`：
+先计算 `run.json` 的原始字节 SHA-256，并在对应实验目录中创建 `review.yaml`：
 
 ```bash
-shasum -a 256 benchmark_runs/full/run.json
+shasum -a 256 benchmarks/runs/three-translators/full/run.json
 ```
 
 ```yaml
@@ -156,8 +157,9 @@ shard_count: 8
 
 ```bash
 uv run trans-novel tools benchmark evaluate prepare \
-  benchmark_runs/full REVIEW_SPEC.yaml \
-  --out benchmark_runs/review
+  benchmarks/runs/three-translators/full \
+  benchmarks/experiments/three-translators/review.yaml \
+  --out benchmarks/runs/three-translators/review
 ```
 
 抽样对每本 formal 章节独立执行，优先覆盖：
@@ -181,8 +183,8 @@ uv run trans-novel tools benchmark evaluate prepare \
 不同 reviewer 的 unit 集合互不重叠。结果保存为：
 
 ```text
-benchmark_runs/review-results/shard-001.json
-benchmark_runs/review-results/shard-002.json
+benchmarks/runs/three-translators/review-results/shard-001.json
+benchmarks/runs/three-translators/review-results/shard-002.json
 ...
 ```
 
@@ -199,8 +201,10 @@ benchmark_runs/review-results/shard-002.json
 
 ```bash
 uv run trans-novel tools benchmark evaluate finalize \
-  benchmark_runs/review benchmark_runs/review-results
-uv run trans-novel tools benchmark evaluate validate benchmark_runs/review
+  benchmarks/runs/three-translators/review \
+  benchmarks/runs/three-translators/review-results
+uv run trans-novel tools benchmark evaluate validate \
+  benchmarks/runs/three-translators/review
 ```
 
 汇总器校验所有输入后解除 A/B 盲化，输出：
@@ -214,9 +218,7 @@ uv run trans-novel tools benchmark evaluate validate benchmark_runs/review
 
 ## 8. 冻结价格并生成报告
 
-`PRICE.yaml` 使用 `opencode-go:<resolved-model>` 作为模型键。仓库中的快照来自
-OpenCode Go 官方价格表，币种为美元、单价为每百万 token。DeepSeek V4 Flash
-按官方 UTC 峰谷时段逐请求计价；其他两个模型使用全天价格：
+实验目录中的 `prices.yaml` 使用 `<provider>:<resolved-model>` 作为模型键。价格快照应记录来源、抓取时间、币种和每百万 token 单价；存在峰谷价时按请求时间分别配置：
 
 ```yaml
 schema_version: 1
@@ -242,14 +244,17 @@ models:
         input_uncached_per_million: '0.44'
         input_cached_per_million: '0.014'
         output_per_million: '1.32'
-  # muse-spark-1.3-contributor and mimo-v2.5 follow the committed PRICE.yaml
+  # 其余模型继续列在同一实验的 prices.yaml 中
 ```
 
 ```bash
 uv run trans-novel tools benchmark report build \
-  benchmark_runs/full benchmark_runs/review PRICE.yaml \
-  --out benchmark_runs/report
-uv run trans-novel tools benchmark report validate benchmark_runs/report
+  benchmarks/runs/three-translators/full \
+  benchmarks/runs/three-translators/review \
+  benchmarks/experiments/three-translators/prices.yaml \
+  --out benchmarks/runs/three-translators/report
+uv run trans-novel tools benchmark report validate \
+  benchmarks/runs/three-translators/report
 ```
 
 报告生成：
@@ -269,8 +274,9 @@ uv run trans-novel tools benchmark report validate benchmark_runs/report
 
 ```bash
 uv run trans-novel tools benchmark integration run \
-  CORPUS_DIR BOOK_SPEC.yaml CANDIDATES.yaml INTEGRATION_SPEC.yaml \
-  --out benchmark_runs/integration
+  CORPUS_DIR benchmarks/corpus/books.yaml \
+  benchmarks/experiments/three-translators/candidates.yaml INTEGRATION_SPEC.yaml \
+  --out benchmarks/runs/three-translators/integration
 ```
 
 它不替代 formal 章节 benchmark，也不参与自动评审抽样。需要把终态集成事实复制进报告时，可向 `report build` 传入 `--integration INTEGRATION.json`。
@@ -278,7 +284,7 @@ uv run trans-novel tools benchmark integration run \
 ## 故障处理
 
 - `immutable benchmark run identity mismatch`：输出目录属于不同输入；使用新的空目录。
-- `full benchmark requires exactly six formal chapter EPUBs`：修正 `BOOK_SPEC.yaml`，不要传整本原书或额外 formal 条目。
+- `full benchmark requires exactly six formal chapter EPUBs`：修正 `benchmarks/corpus/books.yaml`，不要传整本原书或额外 formal 条目。
 - `candidate segment sets do not match`：某个候选分支缺段或使用了不同源文件；不要手工补齐，重跑损坏分支。
 - `finding ... quote is not present`：reviewer 证据不是原文/对应译文的逐字子串；修正该 shard JSON。
 - `report ... provisional`：检查 `system.json` 和 `costs.json`，定位失败调用、缺失输出或未定价模型。

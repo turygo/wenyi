@@ -1,6 +1,0 @@
-schema_version: 1
-benchmark_id: wenyi-benchmark
-run_sha256: a088a78eba227c5e83c5c289c92f79b993a932dc7b41580c48a01d50d3442967
-seed: 17
-segments_per_book: 24
-shard_count: 8

@@ -256,86 +256,8 @@ uv run python -m unittest discover -s tests
 ```
 ## 本地模型基准
 
-基准运行直接把 `BOOK_SPEC.yaml` 中的原始章节 EPUB 交给生产 `Application.run_all()`。
-每个候选和章节使用独立的 `RunStore`；不共享准备结果、译文或术语库，也不存在
-benchmark 专用翻译提示词。`economy` 不润色，`balanced`、`quality` 和 benchmark
-始终执行生产润色路径。
-
-`BOOK_SPEC.yaml` 必须包含至少 3 个 `screen`、恰好用于正式运行的 6 个 `formal`
-以及至少 1 个 `hidden` EPUB。`CANDIDATES.yaml` 中每个候选都必须显式配置
-`translator_model`、`analyst_model`、`editor_model`、`fast_model` 及 thinking 级别。
-
-```bash
-# 先用一个真实 screen 章节验证生产请求、路由、输出和遥测
-trans-novel tools benchmark run canary BOOK_SPEC.yaml CANDIDATES.yaml \
-  --out benchmark_runs/canary
-
-# 对全部 6 个 formal 章节逐候选运行完整生产质量流水线
-trans-novel tools benchmark run full BOOK_SPEC.yaml CANDIDATES.yaml \
-  --out benchmark_runs/full
-```
-
-运行目录采用严格的创建/续跑语义。已有 `run.json` 必须与本次输入身份完全一致；
-已完成分支只校验文件哈希，不会重新翻译。`benchmark_data/`、`benchmark_runs/`、
-源书、模型输出和 Provider 凭据均不得提交。
-
-## 自动分片评审
-
-评审准备从每个正式章节确定性抽取风险、对话、专名、长句和普通叙事段落。
-对三个以上候选时，评审准备先枚举候选对，再把每对译文按单元确定性盲化为 A/B；
-所有候选对被均衡拆入互不重叠的 shard。每个 reviewer 只接收一个候选对的严格
-JSON；每条问题都必须引用原文和对应译文中的真实子串。
-
-```bash
-trans-novel tools benchmark evaluate prepare \
-  benchmark_runs/full REVIEW_SPEC.yaml --out benchmark_runs/review
-
-# 将各 shard 的 JSON 结果写入 RESULTS_DIR 后：
-trans-novel tools benchmark evaluate finalize benchmark_runs/review RESULTS_DIR
-trans-novel tools benchmark evaluate validate benchmark_runs/review
-```
-
-`REVIEW_SPEC.yaml` 绑定 `run.json` 的原始字节 SHA-256：
-
-```yaml
-schema_version: 1
-benchmark_id: wenyi-benchmark
-run_sha256: "<sha256-of-run.json>"
-seed: 17
-segments_per_book: 24
-shard_count: 8
-```
-
-汇总器严格校验 shard 身份、完整且不重复的单元集合、盲化映射，以及每条
-`source_quote` / `target_quote` 证据。最终生成 `comparison.json`、
-`findings.jsonl`、`summary.json` 和 `review_complete.json`。没有可区分证据时
-不会虚构获胜者。
-
-## 自动评审报告
-
-报告只读取已完成的生产运行、自动评审结果和冻结价格快照，不调用模型或网络：
-
-```bash
-trans-novel tools benchmark report build \
-  benchmark_runs/full benchmark_runs/review PRICE.yaml \
-  --out benchmark_runs/report
-trans-novel tools benchmark report validate benchmark_runs/report
-```
-
-报告包含候选严重度计数、错误类型、每万原文词加权错误、逐书胜负、证据明细、
-生产调用系统状态和 API 成本。出现失败请求、缺失输出或无法定价的模型时，报告
-状态为 `provisional` 且不宣布获胜者；否则为 `final`。原生 reasoning token 仍计入系统与成本事实。
-
-隐藏 EPUB 的中断续跑集成仍可单独运行：
-
-```bash
-trans-novel tools benchmark integration run CORPUS_DIR BOOK_SPEC.yaml CANDIDATES.yaml \
-  INTEGRATION_SPEC.yaml --out benchmark_runs/integration
-```
-输出包括 `integration_request.json`、
-`integration_state.json`、`candidates/<id>/result.json`、`integration.json` 和
-`integration_complete.json`；最终清单只在所有候选进入终态后写入，并记录单语与双语
-输出路径及其原始字节哈希。
+本地模型基准使用独立的 `benchmarks/` 工作区，不属于主应用配置。完整布局、配置格式和操作命令见
+[`docs/benchmark-guide.md`](docs/benchmark-guide.md)。
 
 ## 提交与发版
 
