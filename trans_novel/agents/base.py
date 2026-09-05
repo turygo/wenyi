@@ -7,7 +7,8 @@ workflow 组合根按解析后的语言构造每个 agent，依赖每个 agent �
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from trans_novel.config import Config
 from trans_novel.ingest.models import sanitize_generated_text
@@ -40,6 +41,20 @@ class WorkflowProtocolError(RuntimeError, LLMError):
         self.reason = reason
         self.message = message
         super().__init__(message or reason)
+
+
+T = TypeVar("T")
+
+
+def retry_protocol(operation: Callable[[], T], *, retries: int) -> T:
+    """Retry one logical model call when parsing or output validation rejects its response."""
+    for attempt in range(retries + 1):
+        try:
+            return operation()
+        except (WorkflowProtocolError, JSONParseError):
+            if attempt == retries:
+                raise
+    raise AssertionError("protocol retry loop must return or raise")
 
 
 class Agent:

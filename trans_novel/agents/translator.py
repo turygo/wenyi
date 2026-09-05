@@ -11,7 +11,7 @@ translate.single）；附属章旁路走 light-translator（operation=translate.
 from dataclasses import dataclass
 
 from trans_novel.agents import langprofile, prompts
-from trans_novel.agents.base import Agent, WorkflowProtocolError
+from trans_novel.agents.base import Agent, WorkflowProtocolError, retry_protocol
 from trans_novel.glossary.store import GlossaryTerm, terms_matching_text
 from trans_novel.ingest.models import KIND_HEADING
 from trans_novel.llm.errors import JSONParseError
@@ -102,7 +102,7 @@ class Translator(Agent):
             raise AlignmentError("translation_item_invalid", "模型返回了空译文或异常长译文")
         return target
 
-    def _translate_one_with_retries(
+    def _translate_one_with_protocol_retry(
         self,
         source,
         glossary_terms,
@@ -112,28 +112,27 @@ class Translator(Agent):
         agent: str,
         operation: str,
         kind: str | None,
-        attempts: int,
+        retries: int,
     ) -> tuple[str | None, int]:
         request_count = 0
-        for _ in range(attempts):
+
+        def call() -> str:
+            nonlocal request_count
             request_count += 1
-            try:
-                return (
-                    self._translate_one(
-                        source,
-                        glossary_terms,
-                        style,
-                        context,
-                        agent=agent,
-                        operation=operation,
-                        kind=kind,
-                    ),
-                    request_count,
-                )
-            except AlignmentError as exc:
-                if exc.reason != "translation_item_invalid":
-                    raise
-        return None, request_count
+            return self._translate_one(
+                source,
+                glossary_terms,
+                style,
+                context,
+                agent=agent,
+                operation=operation,
+                kind=kind,
+            )
+
+        try:
+            return retry_protocol(call, retries=retries), request_count
+        except (WorkflowProtocolError, JSONParseError):
+            return None, request_count
 
     def repair_issue(
         self,
@@ -158,16 +157,20 @@ class Translator(Agent):
             issue_type=issue_type,
             issue_detail=issue_detail,
         )
-        target = self._ask_text(
-            system,
-            user,
-            agent="editor",
-            operation="translate.repair",
-            strict=True,
-        )
-        if not target or len(target) > max(256, len(source) * 4):
-            raise AlignmentError("translation_item_invalid", "模型返回了空译文或异常长译文")
-        return target
+
+        def call() -> str:
+            target = self._ask_text(
+                system,
+                user,
+                agent="editor",
+                operation="translate.repair",
+                strict=True,
+            )
+            if not target or len(target) > max(256, len(source) * 4):
+                raise AlignmentError("translation_item_invalid", "模型返回了空译文或异常长译文")
+            return target
+
+        return retry_protocol(call, retries=self.config.pipeline.protocol_retry_limit)
 
     def translate_batch(
         self,
@@ -185,20 +188,17 @@ class Translator(Agent):
         if not sources:
             return TranslationBatchResult((), 0)
         translated_indices = [
-            index
-            for index, source in enumerate(sources)
-            if any(character.isalpha() for character in source)
-            and not langprofile.is_machine_literal(source)
+            index for index, source in enumerate(sources) if langprofile.needs_translation(source)
         ]
         targets = list(sources)
         if not translated_indices:
             return TranslationBatchResult(tuple(targets), 0)
 
         request_count = 0
-        attempts = self.config.pipeline.align_retry_limit + 1
+        retries = self.config.pipeline.protocol_retry_limit
         if self.config.pipeline.single_segment_translation:
             for index in translated_indices:
-                target, count = self._translate_one_with_retries(
+                target, count = self._translate_one_with_protocol_retry(
                     sources[index],
                     glossary_terms,
                     style,
@@ -206,11 +206,11 @@ class Translator(Agent):
                     agent=agent,
                     operation=operation,
                     kind=kind,
-                    attempts=attempts,
+                    retries=retries,
                 )
                 request_count += count
                 if target is None and fallback_agent is not None:
-                    target, count = self._translate_one_with_retries(
+                    target, count = self._translate_one_with_protocol_retry(
                         sources[index],
                         glossary_terms,
                         style,
@@ -218,7 +218,7 @@ class Translator(Agent):
                         agent=fallback_agent,
                         operation=operation,
                         kind=kind,
-                        attempts=attempts,
+                        retries=retries,
                     )
                     request_count += count
                 if target is None:
@@ -230,41 +230,50 @@ class Translator(Agent):
             return TranslationBatchResult(tuple(targets), request_count)
 
         translated_sources = [sources[index] for index in translated_indices]
-        for _ in range(attempts):
+
+        def call_batch() -> list[str]:
+            nonlocal request_count
             request_count += 1
-            try:
-                translated = self._call_batch(
-                    translated_sources,
-                    glossary_terms,
-                    style,
-                    context,
+            return self._call_batch(
+                translated_sources,
+                glossary_terms,
+                style,
+                context,
+                agent=agent,
+                operation=operation,
+            )
+
+        try:
+            translated = retry_protocol(call_batch, retries=retries)
+            for index, target in zip(translated_indices, translated, strict=True):
+                targets[index] = target
+            return TranslationBatchResult(tuple(targets), request_count)
+        except (WorkflowProtocolError, JSONParseError):
+            pass
+        for index in translated_indices:
+            source = sources[index]
+            attempt = 0
+
+            def call_single(source=source) -> str:
+                nonlocal attempt, request_count
+                request_count += 1
+                first = attempt == 0
+                attempt += 1
+                return self._translate_one(
+                    source,
+                    glossary_terms if first else [],
+                    style if first else "",
+                    context if first else "",
                     agent=agent,
                     operation=operation,
+                    kind=kind,
                 )
-                for index, target in zip(translated_indices, translated, strict=True):
-                    targets[index] = target
-                return TranslationBatchResult(tuple(targets), request_count)
-            except (AlignmentError, JSONParseError):
-                pass
-        for index in translated_indices:
-            for attempt in range(attempts):
-                request_count += 1
-                try:
-                    targets[index] = self._translate_one(
-                        sources[index],
-                        glossary_terms if attempt == 0 else [],
-                        style if attempt == 0 else "",
-                        context if attempt == 0 else "",
-                        agent=agent,
-                        operation=operation,
-                        kind=kind,
-                    )
-                    break
-                except (AlignmentError, JSONParseError):
-                    pass
-            else:
+
+            try:
+                targets[index] = retry_protocol(call_single, retries=retries)
+            except (WorkflowProtocolError, JSONParseError) as error:
                 raise AlignmentError(
                     "translation_segment_fallback_failed",
                     f"索引为 {index} 的段落在兜底翻译时失败",
-                )
+                ) from error
         return TranslationBatchResult(tuple(targets), request_count)

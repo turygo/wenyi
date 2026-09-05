@@ -56,6 +56,26 @@ class TestModelLanguageDetection(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "--source-language"):
                 Application(cfg, client=FakeClient(handler=handler)).prepare(txt)
 
+    def test_invalid_language_response_retries_automatically(self):
+        with tempfile.TemporaryDirectory() as d:
+            txt = os.path.join(d, "novel.txt")
+            write_sample_txt(txt)
+            cfg = self._cfg(os.path.join(d, "state"))
+            detection_calls = 0
+
+            def handler(messages, agent, operation, json_mode):
+                nonlocal detection_calls
+                if "语言识别器" in messages[0]["content"]:
+                    detection_calls += 1
+                    language = "" if detection_calls == 1 else "ja"
+                    return json.dumps({"language": language}, ensure_ascii=False)
+                return routing_handler(messages, agent, operation, json_mode)
+
+            store = Application(cfg, client=FakeClient(handler=handler)).prepare(txt)
+
+            self.assertEqual(detection_calls, 2)
+            self.assertEqual(store.load_state().identity.source_lang, "ja")
+
     def test_auto_detection_request_error_is_not_hidden(self):
         with tempfile.TemporaryDirectory() as d:
             txt = os.path.join(d, "novel.txt")

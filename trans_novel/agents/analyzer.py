@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from trans_novel.agents import prompts
-from trans_novel.agents.base import Agent
+from trans_novel.agents.base import Agent, WorkflowProtocolError, retry_protocol
 from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
 
 
@@ -26,10 +26,14 @@ class Analyzer(Agent):
     def analyze(self, sample_text: str) -> dict[str, Any]:
         system = prompts.render("analyzer_system", src=self.src, tgt=self.tgt)
         user = prompts.render("analyzer_user", src=self.src, tgt=self.tgt, sample=sample_text)
-        # 不传 default：分析失败照常抛出，由调用方决定（prepare 阶段失败应显式暴露）
-        data = self._ask_json(system, user, agent="analyst", operation="analyzer.analyze")
-        if not isinstance(data, dict):
-            data = {}
+
+        def call() -> dict[str, Any]:
+            data = self._ask_json(system, user, agent="analyst", operation="analyzer.analyze")
+            if not isinstance(data, dict):
+                raise WorkflowProtocolError("analysis_invalid_schema")
+            return data
+
+        data = retry_protocol(call, retries=self.config.pipeline.protocol_retry_limit)
         for key in (
             "genre",
             "tone",

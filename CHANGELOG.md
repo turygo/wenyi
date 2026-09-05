@@ -3,6 +3,8 @@
 本项目的所有重要变更都记录在此文件中，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ## [Unreleased]
+- Model-output protocol failures now use one shared bounded retry policy across analysis, translation, polishing, title translation, language detection, and prescan calls without restarting whole nodes; polishing no longer sends Arabic or Roman index page references to the model, and exhausted polish-item failures preserve the raw translation instead of discarding the batch.
+- Resume fingerprints now use persisted run identity languages for translation, polishing, and title-translation nodes, preventing `auto`/detected-language drift from invalidating completed chapters.
 
 ## [1.0.2] - 2026-09-04
 - Updated the default OpenCode Go Muse Spark Contributor model from 1.2 to 1.3 across runtime configuration, examples, and benchmark metadata.

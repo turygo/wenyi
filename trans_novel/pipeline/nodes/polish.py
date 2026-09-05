@@ -7,6 +7,7 @@ from trans_novel.config import Config
 from trans_novel.epub.slots import normalize_slot_transport
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.segmenter import batch_segments
+from trans_novel.llm.errors import LLM_FALLBACK_ERRORS
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.nodes.common import chapter_term_snapshot
 from trans_novel.pipeline.nodes.glossary import extract_and_store
@@ -100,9 +101,11 @@ class PolishNode:
                 source_text,
             )
         else:
+            state = store.load_state()
+            source_lang = state.identity.source_lang or self.config.source_lang
             fp = polish_input_fingerprint(
                 source_text,
-                self.polisher.src,
+                source_lang,
                 self.style_brief,
                 punctuation_normalize=self.config.punctuation_normalize,
                 model=polish_model_profile(self.config),
@@ -147,7 +150,17 @@ class PolishNode:
             batch = text_segs[start : start + count]
             srcs = [segment.source for segment in batch]
             raw_plain = [segment.target or "" for segment in batch]
-            final_plain = fut.result() if fut is not None else raw_plain
+            try:
+                final_plain = fut.result() if fut is not None else raw_plain
+            except LLM_FALLBACK_ERRORS as exc:
+                final_plain = raw_plain
+                store.log_event(
+                    "polish_batch_fallback",
+                    chapter=ci,
+                    start_index=start,
+                    count=count,
+                    reason=type(exc).__name__,
+                )
             locked = [t for t in term_snapshot if getattr(t, "locked", 0)]
             results = [
                 polish_gate(
@@ -161,7 +174,7 @@ class PolishNode:
                 for i in range(count)
             ]
             selected_plain = [
-                raw_plain[i] if langprofile.is_machine_literal(srcs[i]) else result.selected
+                srcs[i] if not langprofile.needs_translation(srcs[i]) else result.selected
                 for i, result in enumerate(results)
             ]
             selected_transport = align_epub_translations(batch, selected_plain)

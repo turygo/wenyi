@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import re
+
 LABELS = {
     "ja": "日文",
     "en": "英文",
@@ -19,6 +21,22 @@ LABELS = {
     "it": "意大利文",
     "pt": "葡萄牙文",
 }
+
+_ROMAN_PAGE = re.compile(r"M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})")
+
+
+def _roman_page_part(value: str) -> bool:
+    upper = value.upper()
+    if not value.islower() or not upper or not _ROMAN_PAGE.fullmatch(upper):
+        return False
+    numbers = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    total = 0
+    for index, char in enumerate(upper):
+        number = numbers[char]
+        total += (
+            -number if index + 1 < len(upper) and number < numbers[upper[index + 1]] else number
+        )
+    return total < 100
 
 
 def label(src: str) -> str:
@@ -73,8 +91,15 @@ def is_machine_literal(source: str) -> bool:
         return True
     if ":" in value and ("_" in value or any(char.isdigit() for char in value)):
         return True
+    if all(_roman_page_part(part) for part in re.split(r"[-–—]", value)):
+        return True
     if "." not in value or value.endswith("."):
         return False
     return all(
         part and all(char.isalnum() or char in "-_" for char in part) for part in value.split(".")
     )
+
+
+def needs_translation(source: str) -> bool:
+    """Whether a segment contains natural-language text that should be sent to a model."""
+    return any(character.isalpha() for character in source) and not is_machine_literal(source)

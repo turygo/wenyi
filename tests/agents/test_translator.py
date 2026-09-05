@@ -42,7 +42,7 @@ class TestTranslatorPlainContract(unittest.TestCase):
     def _config(self):
         config = Config.from_dict({"llm": fake_llm_dict(), "quality": "economy"})
         config.source_lang = "en"
-        config.pipeline.align_retry_limit = 1
+        config.pipeline.protocol_retry_limit = 1
         return config
 
     def test_translation_and_editor_repair_contract(self):
@@ -81,10 +81,11 @@ class TestTranslatorPlainContract(unittest.TestCase):
             "前后\t行\n下一\r终😀",
         )
 
-    def test_non_linguistic_segment_preserves_source_without_call(self):
+    def test_page_literals_preserve_source_without_call(self):
         client = FakeClient(handler=lambda *args: self.fail("LLM must not be called"))
-        result = Translator(client, self._config()).translate_batch(["123"], agent="translator")
-        self.assertEqual(result.translations, ("123",))
+        sources = ["123", "258–59", "xix", "xxvi", "xix–xx"]
+        result = Translator(client, self._config()).translate_batch(sources, agent="translator")
+        self.assertEqual(result.translations, tuple(sources))
         self.assertEqual(result.request_count, 0)
         self.assertEqual(client.calls, [])
 
@@ -93,7 +94,7 @@ class TestTranslatorAlignment(unittest.TestCase):
     def _config(self):
         config = Config.from_dict({"llm": fake_llm_dict(), "quality": "economy"})
         config.source_lang = "ja"
-        config.pipeline.align_retry_limit = 1
+        config.pipeline.protocol_retry_limit = 1
         return config
 
     def test_happy_path_aligned(self):
@@ -224,7 +225,7 @@ class TestTranslatorAlignment(unittest.TestCase):
         result = translator.translate_batch(["あ", "い"], agent="translator")
         self.assertEqual(result.translations, ("译0", "译0"))
         self.assertEqual(result.request_count, 4)
-        # align_retry_limit=1 → 2 次整批 + 逐段 2 次，全部计入逻辑调用
+        # protocol_retry_limit=1 → 2 次整批 + 逐段 2 次，全部计入逻辑调用
         self.assertEqual(len(client.calls), 4)
 
     def test_malformed_json_in_fallback_raises_alignment_with_stable_reason(self):
@@ -316,7 +317,7 @@ class TestTranslatorSingleSegmentContract(unittest.TestCase):
     def _config(self):
         config = Config.from_dict({"llm": fake_llm_dict(), "quality": "balanced"})
         config.source_lang = "en"
-        config.pipeline.align_retry_limit = 1
+        config.pipeline.protocol_retry_limit = 1
         return config
 
     def test_each_source_has_its_own_plain_text_call(self):
@@ -341,7 +342,7 @@ class TestTranslatorSingleSegmentContract(unittest.TestCase):
     def test_invalid_plain_text_retries(self):
         responses = iter(["", "译" * 300, "正确译文"])
         config = self._config()
-        config.pipeline.align_retry_limit = 2
+        config.pipeline.protocol_retry_limit = 2
         client = FakeClient(handler=lambda messages, agent, operation, json_mode: next(responses))
 
         result = Translator(client, config).translate_batch(["Alpha"], agent="translator")
@@ -437,7 +438,7 @@ class TestTranslateNodeHeadingPrompt(unittest.TestCase):
     def _node(self, client):
         config = Config.from_dict({"llm": fake_llm_dict(), "quality": "balanced"})
         config.source_lang = "en"
-        config.pipeline.align_retry_limit = 1
+        config.pipeline.protocol_retry_limit = 1
         translator = Translator(client, config)
         return SimpleNamespace(translator=translator, config=config)
 

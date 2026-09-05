@@ -446,18 +446,18 @@ class TranslateNode:
                 (self.frozen_book.book_id, shared.frozen_chapter_index(chapter_index)),
                 source_text,
             )
-        if bm_mode:
+        if (state := store.load_state()) and bm_mode:
             return back_matter_translate_input_fingerprint(
                 source_text,
-                self.translator.src,
-                self.translator.tgt,
+                state.identity.source_lang or self.config.source_lang,
+                state.identity.target_lang or self.config.target_lang,
                 punctuation_normalize=self.config.punctuation_normalize,
                 model=fast_translation_model_profile(self.config),
             )
         return translate_input_fingerprint(
             source_text,
-            self.translator.src,
-            self.translator.tgt,
+            state.identity.source_lang or self.config.source_lang,
+            state.identity.target_lang or self.config.target_lang,
             style_brief=self.style_brief,
             punctuation_normalize=self.config.punctuation_normalize,
             honorific_strategy=self.config.honorific_strategy,

@@ -12,7 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from trans_novel.agents import prompts
-from trans_novel.agents.base import Agent
+from trans_novel.agents.base import Agent, retry_protocol
 from trans_novel.glossary.miner import Candidate
 from trans_novel.glossary.store import TYPE_PERSON, GlossaryTerm
 
@@ -102,8 +102,17 @@ class CastNamer(Agent):
         )
         # 不设 default：一次模型调用失败若被兜成空列表，term_mining_done 会静默永久落盘，
         # 续跑再也不重试——异常整体冒泡，交由 workflow 节点捕获并放弃本次落标记。
-        raw = self._ask_json(
-            system, user, key="terms", agent="analyst", operation="prescan.name_terms"
+        raw = retry_protocol(
+            lambda: self._ask_json(
+                system,
+                user,
+                key="terms",
+                agent="analyst",
+                operation="prescan.name_terms",
+                strict=True,
+                items_are_dicts=True,
+            ),
+            retries=self.config.pipeline.protocol_retry_limit,
         )
         out: list[GlossaryTerm] = []
         for d in self.dict_items(raw):

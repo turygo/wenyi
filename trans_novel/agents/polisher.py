@@ -1,13 +1,13 @@
 """润色 Agent。
 
 逐段对照源文与直译稿做中文文学性二次加工，避免批量响应在段落之间串位。
-非严格模式下，单段响应无效时只保留该段原译文。
+单段响应在协议重试后仍无效时只保留该段原译文，不丢弃同批其他结果。
 """
 
 from __future__ import annotations
 
 from trans_novel.agents import langprofile, prompts
-from trans_novel.agents.base import Agent, WorkflowProtocolError
+from trans_novel.agents.base import Agent, WorkflowProtocolError, retry_protocol
 from trans_novel.glossary.store import GlossaryTerm
 
 
@@ -25,8 +25,8 @@ class Polisher(Agent):
             raise ValueError("polish source/target count mismatch")
         polished = []
         for source, target in zip(sources, targets, strict=True):
-            if langprofile.is_machine_literal(source):
-                polished.append(target)
+            if not langprofile.needs_translation(source):
+                polished.append(source)
                 continue
             system = prompts.render("polisher_system", src=self.src, tgt=self.tgt, n=1)
             user = prompts.render(
@@ -39,27 +39,35 @@ class Polisher(Agent):
                 numbered_source=prompts.numbered([source]),
                 numbered_target=prompts.numbered([target]),
             )
-            values = self._ask_json(
-                system,
-                user,
-                key="polished",
-                default=None,
-                agent="editor",
-                operation="polish.segment",
-                strict=strict,
-            )
-            one = (
-                values[0].strip()
-                if isinstance(values, list)
-                and len(values) == 1
-                and isinstance(values[0], str)
-                and values[0].strip()
-                else ""
-            )
-            if one:
-                polished.append(one)
-            elif strict:
-                raise WorkflowProtocolError("polish_item_invalid")
-            else:
+
+            def ask_one(system=system, user=user) -> str:
+                values = self._ask_json(
+                    system,
+                    user,
+                    key="polished",
+                    default=None,
+                    agent="editor",
+                    operation="polish.segment",
+                    strict=strict,
+                )
+                one = (
+                    values[0].strip()
+                    if isinstance(values, list)
+                    and len(values) == 1
+                    and isinstance(values[0], str)
+                    and values[0].strip()
+                    else ""
+                )
+                if not one:
+                    raise WorkflowProtocolError("polish_item_invalid")
+                return one
+
+            try:
+                polished.append(
+                    retry_protocol(ask_one, retries=self.config.pipeline.protocol_retry_limit)
+                    if strict
+                    else ask_one()
+                )
+            except WorkflowProtocolError:
                 polished.append(target)
         return polished

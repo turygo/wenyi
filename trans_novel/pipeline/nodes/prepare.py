@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from trans_novel.agents.base import WorkflowProtocolError, retry_protocol
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest import Document
@@ -77,13 +78,19 @@ class PrepareNode:
         if self.config.source_lang in ("auto", "", None):
             if progress:
                 progress(0, 0, "识别语言…")
-            detected = self._detect_language_ai(doc)
-            if not detected:
+
+            def detect() -> str:
+                detected = self._detect_language_ai(doc)
+                if detected:
+                    return detected
                 store.log_event("language_detection_failed", source_lang=doc.source_lang)
-                raise RuntimeError(
+                raise WorkflowProtocolError(
+                    "language_detection_invalid",
                     "自动识别源语言失败：请检查模型配置，或用 --source-language "
-                    "指定 ISO 639-1 语言代码（如 ja/en/ko/ru/fr/de/es）。"
+                    "指定 ISO 639-1 语言代码（如 ja/en/ko/ru/fr/de/es）。",
                 )
+
+            detected = retry_protocol(detect, retries=self.config.pipeline.protocol_retry_limit)
             doc.source_lang = detected
             store.log_event("language_detected", source_lang=doc.source_lang)
 

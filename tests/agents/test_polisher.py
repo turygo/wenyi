@@ -32,13 +32,13 @@ class TestPolisher(unittest.TestCase):
         self.assertEqual([call["operation"] for call in client.calls], ["polish.segment"] * 2)
         self.assertTrue(all(call["agent"] == "editor" for call in client.calls))
 
-    def test_machine_literal_is_exact_and_skips_editor(self):
+    def test_machine_and_page_literals_restore_source_and_skip_editor(self):
         client = FakeClient(handler=lambda *args: self.fail("machine literals must not call LLM"))
 
-        literal = "{var=a--b}"
+        sources = ["{var=a--b}", "245", "258–59", "xix", "xxvi", "xix–xx"]
         self.assertEqual(
-            Polisher(client, _cfg()).polish([literal], [literal], strict=True),
-            [literal],
+            Polisher(client, _cfg()).polish(["坏译文"] * len(sources), sources, strict=True),
+            sources,
         )
         self.assertEqual(client.calls, [])
 
@@ -64,13 +64,37 @@ class TestPolisher(unittest.TestCase):
 
         self.assertEqual(out, ["甲", "润色乙"])
 
-    def test_invalid_strict_item_fails(self):
+    def test_invalid_strict_item_keeps_original_and_continues(self):
+        responses = iter(
+            [
+                {"polished": ["润色甲"]},
+                {"polished": []},
+                {"polished": []},
+                {"polished": []},
+                {"polished": ["润色丙"]},
+            ]
+        )
         client = FakeClient(
-            handler=lambda m, a, o, j: json.dumps({"polished": []}, ensure_ascii=False)
+            handler=lambda m, a, o, j: json.dumps(next(responses), ensure_ascii=False)
         )
 
-        with self.assertRaisesRegex(Exception, "polish_item_invalid"):
-            Polisher(client, _cfg()).polish(["甲"], ["a"], strict=True)
+        self.assertEqual(
+            Polisher(client, _cfg()).polish(["甲", "乙", "丙"], ["a", "b", "c"], strict=True),
+            ["润色甲", "乙", "润色丙"],
+        )
+        self.assertEqual(len(client.calls), 5)
+
+    def test_invalid_strict_item_retries(self):
+        responses = iter([{"polished": []}, {"polished": ["润色甲"]}])
+        client = FakeClient(
+            handler=lambda m, a, o, j: json.dumps(next(responses), ensure_ascii=False)
+        )
+
+        self.assertEqual(
+            Polisher(client, _cfg()).polish(["甲"], ["a"], strict=True),
+            ["润色甲"],
+        )
+        self.assertEqual(len(client.calls), 2)
 
     def test_each_prompt_contains_only_its_source(self):
         client = FakeClient(

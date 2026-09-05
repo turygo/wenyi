@@ -130,7 +130,7 @@ class PipelineConfig(BaseModel):
 
     polish: bool
     single_segment_translation: bool = False
-    align_retry_limit: int = 2
+    protocol_retry_limit: int = 2
     rolling_context_segments: int = 6
     prescan_concurrency: int = 4
     glossary_scope: Literal["chapter", "full"] = "chapter"
@@ -140,7 +140,7 @@ class PipelineConfig(BaseModel):
     @classmethod
     def for_quality(cls, quality: QualityPreset) -> PipelineConfig:
         common = {
-            "align_retry_limit": 2,
+            "protocol_retry_limit": 2,
             "rolling_context_segments": 6,
             "prescan_concurrency": 4,
             "glossary_scope": "chapter",

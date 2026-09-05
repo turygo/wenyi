@@ -20,12 +20,6 @@
         "lines": 212
       },
       {
-        "path": "trans_novel/pipeline/nodes/finish.py",
-        "symbol": "TitlesNode.execute",
-        "kind": "function",
-        "lines": 130
-      },
-      {
         "path": "trans_novel/pipeline/nodes/translate.py",
         "symbol": "TranslateNode",
         "kind": "class",

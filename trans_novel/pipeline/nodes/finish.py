@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from trans_novel.agents import prompts
-from trans_novel.agents.base import WorkflowProtocolError
+from trans_novel.agents.base import WorkflowProtocolError, retry_protocol
 from trans_novel.assemble import assemble, bilingual_out_path
 from trans_novel.assemble.report import build_report
 from trans_novel.config import Config
@@ -132,40 +132,10 @@ class TitlesNode:
             request.progress(0, 0, "翻译章节标题…")
         translated_titles: dict[str, str] = {}
         for title in unique_titles:
-            system = prompts.render("title_translator_system", src=src, tgt=tgt, n=1)
-            title_terms = terms_matching_text(self.glossary.all_terms(), title)
-            user = prompts.render(
-                "title_translator_user",
-                src=src,
-                tgt=tgt,
-                glossary=prompts.render_glossary(title_terms),
-                n=1,
-                numbered_titles=prompts.numbered([title]),
+            translated_titles[title] = retry_protocol(
+                lambda title=title: self._translate_title(title, src, tgt, store),
+                retries=self.config.pipeline.protocol_retry_limit,
             )
-            data = self.client.complete_json(
-                [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                stage="title_translate",
-                agent="analyst",
-                operation="title.translate",
-            )
-            out = data.get("titles") if isinstance(data, dict) else data
-            if not isinstance(out, list) or len(out) != 1:
-                store.log_event(
-                    "titles_translation_rejected",
-                    reason="count_mismatch",
-                    expected=1,
-                    actual=len(out) if isinstance(out, list) else None,
-                )
-                raise WorkflowProtocolError("title_count_mismatch")
-            translated = sanitize_generated_text(out[0]).strip() if isinstance(out[0], str) else ""
-            if not translated:
-                store.log_event(
-                    "titles_translation_rejected",
-                    reason="empty_item",
-                    expected=1,
-                )
-                raise WorkflowProtocolError("title_empty_item")
-            translated_titles[title] = translated
 
         for item in pending_items:
             key = _flat(item.get("title", ""))
@@ -187,6 +157,42 @@ class TitlesNode:
         fp = self._fingerprint(store)
         return NodeOutcome(fingerprint=fp)
 
+    def _translate_title(self, title: str, src: str, tgt: str, store) -> str:
+        system = prompts.render("title_translator_system", src=src, tgt=tgt, n=1)
+        title_terms = terms_matching_text(self.glossary.all_terms(), title)
+        user = prompts.render(
+            "title_translator_user",
+            src=src,
+            tgt=tgt,
+            glossary=prompts.render_glossary(title_terms),
+            n=1,
+            numbered_titles=prompts.numbered([title]),
+        )
+        data = self.client.complete_json(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            stage="title_translate",
+            agent="analyst",
+            operation="title.translate",
+        )
+        out = data.get("titles") if isinstance(data, dict) else data
+        if not isinstance(out, list) or len(out) != 1:
+            store.log_event(
+                "titles_translation_rejected",
+                reason="count_mismatch",
+                expected=1,
+                actual=len(out) if isinstance(out, list) else None,
+            )
+            raise WorkflowProtocolError("title_count_mismatch")
+        translated = sanitize_generated_text(out[0]).strip() if isinstance(out[0], str) else ""
+        if not translated:
+            store.log_event(
+                "titles_translation_rejected",
+                reason="empty_item",
+                expected=1,
+            )
+            raise WorkflowProtocolError("title_empty_item")
+        return translated
+
     def _fingerprint(self, store) -> str:
         m = store.load_manifest()
         titles = [str(c.get("title", "")) for c in m.get("chapters", []) if c.get("title")]
@@ -196,9 +202,10 @@ class TitlesNode:
             titles.extend(
                 str(e.get("title", "")) for e in raw_toc if isinstance(e, dict) and e.get("title")
             )
-        return titles_input_fingerprint(
-            titles, self.src, self.tgt, analyst_model_profile(self.config)
-        )
+        identity = m.get("identity") if isinstance(m.get("identity"), dict) else {}
+        src = identity.get("source_lang") or self.config.source_lang
+        tgt = identity.get("target_lang") or self.config.target_lang
+        return titles_input_fingerprint(titles, src, tgt, analyst_model_profile(self.config))
 
 
 class DeterministicQANode:

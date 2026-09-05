@@ -14,9 +14,10 @@ from trans_novel.epub.slots import EpubSegmentState, EpubTextSlot
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
 from trans_novel.ingest.models import Chapter, Document, Segment
 from trans_novel.llm import FakeClient
+from trans_novel.llm.errors import ProviderError
 from trans_novel.pipeline import Application
 from trans_novel.pipeline.contracts import GOAL_RUN_ALL, ExecutionGoal, NodeRequest
-from trans_novel.pipeline.nodes import DeterministicQANode, PolishNode
+from trans_novel.pipeline.nodes import DeterministicQANode, PolishNode, TranslateNode
 from trans_novel.pipeline.state import (
     NODE_DETERMINISTIC_QA,
     NODE_REPORT,
@@ -115,6 +116,36 @@ class TestMinimalPipeline(unittest.TestCase):
                 self.assertEqual(second.nodes[node_id].status, NODE_SUCCEEDED)
                 self.assertEqual(second.nodes[node_id].input_fingerprint, fingerprint)
 
+    def test_translation_fingerprint_uses_persisted_language(self):
+        class Translator:
+            src = "auto"
+            tgt = "zh"
+
+        with tempfile.TemporaryDirectory() as d:
+            store = RunStore(d)
+            store.save_state(
+                RunState(
+                    identity=RunIdentity(source_lang="en", target_lang="zh"),
+                    chapters=[ChapterIndex(index=0)],
+                    progress={0: ChapterProgress()},
+                )
+            )
+            store.save_chapter(
+                Chapter(index=0, title="Chapter", segments=[Segment(index=0, source="Hello.")])
+            )
+            config = _config(d)
+            node = TranslateNode.__new__(TranslateNode)
+            node.translator = Translator()
+            node.config = config
+            node.style_brief = ""
+            node.frozen_book = None
+            node.frozen_preparation = None
+
+            actual = node._fingerprint("Hello.", store, None, 0)
+            node.translator.src = "en"
+            expected = node._fingerprint("Hello.", store, None, 0)
+            self.assertEqual(actual, expected)
+
     def test_fingerprint_reconciliation_clears_translation_artifacts(self):
         issue = RepairIssue(
             key="issue",
@@ -192,6 +223,45 @@ class TestMinimalPipeline(unittest.TestCase):
             self.assertTrue(_LEGACY_TRANSLATION_OPERATIONS.isdisjoint(operations))
             self.assertEqual(operations - {"polish.segment"}, _MINIMAL_PIPELINE_OPERATIONS)
             self.assertEqual(operations & {"polish.segment"}, {"polish.segment"})
+
+    def test_exhausted_polish_protocol_retries_keep_raw_without_restarting_node(self):
+        with tempfile.TemporaryDirectory() as d:
+            polish_calls = 0
+
+            def handler(messages, agent, operation, json_mode):
+                nonlocal polish_calls
+                if operation == "polish.segment":
+                    polish_calls += 1
+                    return '{"polished": []}'
+                return routing_handler(messages, agent, operation, json_mode)
+
+            result = Application(
+                _config(d, quality="quality"), client=FakeClient(handler=handler)
+            ).run_all(_write_source(d), out_format="txt")
+
+            segments = result["store"].load_chapter(0).text_segments
+            self.assertEqual(polish_calls, len(segments) * 3)
+            self.assertEqual(result["store"].load_state().nodes["polish:0"].attempts, 1)
+            self.assertTrue(all(segment.target for segment in segments))
+            self.assertTrue(result["output"])
+
+    def test_exhausted_polish_provider_failure_falls_back_to_raw_batch(self):
+        with tempfile.TemporaryDirectory() as d:
+
+            def handler(messages, agent, operation, json_mode):
+                if operation == "polish.segment":
+                    raise ProviderError("editor unavailable")
+                return routing_handler(messages, agent, operation, json_mode)
+
+            result = Application(
+                _config(d, quality="quality"), client=FakeClient(handler=handler)
+            ).run_all(_write_source(d), out_format="txt")
+
+            store = result["store"]
+            self.assertEqual(store.load_state().nodes["polish:0"].status, "succeeded")
+            self.assertTrue(all(segment.target for segment in store.load_chapter(0).text_segments))
+            with open(store.event_log_path, encoding="utf-8") as stream:
+                self.assertIn('"event": "polish_batch_fallback"', stream.read())
 
     def test_quality_epub_machine_literal_preserves_exact_slots(self):
         with tempfile.TemporaryDirectory() as d:

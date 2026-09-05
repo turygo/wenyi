@@ -6,7 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from trans_novel.agents import prompts
-from trans_novel.agents.base import Agent
+from trans_novel.agents.base import Agent, retry_protocol
 from trans_novel.glossary.miner import Candidate, merge_candidates, mine_candidates_en
 
 
@@ -38,8 +38,16 @@ class TermMiner(Agent):
             user = prompts.render(
                 "term_miner_user", src=self.src, tgt=self.tgt, chapter=ci, source=text[:8000]
             )
-            raw = self._ask_json(
-                system, user, key="candidates", agent="preparer", operation="prescan.term_mine"
+            raw = retry_protocol(
+                lambda: self._ask_json(
+                    system,
+                    user,
+                    key="candidates",
+                    agent="preparer",
+                    operation="prescan.term_mine",
+                    strict=True,
+                ),
+                retries=self.config.pipeline.protocol_retry_limit,
             )
             return [s.strip() for s in raw or [] if isinstance(s, str) and s.strip()]
 

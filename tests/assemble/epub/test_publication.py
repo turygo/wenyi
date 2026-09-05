@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tests.fixtures.books import write_phase9_epub
+from tests.fixtures.books import write_phase9_epub, write_sample_epub
 from tests.fixtures.fake_llm import fake_llm_dict, routing_handler
 from trans_novel.assemble.epub.publication import (
     EpubPublishError,
@@ -54,6 +54,30 @@ def _stamp_formal_prereqs(store):
 
 
 class TestEpubStage2(unittest.TestCase):
+    def test_exhausted_polish_protocol_still_publishes_verified_epub(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.epub"
+            write_sample_epub(str(source))
+            config = Config.from_dict({"llm": fake_llm_dict(), "quality": "quality"})
+            config.source_lang = "ja"
+            config.state_dir = str(root / "state")
+
+            def handler(messages, agent, operation, json_mode):
+                if operation == "polish.segment":
+                    return '{"polished": []}'
+                return routing_handler(messages, agent, operation, json_mode)
+
+            result = Application(config, client=FakeClient(handler=handler)).run_all(
+                str(source), out_format="epub"
+            )
+
+            output = Path(result["output"])
+            self.assertTrue(output.is_file())
+            report = result["store"].load_epub_verification()
+            self.assertIsNotNone(report)
+            self.assertTrue(report["passed"])
+
     def test_failed_verification_preserves_existing_final_and_persists_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
