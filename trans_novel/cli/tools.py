@@ -6,7 +6,7 @@ import typer
 
 from trans_novel.benchmark.cli import benchmark_app
 from trans_novel.cli import common as cli_common
-from trans_novel.pipeline.execution import ReadinessError
+from trans_novel.pipeline.execution import ReadinessError, RequiredNodeFailed
 from trans_novel.pipeline.quality import lock, open_glossary, resolve
 from trans_novel.pipeline.state import IdentityMismatchError
 
@@ -96,6 +96,11 @@ def assemble(
         "--bilingual/--no-bilingual",
         help="覆盖配置文件中的双语版产出开关",
     ),
+    reanalyze_layout: bool = typer.Option(
+        False,
+        "--reanalyze-layout",
+        help="忽略已接受的 EPUB 布局分析并重新分析",
+    ),
 ):
     """回填生成译文文件（默认 EPUB）。"""
     from trans_novel.pipeline import Application
@@ -115,10 +120,14 @@ def assemble(
             out_path=out,
             mono=mono,
             bilingual=bilingual,
+            reanalyze_layout=reanalyze_layout,
+            progress=lambda _done, _total, message: console.print(message),
         )
-    except (IdentityMismatchError, ReadinessError) as error:
+    except (IdentityMismatchError, ReadinessError, RequiredNodeFailed) as error:
         console.print(f"[red]{error}[/]")
         raise typer.Exit(2) from error
+    if fmt == "epub":
+        cli_common.print_theme_warnings(store.load_epub_verification())
     for path in paths:
         console.print(f"已生成译文：[bold]{path}[/]")
 
@@ -158,7 +167,7 @@ def report(input: str = typer.Argument(..., help="输入文件")):
         f"Repair 检测 {repair.get('detected', 0)} 解决 {repair.get('resolved', 0)} "
         f"耗尽 {repair.get('accepted_after_exhaustion', 0)} 调用 {repair.get('attempts', 0)}"
     )
-    cli_common.print_back_matter(rep)
+    cli_common.print_chapter_processing(rep)
 
 
 tools_app.add_typer(benchmark_app, name="benchmark")

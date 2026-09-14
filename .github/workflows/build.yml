@@ -6,12 +6,20 @@ on:
     branches: [main]
     paths:
       - .github/workflows/build.yml
+      - uv.lock
       - pyproject.toml
       - scripts/prepare_release.py
+      - scripts/probe_theme_runtime.py
+      - scripts/theme_runtime_probe.css
+      - scripts/smoke_theme_assembly.py
       - trans_novel/config.example.yaml
       - trans_novel/__main__.py
       - trans_novel/cli/**
       - trans_novel/config.py
+      - trans_novel/agents/layout_analyzer.py
+      - trans_novel/assemble/epub/**
+      - trans_novel/epub/layout.py
+      - trans_novel/pipeline/**
   push:
     tags:
       - "v*"
@@ -104,14 +112,65 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install . pyinstaller
 
+      - name: Install CSS probe dependency
+        run: python -m pip install tinycss2==1.4.0
+
+      - name: Run Python 3.12 theme runtime probe
+        run: python scripts/probe_theme_runtime.py
+
+      - name: Build frozen theme runtime probe
+        run: >
+          python -m PyInstaller --onefile --name theme-runtime-probe
+          --distpath build/theme-probe/dist --workpath build/theme-probe/work
+          --specpath build/theme-probe/spec --collect-all tinycss2
+          --add-data "${{ github.workspace }}/scripts/theme_runtime_probe.css:."
+          scripts/probe_theme_runtime.py
+
+      - name: Run frozen theme runtime probe on Windows without PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = ""
+          & .\build\theme-probe\dist\theme-runtime-probe.exe
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Run frozen theme runtime probe on POSIX without PATH
+        if: runner.os != 'Windows'
+        shell: bash
+        run: PATH= build/theme-probe/dist/theme-runtime-probe
+
+      - name: Use Python 3.10 for theme runtime probe
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+          architecture: ${{ matrix.python_arch }}
+
+      - name: Install Python 3.10 CSS probe dependency
+        run: python -m pip install tinycss2==1.4.0
+
+      - name: Run Python 3.10 theme runtime probe
+        run: python scripts/probe_theme_runtime.py
+
+      - name: Restore Python 3.12 for release build
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.python_arch }}
+
       - name: Build single-file executable
         run: >
           python -m PyInstaller --name wenyi --onefile --clean --noconfirm
           --paths . --collect-all ebooklib --collect-all bs4 --collect-all lxml
           --collect-all openai --collect-all pydantic --collect-all yaml
-          --collect-data trans_novel --copy-metadata trans-novel
+          --collect-all tinycss2 --collect-data trans_novel
+          --copy-metadata trans-novel
           --workpath build/pyinstaller --specpath build/pyinstaller-spec
           --distpath dist trans_novel/__main__.py
+
+      - name: Smoke test frozen EPUB theme assembly
+        run: python -m scripts.smoke_theme_assembly --binary ${{ matrix.binary }}
 
       - name: Smoke test executable
         run: |

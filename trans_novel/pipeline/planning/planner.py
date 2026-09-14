@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from trans_novel.ingest.models import chapter_source_digest
 from trans_novel.pipeline.contracts import ExecutionGoal, NodeAction
-from trans_novel.pipeline.planning.backmatter import back_matter_mode, is_back_matter_upgrade
 from trans_novel.pipeline.planning.definition import WorkflowDefinition
 from trans_novel.pipeline.state import (
     NODE_ANALYZE,
     NODE_ASSEMBLE,
     NODE_DETERMINISTIC_QA,
+    NODE_LAYOUT,
     NODE_MINE_TERMS,
     NODE_NAME_TERMS,
     NODE_POLISH,
@@ -23,7 +24,6 @@ from trans_novel.pipeline.state import (
     NODE_TRANSLATE,
     SCOPE_BOOK,
     SCOPE_CHAPTER,
-    STATUS_DONE,
     IdentityMismatchError,
     RunState,
     RunStore,
@@ -49,15 +49,12 @@ _MODEL_WRITING_NODES = frozenset(
 @dataclass(frozen=True)
 class WorkflowPolicy:
     polish: bool = False
-    back_matter: str = "light"
     prescan_concurrency: int = 4
 
     @classmethod
     def from_config(cls, config) -> WorkflowPolicy:
         p = config.pipeline
-        return cls(
-            polish=p.polish, back_matter=p.back_matter, prescan_concurrency=p.prescan_concurrency
-        )
+        return cls(polish=p.polish, prescan_concurrency=p.prescan_concurrency)
 
 
 @dataclass
@@ -66,6 +63,9 @@ class PrescanInputs:
     name_terms_fingerprint: Callable[[], str] | None = None
     prepare_fingerprint: Callable[[], str] | None = None
     analyze_fingerprint: Callable[[], str] | None = None
+    layout_fingerprint: Callable[[], str] | None = None
+    layout_enabled: bool = False
+    layout_profile_valid: bool = False
     translate_fingerprint: Callable[[int], str] | None = None
     polish_fingerprint: Callable[[int], str] | None = None
     titles_fingerprint: Callable[[], str] | None = None
@@ -120,12 +120,10 @@ class Planner:
             and state.identity.translation_policy_version != TRANSLATION_POLICY_VERSION
         )
         chapters = list(state.chapters)
+        if not legacy:
+            self._validate_processing(store, chapters)
         if goal.only_chapter is not None and goal.only_chapter not in {c.index for c in chapters}:
             raise ValueError(f"章节编号 {goal.only_chapter} 不存在")
-        if "translate" in goal.phases and not legacy:
-            self._reopen_upgraded(store, policy, chapters)
-            state = store.load_state()
-            chapters = list(state.chapters)
         if store.exists() and not legacy:
             computed = {}
             for key in state.nodes:
@@ -168,6 +166,8 @@ class Planner:
         if "prepare" in goal.phases:
             need(NODE_PREPARE)
             need(NODE_ANALYZE)
+        if "layout" in goal.phases:
+            need(NODE_LAYOUT, force=goal.reanalyze_layout)
         if "prescan" in goal.phases:
             need(NODE_MINE_TERMS)
             need(NODE_NAME_TERMS)
@@ -206,10 +206,14 @@ class Planner:
         key = chapter_node_key(node, ci) if ci is not None else node
         if key in needed:
             return
-        title = next((c.title for c in chapters if c.index == ci), "") if ci is not None else ""
+        if node == NODE_LAYOUT and not prescan.layout_enabled:
+            add(node, None, "skip")
+            return
+        chapter = next((c for c in chapters if c.index == ci), None) if ci is not None else None
         if (
-            ci is not None
-            and back_matter_mode(policy, title, ci, len(chapters)) is not None
+            chapter is not None
+            and chapter.processing is not None
+            and chapter.processing.action == "preserve"
             and node != NODE_TRANSLATE
         ):
             return
@@ -223,9 +227,24 @@ class Planner:
             and current.status == NODE_SUCCEEDED
             and (fn is None or not current.input_fingerprint or current.input_fingerprint == fn)
         )
+        if node == NODE_LAYOUT and not prescan.layout_profile_valid:
+            satisfied = False
         if force or not satisfied:
             add(node, ci)
         if node == NODE_TRANSLATE:
+            return
+        if node == NODE_LAYOUT:
+            self._need(
+                NODE_PREPARE,
+                None,
+                False,
+                chapters,
+                policy,
+                prescan,
+                state,
+                needed,
+                add,
+            )
             return
         if node == NODE_POLISH:
             self._need(NODE_TRANSLATE, ci, False, chapters, policy, prescan, state, needed, add)
@@ -255,10 +274,8 @@ class Planner:
                     needed,
                     add,
                 )
-                if (
-                    policy.polish
-                    and back_matter_mode(policy, chapter.title, chapter.index, len(chapters))
-                    is None
+                if policy.polish and (
+                    chapter.processing is None or chapter.processing.action != "preserve"
                 ):
                     self._need(
                         NODE_POLISH,
@@ -274,13 +291,37 @@ class Planner:
         elif node == NODE_DETERMINISTIC_QA:
             self._need(NODE_TITLES, None, False, chapters, policy, prescan, state, needed, add)
         elif node == NODE_REPORT:
-            self._need(NODE_REPAIR, None, force, chapters, policy, prescan, state, needed, add)
+            repair_force = (
+                force and state.identity.translation_policy_version >= TRANSLATION_POLICY_VERSION
+            )
+            self._need(
+                NODE_REPAIR,
+                None,
+                repair_force,
+                chapters,
+                policy,
+                prescan,
+                state,
+                needed,
+                add,
+            )
         elif node == NODE_REPAIR:
             self._need(
                 NODE_DETERMINISTIC_QA, None, False, chapters, policy, prescan, state, needed, add
             )
         elif node == NODE_ASSEMBLE:
             self._need(NODE_REPORT, None, False, chapters, policy, prescan, state, needed, add)
+            self._need(
+                NODE_LAYOUT,
+                None,
+                False,
+                chapters,
+                policy,
+                prescan,
+                state,
+                needed,
+                add,
+            )
 
     @staticmethod
     def _fingerprint(node: str, ci: int | None, prescan: PrescanInputs) -> str | None:
@@ -288,6 +329,7 @@ class Planner:
         callbacks = {
             NODE_PREPARE: prescan.prepare_fingerprint,
             NODE_ANALYZE: prescan.analyze_fingerprint,
+            NODE_LAYOUT: prescan.layout_fingerprint,
             NODE_MINE_TERMS: prescan.mine_fingerprint,
             NODE_NAME_TERMS: prescan.name_terms_fingerprint,
             NODE_TRANSLATE: prescan.translate_fingerprint,
@@ -305,6 +347,23 @@ class Planner:
         except TypeError:
             return None
 
+    @staticmethod
+    def _validate_processing(store, chapters) -> None:
+        for chapter_index in chapters:
+            chapter = store.load_chapter(chapter_index.index)
+            processing = chapter_index.processing
+            if chapter.processing != processing:
+                raise IdentityMismatchError(
+                    f"第{chapter_index.index}章语义处理决策与清单不一致；请创建新的状态目录"
+                )
+            if (
+                processing is not None
+                and chapter_source_digest(chapter) != processing.source_sha256
+            ):
+                raise IdentityMismatchError(
+                    f"第{chapter_index.index}章源内容与语义处理决策不一致；请创建新的状态目录"
+                )
+
     def _schedule(self, plan, needed, chapters, policy):
         def take(node, ci=None):
             return needed.get(chapter_node_key(node, ci) if ci is not None else node)
@@ -312,6 +371,9 @@ class Planner:
         prep = [take(NODE_PREPARE), take(NODE_ANALYZE)]
         if any(prep):
             plan.stages.append(PlannedStage([x for x in prep if x]))
+        layout = take(NODE_LAYOUT)
+        if layout is not None:
+            plan.stages.append(PlannedStage([layout]))
         mine = take(NODE_MINE_TERMS)
         name = take(NODE_NAME_TERMS)
         if mine is not None:
@@ -341,18 +403,6 @@ class Planner:
             item = take(node)
             if item is not None:
                 plan.stages.append(PlannedStage([item]))
-
-    def _reopen_upgraded(self, store, policy, chapters):
-        for chapter in chapters:
-            progress = store.load_progress(chapter.index)
-            prev = progress.back_matter_mode or "full"
-            current = (
-                back_matter_mode(policy, chapter.title, chapter.index, len(chapters)) or "full"
-            )
-            if progress.status == STATUS_DONE and is_back_matter_upgrade(prev, current):
-                store.reopen_back_matter_chapter(
-                    chapter.index, prev_mode=prev, mode=current, title=chapter.title
-                )
 
 
 __all__ = [

@@ -6,6 +6,8 @@
   context.json          滚动上下文；
   analysis.json         全局分析产物；
   glossary.db            术语库；
+  layout_work.json       EPUB 布局分析检查点；
+  layout_profile.json    已接受的 EPUB 布局分析结果；
   report.json            QA 报告；
   usage.json             本书跨续跑累计的 LLM token 用量；
   events.jsonl           追加式行为日志。
@@ -13,7 +15,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -28,7 +29,6 @@ from trans_novel.pipeline.state.invalidation import (
     clear_translated_titles,
     clear_translation_targets,
     reconcile_fingerprints,
-    reopen_back_matter_chapter,
 )
 from trans_novel.pipeline.state.lifecycle import (
     fail_node,
@@ -54,8 +54,9 @@ from trans_novel.pipeline.state.models import (
     IdentityMismatchError,
     RunIdentity,
     RunState,
-    normalize_lang_code,
+    stable_digest,
 )
+from trans_novel.postprocess.language import normalize_lang_code
 
 __all__ = [
     "STATUS_DONE",
@@ -66,22 +67,51 @@ __all__ = [
 ]
 
 
-def stable_digest(payload) -> str:
-    """将任意可序列化为 JSON 的载荷规范化为 UTF-8 字节，并计算稳定的 SHA-256 摘要。
-
-    规范化参数固定为 ensure_ascii=False、sort_keys=True、紧凑分隔符与
-    default=str，保证同一逻辑载荷在任何进程/版本下得到相同摘要；该摘要可作为
-    例行翻译、跳过批次、issue 集和重写候选在事件日志中的紧凑指纹。
-    """
-    canonical = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
 def slugify(name: str) -> str:
     s = re.sub(r"[^\w一-鿿぀-ヿ-]+", "_", name).strip("_")
     return s or "book"
+
+
+def _recover_note_migration(store) -> None:
+    from trans_novel.pipeline.state.note_migration import recover_note_migration
+
+    recover_note_migration(store)
+
+
+def _merge_epub_verification(store, data: dict) -> dict:
+    report = dict(data)
+    report.pop("published_outputs", None)
+    published_outputs: dict[str, dict] = {}
+    if os.path.isfile(store.epub_verification_path):
+        previous = store.read_json(store.epub_verification_path)
+        if not isinstance(previous, dict):
+            raise ValueError("invalid EPUB verification report")
+        persisted = previous.get("published_outputs", {})
+        if not isinstance(persisted, dict) or any(
+            not isinstance(label, str) or not isinstance(value, dict)
+            for label, value in persisted.items()
+        ):
+            raise ValueError("invalid EPUB verification report")
+        published_outputs.update(persisted)
+    if report.get("published") is True:
+        label = report.get("output_label")
+        if not isinstance(label, str):
+            raise ValueError("invalid EPUB verification report")
+        published_outputs[label] = report
+    return {**report, "published_outputs": published_outputs}
+
+
+def _manifest_has_invalid_epub_meta(store) -> bool:
+    if not os.path.isfile(store.manifest_path):
+        return False
+    try:
+        data = store.read_json(store.manifest_path)
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(data, dict) or data.get("fmt") != "epub" or not data.get("source_path"):
+        return False
+    meta = data.get("meta")
+    return not isinstance(meta, dict) or meta.get("epub_schema") != 4
 
 
 class RunStore:
@@ -93,33 +123,23 @@ class RunStore:
         self.context_path = os.path.join(run_dir, "context.json")
         self.analysis_path = os.path.join(run_dir, "analysis.json")
         self.glossary_path = os.path.join(run_dir, "glossary.db")
+        self.layout_work_path = os.path.join(run_dir, "layout_work.json")
+        self.layout_profile_path = os.path.join(run_dir, "layout_profile.json")
         self.report_path = os.path.join(run_dir, "report.json")
         self.epub_verification_path = os.path.join(run_dir, "epub_verification.json")
         self.usage_path = os.path.join(run_dir, "usage.json")
         self.event_log_path = os.path.join(run_dir, "events.jsonl")
         self.journal_path = os.path.join(run_dir, "journal.json")
         self._v2_ready = False
-        if create and not self._manifest_has_invalid_epub_meta():
+        if create and not _manifest_has_invalid_epub_meta(self):
             self.ensure_dirs()
-
-    def _manifest_has_invalid_epub_meta(self) -> bool:
-        if not os.path.isfile(self.manifest_path):
-            return False
-        try:
-            data = self.read_json(self.manifest_path)
-        except (OSError, ValueError, TypeError):
-            return False
-        if not isinstance(data, dict) or data.get("fmt") != "epub" or not data.get("source_path"):
-            return False
-        meta = data.get("meta")
-        return not isinstance(meta, dict) or meta.get("epub_schema") != 4
 
     def ensure_dirs(self) -> None:
         os.makedirs(self.chapters_v2_dir, exist_ok=True)
 
     @contextmanager
     def lock(self) -> Iterator[None]:
-        if self._manifest_has_invalid_epub_meta():
+        if _manifest_has_invalid_epub_meta(self):
             os.makedirs(self.run_dir, exist_ok=True)
         else:
             self.ensure_dirs()
@@ -170,8 +190,10 @@ class RunStore:
     def _migrate_if_needed(self) -> None:
         """已持锁时调用：迁移、恢复中断节点及检查点日志。"""
         if self._v2_ready:
+            _recover_note_migration(self)
             return
         if not os.path.isfile(self.manifest_path):
+            _recover_note_migration(self)
             self._v2_ready = True
             return
         data = self.read_json(self.manifest_path)
@@ -195,6 +217,7 @@ class RunStore:
         else:
             migrate_v1_to_v2(self)
             self._v2_ready = True
+        _recover_note_migration(self)
         state = self.load_state()
         if state.recover_interrupted():
             self.save_state(state)
@@ -282,6 +305,7 @@ class RunStore:
                     title=c.title,
                     href=c.href,
                     toc_entry_id=c.meta.get("toc_entry_id"),
+                    processing=c.processing,
                 )
                 for c in doc.chapters
             ],
@@ -365,15 +389,6 @@ class RunStore:
         self.save_state(state)
         return invalidated
 
-    def reopen_back_matter_chapter(self, ci: int, *, prev_mode: str, mode: str, title: str) -> None:
-        chapter = self.load_chapter(ci)
-        state = self.load_state()
-        reopen_back_matter_chapter(chapter, state, ci)
-        self.save_state(state)
-        self.log_event(
-            "back_matter_reopened", chapter=ci, previous_mode=prev_mode, mode=mode, title=title
-        )
-
     def verify_identity(
         self,
         *,
@@ -435,11 +450,25 @@ class RunStore:
         self._ensure_migrated()
         return self.read_json(self.analysis_path) if os.path.isfile(self.analysis_path) else None
 
+    def load_layout_work(self) -> dict | None:
+        return (
+            self.read_json(self.layout_work_path) if os.path.isfile(self.layout_work_path) else None
+        )
+
+    def load_layout_profile(self) -> dict | None:
+        return (
+            self.read_json(self.layout_profile_path)
+            if os.path.isfile(self.layout_profile_path)
+            else None
+        )
+
     def save_report(self, data: dict) -> None:
         self.write_json(self.report_path, data)
 
     def save_epub_verification(self, data: dict) -> None:
-        self.write_json(self.epub_verification_path, data)
+        merged = _merge_epub_verification(self, data)
+        data["published_outputs"] = merged["published_outputs"]
+        self.write_json(self.epub_verification_path, merged)
 
     def load_epub_verification(self) -> dict | None:
         if not os.path.isfile(self.epub_verification_path):

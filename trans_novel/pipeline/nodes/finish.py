@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from trans_novel.agents import prompts
 from trans_novel.agents.base import WorkflowProtocolError, retry_protocol
-from trans_novel.assemble import assemble, bilingual_out_path
+from trans_novel.assemble import assemble_outputs, bilingual_out_path
 from trans_novel.assemble.report import build_report
-from trans_novel.config import Config
+from trans_novel.config import Config, OutputConfig
 from trans_novel.glossary.store import GlossaryStore, terms_matching_text
-from trans_novel.ingest import KIND_HEADING
+from trans_novel.ingest import KIND_HEADING, preserved_toc_entry_ids
 from trans_novel.ingest.models import sanitize_generated_text
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.planning import (
@@ -33,6 +33,23 @@ from trans_novel.pipeline.state import (
     NODE_TITLES,
     SCOPE_BOOK,
 )
+
+
+def _toc_state(store, manifest):
+    chapters = manifest.get("chapters", [])
+    raw_meta = manifest.get("meta")
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    raw_entries = meta.get("toc_entries", [])
+    toc_entries = raw_entries if isinstance(raw_entries, list) else []
+    stored = [store.load_chapter(chapter["index"]) for chapter in chapters]
+    preserved_chapters = {chapter.index for chapter in stored if chapter.preserve_source}
+    preserved_entries = preserved_toc_entry_ids(stored, toc_entries)
+    entries_by_id = {
+        entry["entry_id"]: entry
+        for entry in toc_entries
+        if isinstance(entry, dict) and isinstance(entry.get("entry_id"), str)
+    }
+    return chapters, toc_entries, entries_by_id, preserved_chapters, preserved_entries
 
 
 class TitlesNode:
@@ -60,28 +77,29 @@ class TitlesNode:
         store = request.store
         if store.pending_chapters():
             return NodeOutcome()  # 还有未完成章 → 不译标题（与旧 run() 条件一致）
-        src = self.src
-        tgt = self.tgt
         m = store.load_manifest()
-        chapters = m.get("chapters", [])
+        (
+            chapters,
+            toc_entry_list,
+            entries_by_id,
+            preserved_chapters,
+            preserved_entries,
+        ) = _toc_state(store, m)
+        for chapter in chapters:
+            if chapter.get("index") in preserved_chapters:
+                chapter.pop("title_translated", None)
 
         def _flat(s: object) -> str:
             return " ".join(str(s or "").split())
 
-        raw_meta = m.get("meta")
-        meta = raw_meta if isinstance(raw_meta, dict) else {}
-        raw_toc_entries = meta.get("toc_entries", [])
-        toc_entry_list = raw_toc_entries if isinstance(raw_toc_entries, list) else []
-        entries_by_id = {
-            e["entry_id"]: e
-            for e in toc_entry_list
-            if isinstance(e, dict) and isinstance(e.get("entry_id"), str)
-        }
+        for entry_id in preserved_entries:
+            entries_by_id[entry_id].pop("title_translated", None)
         toc_entries_pending = [
             e
             for e in toc_entry_list
             if isinstance(e, dict)
             and not e.get("external")
+            and e.get("entry_id") not in preserved_entries
             and _flat(e.get("title", ""))
             and not e.get("title_translated")
         ]
@@ -89,6 +107,8 @@ class TitlesNode:
         toc_covered_chapters = []
         other_chapters = []
         for c in chapters:
+            if c.get("index") in preserved_chapters:
+                continue
             entry_id = c.get("toc_entry_id")
             if entry_id and entry_id in entries_by_id:
                 toc_covered_chapters.append(c)
@@ -133,7 +153,7 @@ class TitlesNode:
         translated_titles: dict[str, str] = {}
         for title in unique_titles:
             translated_titles[title] = retry_protocol(
-                lambda title=title: self._translate_title(title, src, tgt, store),
+                lambda title=title: self._translate_title(title, self.src, self.tgt, store),
                 retries=self.config.pipeline.protocol_retry_limit,
             )
 
@@ -194,15 +214,22 @@ class TitlesNode:
         return translated
 
     def _fingerprint(self, store) -> str:
-        m = store.load_manifest()
-        titles = [str(c.get("title", "")) for c in m.get("chapters", []) if c.get("title")]
-        meta = m.get("meta")
-        raw_toc = meta.get("toc_entries") if isinstance(meta, dict) else None
-        if isinstance(raw_toc, list):
-            titles.extend(
-                str(e.get("title", "")) for e in raw_toc if isinstance(e, dict) and e.get("title")
-            )
-        identity = m.get("identity") if isinstance(m.get("identity"), dict) else {}
+        manifest = store.load_manifest()
+        chapters, toc_entries, _, preserved_chapters, preserved_entries = _toc_state(
+            store, manifest
+        )
+        translated = [
+            chapter for chapter in chapters if chapter.get("index") not in preserved_chapters
+        ]
+        titles = [str(chapter.get("title", "")) for chapter in translated if chapter.get("title")]
+        titles.extend(
+            str(entry.get("title", ""))
+            for entry in toc_entries
+            if isinstance(entry, dict)
+            and entry.get("title")
+            and entry.get("entry_id") not in preserved_entries
+        )
+        identity = manifest.get("identity") if isinstance(manifest.get("identity"), dict) else {}
         src = identity.get("source_lang") or self.config.source_lang
         tgt = identity.get("target_lang") or self.config.target_lang
         return titles_input_fingerprint(titles, src, tgt, analyst_model_profile(self.config))
@@ -222,6 +249,8 @@ class DeterministicQANode:
         target_texts: list[str] = []
         state = store.load_state()
         for chapter_meta in state.chapters:
+            if chapter_meta.processing is not None and chapter_meta.processing.action == "preserve":
+                continue
             if store.load_progress(chapter_meta.index).status != "done":
                 continue
             chapter = store.load_chapter(chapter_meta.index)
@@ -287,10 +316,20 @@ class AssembleNode:
     node_id = NODE_ASSEMBLE
     scope = SCOPE_BOOK
 
-    def __init__(self, *, config: Config, out_format: str = "epub", out_path: str | None = None):
-        self.config = config
+    def __init__(
+        self,
+        *,
+        output: OutputConfig,
+        out_format: str = "epub",
+        out_path: str | None = None,
+        theme=None,
+        output_digest: str | None = None,
+    ):
+        self.output = output
         self.out_format = out_format
         self.out_path = out_path
+        self.theme = theme
+        self.output_digest = output_digest
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
@@ -315,42 +354,35 @@ class AssembleNode:
 
         if request.progress:
             request.progress(0, 0, "生成译文文件…")
-        out_cfg = self.config.output
-        do_mono, do_bilingual = out_cfg.mono, out_cfg.bilingual
-        if not do_mono and not do_bilingual:
-            do_mono = True  # 兜底：mono/bilingual 都关时至少产一个单语产物
-        outputs: list[str] = []
+        do_mono = self.output.mono
+        do_bilingual = self.output.bilingual.enabled
+        requests: list[tuple[str | None, bool]] = []
         if do_mono:
-            outputs.append(
-                assemble(
-                    store,
-                    request.input_path,
-                    out_path=self.out_path,
-                    out_format=self.out_format,
-                    bilingual=False,
-                )
-            )
+            requests.append((self.out_path, False))
         if do_bilingual:
-            bi_out_path = bilingual_out_path(self.out_path) if self.out_path else None
-            outputs.append(
-                assemble(
-                    store,
-                    request.input_path,
-                    out_path=bi_out_path,
-                    out_format=self.out_format,
-                    bilingual=True,
-                    order=out_cfg.bilingual_order,
-                )
-            )
+            requests.append((bilingual_out_path(self.out_path) if self.out_path else None, True))
+        outputs = assemble_outputs(
+            store,
+            request.input_path,
+            requests,
+            self.out_format,
+            order=self.output.bilingual.order,
+            theme=self.theme,
+            output_digest=self.output_digest,
+        )
         store.log_event("assembled", outputs=outputs, out_format=self.out_format)
         fp = assemble_input_fingerprint(
             self._targets_text(store),
             mono=do_mono,
             bilingual=do_bilingual,
             out_format=self.out_format,
-            bilingual_order=self.config.output.bilingual_order,
+            bilingual_order=self.output.bilingual.order,
+            output_digest=self.output_digest,
         )
-        return NodeOutcome(artifacts={"outputs": outputs}, fingerprint=fp)
+        return NodeOutcome(
+            artifacts={"outputs": outputs, "output_digest": self.output_digest},
+            fingerprint=fp,
+        )
 
     @staticmethod
     def _targets_text(store) -> str:

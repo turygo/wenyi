@@ -18,3 +18,28 @@ llm:
 
 # economy（省钱）| balanced（均衡）| quality（最高质量）
 quality: balanced
+
+output:
+  mono: true
+  bilingual:
+    enabled: true
+    order: target_first
+  override_theme: null
+  bilingual_styles: builtin:bilingual
+
+# 启用内置通用 EPUB 主题：替换上方 output 中的 override_theme，不要重复添加 output。
+# output:
+#   override_theme:
+#     rules: builtin:general
+#     styles: builtin:chinese-reading
+#
+# 也可使用相对于此配置文件的路径；仅执行你明确选择并信任的本地脚本：
+# output:
+#   override_theme:
+#     rules: ./themes/classify.js
+#     styles: ./themes/chinese-reading.css
+#   bilingual_styles: ./themes/bilingual.css
+#
+# 省略字段会沿用本次运行已保存的选择；override_theme: null 会清除已保存的通用主题。
+# 修改主题后可用 tools assemble 重新导出，无需调用翻译模型。
+# TXT 输出不读取主题文件、不执行脚本，但会保留 EPUB 主题选择。

@@ -51,7 +51,7 @@ class _InstrumentedFakeClient(FakeClient):
     def complete(self, messages, *, json_mode=False, max_tokens=None, stage=None, agent, operation):
         response = super().complete(messages, json_mode=json_mode, max_tokens=max_tokens, stage=stage, agent=agent, operation=operation)
         self._attempts += 1
-        model_ref = self.models[1] if agent == 'analyst' else self.models[2] if agent == 'editor' else self.models[3] if agent in {'preparer', 'light-translator'} else self.models[0]
+        model_ref = self.models[1] if agent == 'analyst' else self.models[2] if agent == 'editor' else self.models[3] if agent == 'preparer' else self.models[0]
         provider, model = parse_provider_model(model_ref)
         selection = parse_model_selection(model)
         self.telemetry_sink.record(CallAttemptTelemetry(schema_version=1, logical_call_id=f'{self._attempts:032x}', attempt_index=1, started_at=datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'), elapsed_ms=0, stage=stage, agent=agent, operation=operation, provider=provider, requested_model=selection.model, resolved_model=selection.model, reasoning_enabled=False, reasoning_effort=None, temperature=0.1, seed=None, json_mode=json_mode, max_tokens=max_tokens, status='success', retry_class=None, http_status=None, finish_reason=None, response_id=None, prompt_tokens=0, completion_tokens=0, total_tokens=0, cache_hit_tokens=0, cache_miss_tokens=0, reasoning_tokens=0, billed_usage_unknown=False, request_sha256='a' * 64, response_sha256=hashlib.sha256(response.encode()).hexdigest()))
@@ -96,7 +96,8 @@ class TestBenchmarkIntegrationResume(unittest.TestCase):
 
     def _runner_fixture(self, root: Path, *, interrupt: int=1):
         source = root / 'hidden.epub'
-        write_sample_epub(str(source))
+        if not source.exists():
+            write_sample_epub(str(source))
         candidate_spec = CandidateSpec.model_validate({'schema_version': 3, 'benchmark_id': 'phase9', 'temperature': 0.1, 'seed': None, 'replicates': 1, 'candidates': [{'candidate_id': 'candidate-a-polished', 'translator_model': 'bailian/qwen3.8-max:off', 'analyst_model': 'bailian/qwen3.7-flash:off', 'editor_model': 'bailian/deepseek-v4-pro:off', 'fast_model': 'bailian/qwen3.7-flash:off', 'pipeline_variant': 'polish'}, {'candidate_id': 'candidate-b-polished', 'translator_model': 'bailian/deepseek-v4-flash:off', 'analyst_model': 'bailian/qwen3.7-flash:off', 'editor_model': 'bailian/qwen3.7-plus:off', 'fast_model': 'bailian/qwen3.7-flash:off', 'pipeline_variant': 'polish'}]})
         selected = list(candidate_spec.candidates)
         integration_spec = IntegrationSpec.model_validate(_spec(candidate_ids=['candidate-a-polished', 'candidate-b-polished'], interrupt_after_committed_batches=interrupt))
@@ -310,7 +311,9 @@ class TestBenchmarkIntegrationResumeContinuation(unittest.TestCase):
             with mock.patch('trans_novel.benchmark.integration.resume.write_integration_json', side_effect=stop_after_interrupted), self.assertRaises(SystemExit):
                 runner.run(root, root / 'b.yaml', root / 'c.yaml', root / 'i.yaml', root / 'out')
             self.assertEqual(len(clients), 2)
+            source_bytes = _source.read_bytes()
             runner2, _source2, clients2 = self._runner_fixture(root)
+            self.assertEqual(_source2.read_bytes(), source_bytes)
             with mock.patch('trans_novel.benchmark.integration.resume.validate_epub_triplet', return_value={'structural_pass': True, 'mono': {'structural_pass': True}, 'bilingual': {'structural_pass': True}}):
                 result = runner2.run(root, root / 'b.yaml', root / 'c.yaml', root / 'i.yaml', root / 'out')
             self.assertFalse(result['failed_candidates'])

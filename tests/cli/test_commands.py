@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from tests.fixtures.fake_llm import fake_llm_dict
 from trans_novel.cli import app
-from trans_novel.cli.common import configure_windows_console
+from trans_novel.cli.common import configure_windows_console, print_chapter_processing
 from trans_novel.config import Config
 from trans_novel.pipeline.execution import RequiredNodeFailed
 
@@ -27,6 +27,9 @@ def plain(output: str) -> str:
 
 class FakeStore:
     def load_usage(self):
+        return None
+
+    def load_epub_verification(self):
         return None
 
 
@@ -212,7 +215,6 @@ class TestCliConfig(unittest.TestCase):
                 captured["polish"] = config.pipeline.polish
                 captured["quality"] = config.quality
                 captured["source_language"] = config.source_lang
-                captured["back_matter"] = config.pipeline.back_matter
                 captured["honorifics"] = config.honorific_strategy
 
             def run_all(self, input_path, **kwargs):
@@ -246,8 +248,6 @@ class TestCliConfig(unittest.TestCase):
                     "--polish",
                     "--source-language",
                     "en",
-                    "--back-matter",
-                    "full",
                     "--honorifics",
                     "drop",
                 ],
@@ -257,8 +257,20 @@ class TestCliConfig(unittest.TestCase):
         self.assertTrue(captured["polish"])
         self.assertEqual(captured["quality"], "economy")
         self.assertEqual(captured["source_language"], "en")
-        self.assertEqual(captured["back_matter"], "full")
         self.assertEqual(captured["honorifics"], "drop")
+
+    def test_removed_back_matter_flag_is_unknown(self):
+        result = CliRunner().invoke(app, ["translate", "input.txt", "--back-matter", "full"])
+        self.assertEqual(result.exit_code, 2)
+
+    def test_translate_help_omits_back_matter(self):
+        result = CliRunner().invoke(app, ["translate", "--help"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("back-matter", plain(result.output))
+
+    def test_external_back_matter_config_is_rejected(self):
+        with self.assertRaises(ValueError):
+            Config.from_dict({"back_matter": "full"})
 
     def test_translate_prepare_stops_before_translation(self):
         config = Config.from_dict(
@@ -444,6 +456,39 @@ class TestCliConfig(unittest.TestCase):
         self.assertIn("章节编号 9 不存在", result.output)
         self.assertNotIn("Traceback", result.output)
 
+    def test_tools_assemble_forwards_layout_refresh(self):
+        config = Config.from_dict({"llm": fake_llm_dict()})
+        captured = {}
+
+        class Store(FakeStore):
+            @staticmethod
+            def exists():
+                return True
+
+        class FakeOrchestrator:
+            def __init__(self, _config):
+                pass
+
+            def assemble(self, store, input_path, **kwargs):
+                captured.update(store=store, input_path=input_path, kwargs=kwargs)
+                kwargs["progress"](0, 0, "layout status")
+                return ["out.epub"]
+
+        store = Store()
+        with (
+            patch("trans_novel.cli.common.load_config", return_value=config),
+            patch("trans_novel.cli.common.runstore_for", return_value=store),
+            patch("trans_novel.pipeline.Application", FakeOrchestrator),
+        ):
+            result = CliRunner().invoke(
+                app,
+                ["tools", "assemble", "input.epub", "--reanalyze-layout"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(captured["kwargs"]["reanalyze_layout"])
+        self.assertIn("layout status", plain(result.output))
+
     def test_status_does_not_create_state_directory(self):
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "novel.txt")
@@ -460,6 +505,23 @@ class TestCliConfig(unittest.TestCase):
             self.assertEqual(result.exit_code, 1, result.output)
             self.assertIn("尚无进度", result.output)
             self.assertFalse(os.path.exists(state_dir))
+
+
+class TestChapterProcessingOutput(unittest.TestCase):
+    def test_prints_preserved_and_review_required_chapters(self):
+        report = {
+            "chapter_processing": {
+                "preserved": [{"chapter": 2, "title": "Sources", "reason": "reference list"}],
+                "review_required": [{"chapter": 3, "title": "Mixed", "reason": "uncertain"}],
+            }
+        }
+        with patch("trans_novel.cli.common.console.print") as output:
+            print_chapter_processing(report)
+
+        rendered = "\n".join(str(call.args[0]) for call in output.call_args_list)
+        self.assertIn("第2章 Sources", rendered)
+        self.assertIn("第3章 Mixed", rendered)
+        self.assertNotIn("--back-matter", rendered)
 
 
 class TestWindowsConsoleEncoding(unittest.TestCase):

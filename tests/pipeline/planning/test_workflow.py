@@ -5,12 +5,19 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from trans_novel.config import Config, PipelineConfig
 from trans_novel.ingest.models import Chapter, Document, Segment
 from trans_novel.pipeline import build_workflow_definition
-from trans_novel.pipeline.contracts import GOAL_RUN_ALL, ExecutionGoal, assemble_goal, qa_goal
+from trans_novel.pipeline.contracts import (
+    GOAL_RUN_ALL,
+    ExecutionGoal,
+    assemble_goal,
+    qa_goal,
+    report_goal,
+)
 from trans_novel.pipeline.planning import (
     Planner,
     PrescanInputs,
@@ -21,6 +28,7 @@ from trans_novel.pipeline.planning import (
 from trans_novel.pipeline.state import (
     NODE_ASSEMBLE,
     NODE_DETERMINISTIC_QA,
+    NODE_LAYOUT,
     NODE_MINE_TERMS,
     NODE_NAME_TERMS,
     NODE_POLISH,
@@ -39,13 +47,14 @@ from trans_novel.pipeline.state.models import TRANSLATION_POLICY_VERSION
 class TestPresets(unittest.TestCase):
     def test_exact_quality_contract(self):
         expected = {
-            "economy": (False, "light"),
-            "balanced": (False, "full"),
-            "quality": (True, "full"),
+            "economy": False,
+            "balanced": False,
+            "quality": True,
         }
-        for name, (polish, back_matter) in expected.items():
+        for name, polish in expected.items():
             policy = PipelineConfig.for_quality(name)
-            self.assertEqual((policy.polish, policy.back_matter), (polish, back_matter))
+            self.assertEqual(policy.polish, polish)
+            self.assertFalse(hasattr(policy, "back_matter"))
 
 
 class TestWorkflowDefinition(unittest.TestCase):
@@ -55,6 +64,7 @@ class TestWorkflowDefinition(unittest.TestCase):
             {
                 NODE_PREPARE,
                 "analyze",
+                NODE_LAYOUT,
                 NODE_MINE_TERMS,
                 NODE_NAME_TERMS,
                 NODE_TRANSLATE,
@@ -70,6 +80,11 @@ class TestWorkflowDefinition(unittest.TestCase):
     def test_body_chain_is_translate_then_optional_polish(self):
         definition = build_workflow_definition()
         self.assertEqual(definition.depends_on(NODE_POLISH), (NODE_TRANSLATE,))
+        self.assertEqual(definition.depends_on(NODE_LAYOUT), (NODE_PREPARE,))
+        self.assertEqual(
+            definition.depends_on(NODE_ASSEMBLE),
+            (NODE_REPORT, NODE_LAYOUT),
+        )
         self.assertEqual(definition.depends_on(NODE_TITLES), (NODE_TRANSLATE, NODE_POLISH))
 
 
@@ -103,7 +118,7 @@ class TestPlanner(unittest.TestCase):
             plan = Planner(build_workflow_definition()).build_plan(
                 goal=GOAL_RUN_ALL,
                 store=store,
-                policy=WorkflowPolicy(polish=False, back_matter="full"),
+                policy=WorkflowPolicy(polish=False),
                 prescan=PrescanInputs(),
             )
             body = [e for stage in plan.stages for e in stage.entries if e.ci == 0]
@@ -118,7 +133,7 @@ class TestPlanner(unittest.TestCase):
             plan = Planner(build_workflow_definition()).build_plan(
                 goal=GOAL_RUN_ALL,
                 store=store,
-                policy=WorkflowPolicy(polish=True, back_matter="full"),
+                policy=WorkflowPolicy(polish=True),
                 prescan=PrescanInputs(),
             )
             body = [e.node_id for stage in plan.stages for e in stage.entries if e.ci == 0]
@@ -135,6 +150,7 @@ class TestPlanner(unittest.TestCase):
                 "prepare",
                 "analyze",
                 "mine_terms",
+                "layout",
                 "name_terms",
                 "translate",
                 "polish",
@@ -145,6 +161,41 @@ class TestPlanner(unittest.TestCase):
                 "assemble",
             }
             self.assertTrue(all(key.split(":", 1)[0] in allowed for key in keys))
+
+    def test_prescan_assembly_fingerprint_uses_effective_output_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            for chapter in store.load_state().chapters:
+                saved = store.load_chapter(chapter.index)
+                saved.text_segments[0].target = f"T{chapter.index}"
+                store.save_chapter(saved)
+                progress = store.load_progress(chapter.index)
+                progress.status = "done"
+                store.save_progress(chapter.index, progress)
+            config = Config()
+            context = SimpleNamespace(
+                output=config.output,
+                output_digest="theme-digest",
+                layout_inventory=None,
+                layout_profile=None,
+                output_format="epub",
+                theme_bundle=None,
+            )
+            goal = assemble_goal(out_format="epub")
+
+            actual = build_prescan_inputs(
+                config, store, WorkflowPolicy(), context, goal
+            ).assemble_fingerprint()
+            expected = fingerprints.assemble_input_fingerprint(
+                "T0\nT1",
+                mono=True,
+                bilingual=True,
+                out_format="epub",
+                bilingual_order="target_first",
+                output_digest="theme-digest",
+            )
+
+            self.assertEqual(actual, expected)
 
 
 class TestTranslationPolicy(unittest.TestCase):
@@ -208,12 +259,37 @@ class TestTranslationPolicy(unittest.TestCase):
                     )
                     self.assertEqual(
                         plan.entry_keys(),
-                        {"deterministic_qa"} if goal.name == "qa" else {"assemble"},
+                        {"deterministic_qa"} if goal.name == "qa" else {"layout", "assemble"},
                     )
                     self.assertEqual(Path(store.manifest_path).read_bytes(), before)
                     self.assertEqual(
                         store.load_chapter(0).text_segments[0].target, "Saved translation 0"
                     )
+
+    def test_forced_report_reuses_completed_repair_only_for_older_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self._legacy_store(tmp)
+            planner = Planner(build_workflow_definition())
+            goal = report_goal()
+
+            legacy_plan = planner.build_plan(
+                goal=goal,
+                store=store,
+                policy=WorkflowPolicy(),
+                prescan=PrescanInputs(),
+            )
+            self.assertEqual(legacy_plan.entry_keys(), {NODE_REPORT})
+
+            state = store.load_state()
+            state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION
+            store.save_state(state)
+            current_plan = planner.build_plan(
+                goal=goal,
+                store=store,
+                policy=WorkflowPolicy(),
+                prescan=PrescanInputs(),
+            )
+            self.assertEqual(current_plan.entry_keys(), {NODE_REPAIR, NODE_REPORT})
 
     def test_old_incomplete_export_rejects_implicit_model_work_without_changes(self):
         with tempfile.TemporaryDirectory() as tmp:

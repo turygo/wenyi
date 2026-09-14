@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import zipfile
@@ -34,6 +35,7 @@ from trans_novel.pipeline.state import (
     RunState,
     RunStore,
 )
+from trans_novel.pipeline.state.models import TRANSLATION_POLICY_VERSION
 
 
 def _config(state_dir: str, *, quality: str = "balanced") -> Config:
@@ -46,12 +48,12 @@ def _config(state_dir: str, *, quality: str = "balanced") -> Config:
 
 _MINIMAL_PIPELINE_OPERATIONS = {
     "analyzer.analyze",
+    "chapter.classify",
     "prescan.term_mine",
     "prescan.name_terms",
     "translate.single",
     "title.translate",
 }
-_LEGACY_TRANSLATION_OPERATIONS = {"translate.batch"}
 
 
 def _document() -> Document:
@@ -82,8 +84,8 @@ class TestMinimalPipeline(unittest.TestCase):
                 _write_source(d), out_format="txt"
             )
             operations = {call["operation"] for call in client.calls}
-            self.assertNotIn("polish.segment", operations)
-            self.assertTrue(_LEGACY_TRANSLATION_OPERATIONS.isdisjoint(operations))
+            self.assertNotIn("polish.batch", operations)
+            self.assertTrue({"translate.batch"}.isdisjoint(operations))
             self.assertEqual(operations, _MINIMAL_PIPELINE_OPERATIONS)
             state = result["store"].load_state()
             for node_id in (
@@ -119,22 +121,27 @@ class TestMinimalPipeline(unittest.TestCase):
 
             self.assertEqual(client.calls, [])
 
-    def test_identical_quality_run_keeps_qa_and_report_fingerprints(self):
+    def test_completed_quality_run_keeps_fingerprints_without_new_calls(self):
         with tempfile.TemporaryDirectory() as d:
             source = _write_source(d)
-            app = Application(_config(d), client=FakeClient(handler=routing_handler))
+            config = _config(d, quality="quality")
             goal = ExecutionGoal(name="run_all", phases=GOAL_RUN_ALL.phases, out_format="txt")
             doc = _document()
-            _, store = app.run_document_goal(doc, source, goal)
+            first_client = FakeClient(handler=routing_handler)
+            _, store = Application(config, client=first_client).run_document_goal(doc, source, goal)
+            self.assertIn("polish.batch", {call["operation"] for call in first_client.calls})
+            before = [segment.target for segment in store.load_chapter(0).text_segments]
             first = store.load_state()
             first_fingerprints = {
                 node_id: first.nodes[node_id].input_fingerprint
                 for node_id in (NODE_DETERMINISTIC_QA, NODE_REPORT)
             }
-            _, store = app.run_document_goal(doc, source, goal)
+            client = FakeClient(handler=lambda *_args: self.fail("completed run must be offline"))
+            _, store = Application(config, client=client).run_document_goal(doc, source, goal)
             second = store.load_state()
+            self.assertEqual(client.calls, [])
+            self.assertEqual([s.target for s in store.load_chapter(0).text_segments], before)
             for node_id, fingerprint in first_fingerprints.items():
-                self.assertEqual(second.nodes[node_id].status, NODE_SUCCEEDED)
                 self.assertEqual(second.nodes[node_id].input_fingerprint, fingerprint)
 
     def test_translation_fingerprint_uses_persisted_language(self):
@@ -198,11 +205,11 @@ class TestMinimalPipeline(unittest.TestCase):
         self.assertEqual(state.progress[0].lint_issues, [])
         self.assertEqual(state.progress[0].repair_ledger["issue"].attempts, 4)
 
-    def test_two_segment_light_backmatter_resume_keeps_targets(self):
+    def test_two_segment_resume_keeps_targets(self):
         with tempfile.TemporaryDirectory() as d:
             source = _write_source(d)
             doc = Document(
-                title="Backmatter",
+                title="Book",
                 fmt="text",
                 source_lang="en",
                 target_lang="zh",
@@ -210,7 +217,7 @@ class TestMinimalPipeline(unittest.TestCase):
                 chapters=[
                     Chapter(
                         index=0,
-                        title="Index",
+                        title="Chapter",
                         segments=[
                             Segment(index=0, source="First note."),
                             Segment(index=1, source="Second note."),
@@ -233,56 +240,50 @@ class TestMinimalPipeline(unittest.TestCase):
             self.assertEqual(second_targets, first_targets)
             self.assertNotIn("translate_invalidated", event_end[len(event_start) :])
 
-    def test_quality_adds_only_polish(self):
-        with tempfile.TemporaryDirectory() as d:
-            client = FakeClient(handler=routing_handler)
-            Application(_config(d, quality="quality"), client=client).run_all(
-                _write_source(d), out_format="txt"
-            )
-            operations = {call["operation"] for call in client.calls}
-            self.assertIn("polish.segment", operations)
-            self.assertTrue(_LEGACY_TRANSLATION_OPERATIONS.isdisjoint(operations))
-            self.assertEqual(operations - {"polish.segment"}, _MINIMAL_PIPELINE_OPERATIONS)
-            self.assertEqual(operations & {"polish.segment"}, {"polish.segment"})
-
     def test_exhausted_polish_protocol_retries_keep_raw_without_restarting_node(self):
         with tempfile.TemporaryDirectory() as d:
             polish_calls = 0
 
             def handler(messages, agent, operation, json_mode):
                 nonlocal polish_calls
-                if operation == "polish.segment":
+                if operation == "polish.batch":
                     polish_calls += 1
                     return '{"polished": []}'
                 return routing_handler(messages, agent, operation, json_mode)
 
-            result = Application(
-                _config(d, quality="quality"), client=FakeClient(handler=handler)
-            ).run_all(_write_source(d), out_format="txt")
+            client = FakeClient(handler=handler)
+            result = Application(_config(d, quality="quality"), client=client).run_all(
+                _write_source(d), out_format="txt"
+            )
 
-            segments = result["store"].load_chapter(0).text_segments
-            self.assertEqual(polish_calls, len(segments) * 3)
+            self.assertEqual(polish_calls, 3)
             self.assertEqual(result["store"].load_state().nodes["polish:0"].attempts, 1)
-            self.assertTrue(all(segment.target for segment in segments))
-            self.assertTrue(result["output"])
+            usage = client.usage_summary()["by_operation"]["polish.batch"]
+            self.assertEqual((usage["accepted"], usage["rejected"]), (0, 3))
+            with open(result["store"].event_log_path, encoding="utf-8") as stream:
+                self.assertIn('"reasons": ["polish_item_missing"]', stream.read())
 
     def test_exhausted_polish_provider_failure_falls_back_to_raw_batch(self):
         with tempfile.TemporaryDirectory() as d:
 
             def handler(messages, agent, operation, json_mode):
-                if operation == "polish.segment":
+                if operation == "polish.batch":
                     raise ProviderError("editor unavailable")
                 return routing_handler(messages, agent, operation, json_mode)
 
-            result = Application(
-                _config(d, quality="quality"), client=FakeClient(handler=handler)
-            ).run_all(_write_source(d), out_format="txt")
+            client = FakeClient(handler=handler)
+            result = Application(_config(d, quality="quality"), client=client).run_all(
+                _write_source(d), out_format="txt"
+            )
 
             store = result["store"]
             self.assertEqual(store.load_state().nodes["polish:0"].status, "succeeded")
-            self.assertTrue(all(segment.target for segment in store.load_chapter(0).text_segments))
             with open(store.event_log_path, encoding="utf-8") as stream:
-                self.assertIn('"event": "polish_batch_fallback"', stream.read())
+                events = stream.read()
+            self.assertIn('"event": "polish_batch_fallback"', events)
+            self.assertIn('"reasons": ["ProviderError"]', events)
+            usage = client.usage_summary()["by_operation"]["polish.batch"]
+            self.assertEqual((usage["accepted"], usage["rejected"]), (0, 3))
 
     def test_quality_epub_machine_literal_preserves_exact_slots(self):
         with tempfile.TemporaryDirectory() as d:
@@ -383,7 +384,10 @@ class TestMinimalPipeline(unittest.TestCase):
             operations = {call["operation"] for call in client.calls}
             self.assertTrue({"prescan.term_mine", "prescan.name_terms"} <= operations)
             self.assertTrue(
-                all(op.startswith(("language.", "analyzer.", "prescan.")) for op in operations)
+                all(
+                    op.startswith(("language.", "analyzer.", "chapter.", "prescan."))
+                    for op in operations
+                )
             )
 
     def test_deterministic_qa_scans_interior_without_llm_or_mutation(self):
@@ -430,6 +434,35 @@ class TestMinimalPipeline(unittest.TestCase):
                 glossary.close()
 
 
+class TestMixedChapterClassification(unittest.TestCase):
+    def test_single_mixed_chunk_translates_and_is_reported_for_review(self):
+        def classify_mixed(messages, agent, operation, json_mode):
+            if operation == "chapter.classify":
+                chapter_id = json.loads(messages[-1]["content"])["chapter_id"]
+                return json.dumps(
+                    {
+                        "chapter_id": chapter_id,
+                        "kind": "uncertain",
+                        "reason": "引用与说明混合",
+                    },
+                    ensure_ascii=False,
+                )
+            return routing_handler(messages, agent, operation, json_mode)
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = Application(
+                _config(directory), client=FakeClient(handler=classify_mixed)
+            ).run_all(_write_source(directory), out_format="txt")
+
+            chapter = result["store"].load_chapter(0)
+            self.assertEqual(chapter.processing.action, "translate")
+            self.assertTrue(chapter.processing.review_required)
+            self.assertEqual(
+                result["report"]["chapter_processing"]["review_required"],
+                [{"chapter": 0, "title": "book", "reason": "引用与说明混合"}],
+            )
+
+
 class TestTranslationContextRecovery(unittest.TestCase):
     def test_legacy_policy_exports_without_retranslation_or_invalidation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -446,7 +479,9 @@ class TestTranslationContextRecovery(unittest.TestCase):
                     node["input_fingerprint"] = f"legacy-{key}"
             store.save_manifest(manifest)
             before = [s.target for s in store.load_chapter(0).text_segments]
-            client = FakeClient(handler=lambda *_args: self.fail("legacy export must be offline"))
+            client = FakeClient(
+                handler=lambda *_args: self.fail("legacy output run must be offline")
+            )
             app = Application(config, client=client)
             outputs = app.assemble(
                 store, source_path, out_format="txt", out_path=f"{directory}/legacy.txt"
@@ -455,15 +490,49 @@ class TestTranslationContextRecovery(unittest.TestCase):
                 exported = stream.read()
             for target in before:
                 self.assertIn(target, exported)
-            with self.assertRaises(IdentityMismatchError):
-                app.run_document_goal(_document(), source_path, goal)
+            result, store = app.run_document_goal(_document(), source_path, goal)
+            self.assertIsNotNone(result.artifact("report", "report"))
             self.assertEqual(client.calls, [])
             self.assertEqual([s.target for s in store.load_chapter(0).text_segments], before)
             state = store.load_state()
+            self.assertEqual(state.identity.translation_policy_version, 0)
             for key, node in manifest["nodes"].items():
                 if key.split(":")[0] in {"analyze", "translate", "polish"}:
                     self.assertEqual(state.nodes[key].input_fingerprint, node["input_fingerprint"])
                     self.assertEqual(state.nodes[key].status, node["status"])
+
+    def test_legacy_admission_rejects_incomplete_and_future_states(self):
+        for case in ("incomplete", "future"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                config = _config(f"{directory}/state")
+                source_path = _write_source(directory)
+                goal = ExecutionGoal(name="run_all", phases=GOAL_RUN_ALL.phases, out_format="txt")
+                _, store = Application(
+                    config, client=FakeClient(handler=routing_handler)
+                ).run_document_goal(_document(), source_path, goal)
+                before = [s.target for s in store.load_chapter(0).text_segments]
+                state = store.load_state()
+                if case == "incomplete":
+                    state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION - 1
+                    state.progress[0].status = "pending"
+                else:
+                    state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION + 1
+                store.save_state(state)
+                client = FakeClient(
+                    handler=lambda *_args: self.fail("rejected run must not call a model")
+                )
+
+                with self.assertRaises(IdentityMismatchError):
+                    Application(config, client=client).run_document_goal(
+                        _document(), source_path, goal
+                    )
+
+                self.assertEqual(client.calls, [])
+                self.assertEqual(
+                    store.load_state().identity.translation_policy_version,
+                    state.identity.translation_policy_version,
+                )
+                self.assertEqual([s.target for s in store.load_chapter(0).text_segments], before)
 
     def test_resume_rebuilds_committed_history_without_cached_future(self):
         sources = [f"Source paragraph {i} has a sentence." for i in range(9)]

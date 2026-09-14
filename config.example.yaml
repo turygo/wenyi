@@ -1,0 +1,49 @@
+# 模型规格：`provider/model-id:thinking 级别`；级别可选 off / low / medium / high / max
+llm:
+  models:
+    translator:
+      - openrouter/tencent/hy-mt2-30b-a3b:off
+    analyst:
+      - opencode-go/muse-spark-1.3-contributor:low
+    editor:
+      - opencode-go/muse-spark-1.3-contributor:low
+    fast:
+      - opencode-go/muse-spark-1.3-contributor:low
+
+  # Optional OpenRouter provider constraints keyed by provider/model.
+  # provider_routing:
+  #   openrouter/tencent/hy3:
+  #     only: [tencent]
+  #     allow_fallbacks: false
+
+# economy（省钱）| balanced（均衡）| quality（最高质量）
+quality: balanced
+
+output:
+  mono: true
+  bilingual:
+    enabled: true
+    order: target_first
+  override_theme: null
+  bilingual_styles: builtin:bilingual
+
+# 启用 EPUB 原文排版分析与内置阅读样式：替换上方 override_theme，不要重复添加 output。
+# output:
+#   override_theme:
+#     styles: builtin:chinese-reading
+#
+# 自定义 CSS 路径相对于此配置文件解析；模型只分析原文，不读取这些输出样式：
+# output:
+#   override_theme:
+#     styles: ./themes/chinese-reading.css
+#   bilingual_styles: ./themes/bilingual.css
+#
+# 省略字段会沿用本次运行已保存的选择；override_theme: null 会清除已保存的通用主题。
+# tools assemble 不调用翻译模型；启用通用样式后，缺少或过期的排版结果会自动调用 analyst，产生费用。
+# 有效结果会复用；仅修改 CSS 不会重新分析。tools assemble --reanalyze-layout 可主动刷新。
+# 抽样结果有冲突时，会改为逐段分析；费用可能接近额外分析整本书的费用。未抽中的少见例外仍可能遗漏。
+# override_theme: null 禁用通用样式和排版分析；仅设置双语样式不需要模型。
+# 旧版 override_theme.rules 已移除，配置中保留该字段会报错。
+# 首次使用新版会在核验源文件后丢弃旧版保存的排版选择；请在新版配置中重新选择 CSS。
+# 损坏的缓存、未知版本或源文件不匹配仍会报错；已保存的译文不变。
+# TXT 输出不读取样式文件、不做排版分析，但会保留 EPUB 样式选择。

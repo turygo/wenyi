@@ -41,7 +41,6 @@ from trans_novel.pipeline.execution import assemble_readiness_problems
 from trans_novel.pipeline.state import RunStore
 
 TRANSLATOR_OPERATIONS = frozenset({'translate.batch', 'translate.single', 'translate.heading'})
-LIGHT_TRANSLATOR_OPERATIONS = frozenset({'translate.back_matter'})
 
 def event_rows(store: RunStore) -> list[dict[str, Any]]:
     path = Path(store.event_log_path)
@@ -93,7 +92,7 @@ def authenticated_telemetry_prefix(path: Path, *, count: int, size: int, digest:
     return rows
 
 def batch_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{'chapter': int(r['chapter']), 'start': int(r['start_index']), 'count': int(r['count']), 'translate_call_count': int(r.get('translate_call_count', 1)), 'target_sha256': str(r['target_sha256'])} for r in rows if r.get('event') == 'batch_translated' and (not r.get('back_matter'))]
+    return [{'chapter': int(r['chapter']), 'start': int(r['start_index']), 'count': int(r['count']), 'translate_call_count': int(r.get('translate_call_count', 1)), 'target_sha256': str(r['target_sha256'])} for r in rows if r.get('event') == 'batch_translated']
 
 def skip_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{'chapter': int(r['chapter']), 'start': int(r['start_index']), 'count': int(r['count']), 'target_sha256': str(r.get('target_sha256', ''))} for r in rows if r.get('event') == 'batch_skipped' and r.get('reason') == 'already_translated']
@@ -138,8 +137,8 @@ def telemetry_evidence(path: Path, *, candidate: Candidate, candidate_spec: Cand
         records = [CallAttemptTelemetry.model_validate(json.loads(line)) for line in path.read_text(encoding='utf-8').splitlines() if line.strip()][start_index:]
     except Exception:
         return empty
-    expected = {'translator': model_identity(candidate.translator_model), 'analyst': model_identity(candidate.analyst_model), 'editor': model_identity(candidate.editor_model), 'preparer': model_identity(candidate.fast_model), 'light-translator': model_identity(candidate.fast_model)}
-    operations = {'translator': {'translate.batch', 'translate.single', 'integration.canary.translate'}, 'light-translator': LIGHT_TRANSLATOR_OPERATIONS, 'analyst': {'analyzer.analyze', 'prescan.name_terms', 'glossary.audit', 'title.translate', 'translate.heading', 'translate.single'}, 'preparer': {'language.detect', 'prescan.term_mine', 'glossary.extract'}, 'editor': {'polish.segment', 'translate.repair', 'integration.canary.polish'}}
+    expected = {'translator': model_identity(candidate.translator_model), 'analyst': model_identity(candidate.analyst_model), 'editor': model_identity(candidate.editor_model), 'preparer': model_identity(candidate.fast_model)}
+    operations = {'translator': {'translate.batch', 'translate.single', 'integration.canary.translate'}, 'analyst': {'analyzer.analyze', 'chapter.classify', 'prescan.name_terms', 'glossary.audit', 'title.translate', 'translate.heading', 'translate.single'}, 'preparer': {'language.detect', 'prescan.term_mine', 'glossary.extract'}, 'editor': {'polish.segment', 'polish.batch', 'translate.repair', 'integration.canary.polish'}}
     mismatch = unknown = reasoning = 0
     for record in records:
         model = expected.get(record.agent)
@@ -154,6 +153,8 @@ def telemetry_evidence(path: Path, *, candidate: Candidate, candidate_spec: Cand
     return {'reasoning_tokens': reasoning, 'model_mismatch_count': mismatch, 'unknown_required_usage_count': unknown, 'logical_call_count': len({r.logical_call_id for r in records}), 'attempt_count': len(records), 'operation_count': len({r.operation for r in records}), 'agent_count': len({r.agent for r in records}), 'retry_count': sum(r.attempt_index > 1 or r.retry_class is not None for r in records), 'translate_call_count': translator_call_count(records), 'valid': True}
 
 def failure_code(error: BaseException) -> str:
+    if 'publication proof' in str(error).casefold():
+        return 'publication_proof'
     for fragment, code in (('resume event boundary', 'resume_event_boundary'), ('resume telemetry boundary', 'resume_telemetry_boundary'), ('resume reuse proof', 'resume_reuse_proof'), ('resume translation call attribution', 'resume_telemetry_attribution'), ('usage and application telemetry', 'usage_telemetry_mismatch'), ('crashed resume evidence', 'crashed_resume_evidence'), ('event slice mismatch', 'resume_event_slice'), ('telemetry prefix', 'telemetry_prefix'), ('event prefix', 'event_prefix'), ('canary', 'canary_evidence'), ('phase timing', 'phase_timing'), ('bilingual output', 'bilingual_output'), ('readiness', 'readiness'), ('first telemetry', 'first_telemetry_evidence')):
         if fragment in str(error).casefold():
             return code
@@ -227,7 +228,7 @@ def _interrupt(ctx: dict[str, Any], sink: JsonlCallTelemetrySink, hook: Any, sto
 def _pending(ctx: dict[str, Any]) -> None:
     sink, options = (JsonlCallTelemetrySink(ctx['telemetry_path']), GenerationOptions(**GENERATION_FIELDS))
     config = quality_config(ctx['candidate_spec'], ctx['candidate'], ctx['state_dir'])
-    config.output.bilingual_order = ctx['spec'].bilingual_order
+    config.output.bilingual.order = ctx['spec'].bilingual_order
     mono = ctx['output_dir'] / f"{ctx['spec'].book_id}.epub"
     if mono.resolve() == ctx['source'].resolve():
         raise IntegrationError('mono output aliases source EPUB')
@@ -310,7 +311,7 @@ def _resume(ctx: dict[str, Any]) -> dict[str, Any]:
     write_integration_json(ctx['state_path'], ctx['state'])
     mono = ctx['output_dir'] / f'{spec.book_id}.epub'
     config = quality_config(ctx['candidate_spec'], ctx['candidate'], ctx['state_dir'])
-    config.output.bilingual_order = spec.bilingual_order
+    config.output.bilingual.order = spec.bilingual_order
     result_value = Application(config, client=client).run_all(str(ctx['source']), out_format='epub', out_path=str(mono))
     raw = ctx['telemetry_path'].read_bytes()
     first_size = int(entry.get('first_telemetry_prefix_size', entry['telemetry_prefix_size']))
@@ -336,7 +337,13 @@ def _resume(ctx: dict[str, Any]) -> dict[str, Any]:
 
 def _finish(ctx: dict[str, Any]) -> None:
     result, spec, store = (ctx['result'], ctx['spec'], ctx['store'])
-    structural = validate_epub_triplet(ctx['source'], ctx['output_dir'] / f'{spec.book_id}.epub', ctx['output_dir'] / f'{spec.book_id}-bi.epub')
+    structural = validate_epub_triplet(
+        ctx['source'],
+        ctx['output_dir'] / f'{spec.book_id}.epub',
+        ctx['output_dir'] / f'{spec.book_id}-bi.epub',
+        publication_report=store.load_epub_verification(),
+        output_digest=ctx['result_value'].get('output_digest'),
+    )
     telemetry = telemetry_evidence(ctx['telemetry_path'], candidate=ctx['candidate'], candidate_spec=ctx['candidate_spec'])
     usage = usage_evidence(Path(store.usage_path))
     app_attempts = max(0, telemetry['attempt_count'] - ctx['canary_count'])
@@ -416,6 +423,6 @@ def run_candidate(client_provider: Any, hook_factory: Any, interruption_type: ty
     state['candidates'][candidate.candidate_id]['result_sha256'] = integration_sha256(ctx['result_path'])
     write_integration_json(state_path, state)
     return ctx['result']
-__all__ = ['LIGHT_TRANSLATOR_OPERATIONS', 'TRANSLATOR_OPERATIONS', 'authenticated_event_prefix', 'authenticated_telemetry_prefix', 'batch_rows', 'candidate_store', 'event_rows', 'failure_code', 'node_phase_timings', 'parse_event_bytes', 'recovered_active_duration_ms', 'run_candidate', 'skip_rows', 'telemetry_evidence', 'timestamp_ms', 'validate_restart_prefixes']
+__all__ = ['TRANSLATOR_OPERATIONS', 'authenticated_event_prefix', 'authenticated_telemetry_prefix', 'batch_rows', 'candidate_store', 'event_rows', 'failure_code', 'node_phase_timings', 'parse_event_bytes', 'recovered_active_duration_ms', 'run_candidate', 'skip_rows', 'telemetry_evidence', 'timestamp_ms', 'validate_restart_prefixes']
 
 # fmt: on

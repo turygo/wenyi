@@ -9,9 +9,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from trans_novel.ingest.models import ChapterProcessing
+
 RUN_STATE_SCHEMA_VERSION = 4
 RUN_INPUT_SCHEMA_VERSION = 2
-TRANSLATION_POLICY_VERSION = 1
+TRANSLATION_POLICY_VERSION = 2
 STATUS_PENDING = "pending"
 STATUS_DONE = "done"
 ChapterStatus = Literal["pending", "done"]
@@ -26,6 +28,7 @@ NodeStatus = Literal[
 ]
 NODE_PREPARE = "prepare"
 NODE_ANALYZE = "analyze"
+NODE_LAYOUT = "layout"
 NODE_MINE_TERMS = "mine_terms"
 NODE_NAME_TERMS = "name_terms"
 NODE_TRANSLATE = "translate"
@@ -40,6 +43,7 @@ SCOPE_CHAPTER = "chapter"
 BEST_EFFORT_NODES = frozenset({NODE_MINE_TERMS, NODE_NAME_TERMS})
 
 _NODE_DESCENDANTS: dict[str, tuple[tuple[str, bool | str], ...]] = {
+    NODE_LAYOUT: ((NODE_ASSEMBLE, False),),
     NODE_MINE_TERMS: ((NODE_NAME_TERMS, False),),
     NODE_NAME_TERMS: ((NODE_TRANSLATE, "all"),),
     NODE_TRANSLATE: ((NODE_POLISH, True),),
@@ -60,58 +64,20 @@ def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def normalize_lang_code(code: str | None) -> str:
-    aliases = {
-        "japanese": "ja",
-        "日语": "ja",
-        "日文": "ja",
-        "jp": "ja",
-        "jpn": "ja",
-        "english": "en",
-        "英语": "en",
-        "英文": "en",
-        "eng": "en",
-        "russian": "ru",
-        "俄语": "ru",
-        "俄文": "ru",
-        "rus": "ru",
-        "chinese": "zh",
-        "中文": "zh",
-        "汉语": "zh",
-        "zh-cn": "zh",
-        "zho": "zh",
-        "korean": "ko",
-        "韩语": "ko",
-        "韩文": "ko",
-        "kor": "ko",
-        "french": "fr",
-        "法语": "fr",
-        "法文": "fr",
-        "german": "de",
-        "德语": "de",
-        "德文": "de",
-        "spanish": "es",
-        "西班牙语": "es",
-        "西班牙文": "es",
-        "italian": "it",
-        "意大利语": "it",
-        "意大利文": "it",
-        "portuguese": "pt",
-        "葡萄牙语": "pt",
-        "葡萄牙文": "pt",
-    }
-    c = (code or "").strip().lower()
-    if not c or c in {"auto", "unknown", "und", "uncertain", "mixed", "多语言", "未知"}:
-        return ""
-    return aliases.get(c, c[:2] if c[:2].isalpha() else "")
-
-
 def source_bytes_hash(path: str) -> str:
     try:
         with open(path, "rb") as stream:
             return hashlib.sha256(stream.read()).hexdigest()
     except OSError:
         return ""
+
+
+def stable_digest(payload: object) -> str:
+    """返回持久化状态日志所用规范 JSON 的 SHA-256 哈希值。"""
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def input_fingerprint(*parts: object) -> str:
@@ -194,6 +160,7 @@ class ChapterIndex(BaseModel):
     href: str | None = None
     toc_entry_id: str | None = None
     title_translated: str | None = None
+    processing: ChapterProcessing | None = None
 
 
 class AnalysisFlags(BaseModel):
