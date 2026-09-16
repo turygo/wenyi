@@ -12,6 +12,7 @@ from typing import Any
 from lxml import etree
 
 from trans_novel.assemble.epub.rendering import dedupe_segment_mappings, segment_needs_source
+from trans_novel.assemble.epub.rendering.source_dom import normalize_translated_italics
 from trans_novel.assemble.epub.rendering.theme import NotePathMapping
 from trans_novel.assemble.epub.verification import archive_model, dom, preservation
 from trans_novel.assemble.epub.verification import bilingual as bilingual_module
@@ -271,6 +272,7 @@ def _validate_resource(
         return
     source_tree, output_tree, _, _ = parsed
     root_source, root_output = source_tree.getroot(), output_tree.getroot()
+    segments = normalize_translated_italics(root_source, segments, target_lang)
     mapped_nodes: list[tuple[NotePathMapping, etree._Element]] = []
     for mapping in note_mappings:
         mapped = dom.resolve_path_lxml(root_output, mapping.target_path)

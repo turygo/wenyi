@@ -13,8 +13,13 @@ from trans_novel.assemble.epub.rendering.bilingual import (
 )
 from trans_novel.epub.markup import resource_parser
 from trans_novel.epub.navigation import nav_toc_roots_lxml
+from trans_novel.epub.slots import distribute_slot_translation, target_slot_text
+from trans_novel.ingest import Segment, segment_preserves_source
+from trans_novel.postprocess.language import normalize_lang_code
 
 _XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
+
+_ITALIC_TAGS = frozenset({"em", "i"})
 
 
 def effective_language(element: etree._Element, fallback: str | None = None) -> str | None:
@@ -61,6 +66,70 @@ def resolve_element_path(root: etree._Element, path: tuple[int, ...]) -> etree._
             raise ValueError("EPUB block/slot locator mismatch")
         current = children[index]
     return current
+
+
+def _slot_has_italic_context(block: etree._Element, owner: etree._Element, field: str) -> bool:
+    current = owner if field == "text" else owner.getparent()
+    while current is not None:
+        if isinstance(current.tag, str) and current.tag.rsplit("}", 1)[-1].lower() in _ITALIC_TAGS:
+            return True
+        if current is block:
+            break
+        current = current.getparent()
+    return False
+
+
+def normalize_translated_italics(
+    root: etree._Element, segments: list[Segment], target_lang: str | None
+) -> list[Segment]:
+    """中文译文不继承无法可靠对齐的源文内联斜体边界。"""
+    if normalize_lang_code(target_lang) != "zh":
+        return segments
+    normalized: list[Segment] = []
+    for segment in segments:
+        state = segment.epub_state
+        if (
+            state is None
+            or segment.target is None
+            or segment.target == segment.source
+            or segment_preserves_source(segment)
+            or any(slot.target_value is None for slot in state.slots)
+        ):
+            normalized.append(segment)
+            continue
+        block = resolve_element_path(root, state.block_path)
+        italic = {
+            index
+            for index, slot in enumerate(state.slots)
+            if _slot_has_italic_context(
+                block, resolve_element_path(block, slot.element_path), slot.field
+            )
+        }
+        eligible = [
+            index
+            for index, slot in enumerate(state.slots)
+            if index not in italic and slot.source_value.strip()
+        ]
+        if (
+            not italic
+            or not eligible
+            or not any(state.slots[index].target_value for index in italic)
+        ):
+            normalized.append(segment)
+            continue
+        distribution_state = state.model_copy(
+            update={
+                "slots": [
+                    slot.model_copy(update={"source_value": ""}) if index in italic else slot
+                    for index, slot in enumerate(state.slots)
+                ]
+            }
+        )
+        transport = distribute_slot_translation(distribution_state, target_slot_text(state.slots))
+        rendered = segment.model_copy(deep=True)
+        rendered.assign_translation(transport)
+        normalized.append(rendered)
+    return normalized
 
 
 def serialize_source_tree(tree: etree._ElementTree, data: bytes, mode: str) -> bytes:

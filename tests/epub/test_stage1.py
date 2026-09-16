@@ -10,6 +10,7 @@ from lxml import etree
 from tests.fixtures.books import write_phase9_epub
 from trans_novel.assemble.epub.rendering import assemble_source_epub
 from trans_novel.epub.slots import (
+    distribute_slot_translation,
     normalize_slot_transport,
     validate_slot_transport,
 )
@@ -81,7 +82,7 @@ class TestEpubStage1(unittest.TestCase):
     def test_translation_changes_only_authorized_text_and_tail_slots(self):
         source = (
             b'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">'
-            b'<body><p id="p" class="keep" style="color:red">Alpha <em id="e">Beta</em>'
+            b'<body><p id="p" class="keep" style="color:red">Alpha <span id="e">Beta</span>'
             b' Gamma<a id="a" href="https://example.test">Delta</a> Epsilon</p></body></html>'
         )
         path = self._book(source)
@@ -158,6 +159,32 @@ class TestEpubStage1(unittest.TestCase):
                 after_value,
                 slot.target_value,
             )
+
+    def test_chinese_translation_does_not_inherit_inline_italics(self):
+        source = (
+            b"<html xmlns='http://www.w3.org/1999/xhtml'><body>"
+            b"<p>On board the <i>Mustin</i>, radar was active.</p></body></html>"
+        )
+        path = self._book(source)
+        document = read_epub(path, "en", "zh")
+        segment = document.chapters[0].segments[0]
+        translation = "在马斯廷号驱逐舰上，雷达正在运转。"
+        segment.assign_translation(distribute_slot_translation(segment.epub_state, translation))
+        output = path + ".italics.epub"
+        self.addCleanup(os.unlink, output)
+
+        assemble_source_epub(_Store(document), path, output, target_lang="zh-Hans")
+
+        with zipfile.ZipFile(output) as archive:
+            root = etree.fromstring(archive.read("O/c.xhtml"))
+        paragraph = root.find(".//{http://www.w3.org/1999/xhtml}p")
+        self.assertIsNotNone(paragraph)
+        assert paragraph is not None
+        italic = paragraph.find("{http://www.w3.org/1999/xhtml}i")
+        self.assertIsNotNone(italic)
+        assert italic is not None
+        self.assertEqual("".join(paragraph.itertext()), translation)
+        self.assertFalse(italic.text)
 
     def test_whitespace_tail_inside_inline_pagebreak_run_is_persisted(self):
         path = self._book(

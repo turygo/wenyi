@@ -25,6 +25,7 @@ from trans_novel.assemble.epub.rendering.source_dom import (
     bilingual_source_copy,
     effective_language,
     indexed_toc_entries,
+    normalize_translated_italics,
     parse_source_markup,
     resolve_element_path,
     rewrite_markup_languages,
@@ -582,6 +583,7 @@ def render_source_resource(
         raise ValueError(f"EPUB resource digest mismatch: {href}")
     tree, mode = parse_source_markup(data, expected_mode)
     root = tree.getroot()
+    segments = normalize_translated_italics(root, segments, target_lang)
     note_nodes, layout_nodes = _theme_nodes(
         root,
         note_source_paths,
