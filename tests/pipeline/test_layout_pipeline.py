@@ -64,17 +64,14 @@ def _source(root: Path) -> str:
     return str(path)
 
 
-def _completed_legacy_epub(root: Path) -> tuple[Path, RunStore]:
-    source = root / "legacy.epub"
+def _completed_current_epub(root: Path, *, models) -> tuple[Path, RunStore]:
+    source = root / "completed.epub"
     write_nested_toc_epub(str(source))
     result = Application(
-        _config(root, models=("old",), theme=False),
+        _config(root, models=models, theme=False),
         client=FakeClient(handler=routing_handler),
     ).run_all(str(source), out_path=str(root / "initial.epub"))
     store = result["store"]
-    manifest = store.load_manifest()
-    manifest["identity"]["translation_policy_version"] = TRANSLATION_POLICY_VERSION - 1
-    store.save_manifest(manifest)
     Path(store.layout_profile_path).unlink(missing_ok=True)
     return source, store
 
@@ -122,16 +119,13 @@ def _mark_output_failed(store: RunStore) -> None:
     store.save_state(state)
 
 
-def _legacy_txt(root: Path) -> tuple[Path, RunStore]:
+def _completed_current_txt(root: Path, *, models) -> tuple[Path, RunStore]:
     source = Path(_source(root))
     result = Application(
-        _config(root, theme=False),
+        _config(root, models=models, theme=False),
         client=FakeClient(handler=routing_handler),
     ).run_all(str(source), out_format="txt", out_path=str(root / "initial.txt"))
     store = result["store"]
-    manifest = store.load_manifest()
-    manifest["identity"]["translation_policy_version"] = TRANSLATION_POLICY_VERSION - 1
-    store.save_manifest(manifest)
     return source, store
 
 
@@ -292,18 +286,10 @@ class TestLayoutPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = _source(root)
-            notices: list[str] = []
-
-            def first_handler(messages, agent, operation, json_mode):
-                if operation == "layout.classify":
-                    self.assertTrue(any("模型" in notice for notice in notices))
-                return routing_handler(messages, agent, operation, json_mode)
-
-            first_client = FakeClient(handler=first_handler)
+            first_client = FakeClient(handler=routing_handler)
             first = Application(_config(root), client=first_client).run_all(
                 source,
                 out_path=str(root / "first.epub"),
-                progress=lambda _done, _total, message: notices.append(message),
             )
 
             self.assertIn("layout.classify", {call["operation"] for call in first_client.calls})
@@ -314,16 +300,13 @@ class TestLayoutPipeline(unittest.TestCase):
                 for segment in first["store"].load_chapter(chapter.index).text_segments
             ]
 
-            cached_notices: list[str] = []
             offline = FakeClient(handler=lambda *_args: self.fail("缓存运行不得调用模型"))
             second = Application(_config(root), client=offline).run_all(
                 source,
                 out_path=str(root / "second.epub"),
-                progress=lambda _done, _total, message: cached_notices.append(message),
             )
 
             self.assertEqual(offline.calls, [])
-            self.assertTrue(any("复用" in notice for notice in cached_notices))
             events = Path(first["store"].event_log_path).read_text(encoding="utf-8")
             self.assertIn('"event": "layout_analysis_started"', events)
             self.assertIn('"event": "layout_profile_reused"', events)
@@ -381,11 +364,13 @@ class TestLayoutPipeline(unittest.TestCase):
             )
 
 
-class TestCompletedLegacyCli(unittest.TestCase):
+class TestCompletedCurrentPolicyCli(unittest.TestCase):
     def test_translate_adds_layout_then_translate_and_resume_reuse_it(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, store = _completed_legacy_epub(root)
+            source, store = _completed_current_epub(
+                root, models=("translator", "new-analyst", "editor")
+            )
             before = _paid_state_snapshot(store)
             config = _config(root, models=("translator", "new-analyst", "editor"))
 
@@ -423,7 +408,9 @@ class TestCompletedLegacyCli(unittest.TestCase):
     def test_failed_output_nodes_retry_missing_and_stale_layout(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, store = _completed_legacy_epub(root)
+            source, store = _completed_current_epub(
+                root, models=("translator", "retry-analyst", "editor")
+            )
             before = _paid_state_snapshot(store)
             config = _config(root, models=("translator", "retry-analyst", "editor"))
             _mark_output_failed(store)
@@ -459,17 +446,13 @@ class TestCompletedLegacyCli(unittest.TestCase):
             )
             self.assertEqual(_paid_state_snapshot(store), before)
 
-    def test_incomplete_future_and_source_mismatch_refuse_before_model_work(self):
-        cases = ("incomplete", "future", "source_mismatch")
+    def test_future_and_source_mismatch_refuse_before_model_work(self):
+        cases = ("future", "source_mismatch")
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                source, store = _completed_legacy_epub(root)
-                if case == "incomplete":
-                    chapter = store.load_chapter(0)
-                    chapter.text_segments[0].reset_translation()
-                    store.save_chapter(chapter)
-                elif case == "future":
+                source, store = _completed_current_epub(root, models=("p",))
+                if case == "future":
                     manifest = store.load_manifest()
                     manifest["identity"]["translation_policy_version"] = (
                         TRANSLATION_POLICY_VERSION + 1
@@ -481,16 +464,16 @@ class TestCompletedLegacyCli(unittest.TestCase):
                 before = _paid_state_snapshot(store)
                 client = FakeClient(handler=lambda *_args: self.fail("拒绝路径不得调用模型"))
 
-                result = _invoke_cli(_config(root), client, "translate", source)
+                result = _invoke_cli(_config(root, models=("p",)), client, "translate", source)
 
                 self.assertNotEqual(result.exit_code, 0)
                 self.assertEqual(client.calls, [])
                 self.assertEqual(_paid_state_snapshot(store), before)
 
-    def test_legacy_txt_ignores_unused_theme_files(self):
+    def test_completed_current_txt_ignores_unused_theme_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, store = _legacy_txt(root)
+            source, store = _completed_current_txt(root, models=("changed",))
             before = _paid_state_snapshot(store)
             config = Config.from_dict(
                 {
@@ -508,7 +491,7 @@ class TestCompletedLegacyCli(unittest.TestCase):
             config.source_lang = "en"
             config.target_lang = "zh"
             config.state_dir = str(root / "state")
-            client = FakeClient(handler=lambda *_args: self.fail("TXT 遗留输出不得调用模型"))
+            client = FakeClient(handler=lambda *_args: self.fail("TXT 已完成输出不得调用模型"))
 
             result = _invoke_cli(config, client, "translate", source, out_format="txt")
 

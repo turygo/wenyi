@@ -141,7 +141,7 @@ class LayoutNode:
                 resumed=checkpoint is not None,
             )
             if request.progress:
-                request.progress(0, 0, "正在分析 EPUB 排版，会调用模型并可能产生费用")
+                request.progress(0, 0, "正在分析 EPUB 排版")
         else:
             request.store.log_event("layout_analysis_empty")
             if request.progress:
