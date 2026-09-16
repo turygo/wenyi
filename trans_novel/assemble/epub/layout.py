@@ -190,7 +190,7 @@ def _generated_inventory(chapters: Sequence[Chapter]) -> LayoutInventory:
     rows: list[tuple[str, tuple[int, ...], str, str]] = []
     for chapter in chapters:
         resource_href = f"ch{chapter.index}.xhtml"
-        for index, (kind, _target, source) in enumerate(merged_paragraphs(chapter)):
+        for index, (kind, _target, source, _preserve) in enumerate(merged_paragraphs(chapter)):
             if not source.strip():
                 continue
             rows.append((resource_href, (index,), "h1" if kind == KIND_HEADING else "p", source))

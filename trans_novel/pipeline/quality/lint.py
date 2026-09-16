@@ -22,6 +22,7 @@ ISSUE_UNTRANSLATED = "untranslated"
 ISSUE_EMPTY = "empty"
 ISSUE_TOO_SHORT = "too_short"
 ISSUE_TOO_LONG = "too_long"
+ISSUE_MODEL_ARTIFACT = "model_artifact"
 
 
 @dataclass
@@ -463,6 +464,10 @@ _LENGTH_DETAIL = {
 # 只有比值和绝对长度都足够极端才有判定意义。
 _EN_TOO_SHORT_RATIO = 0.15
 _EN_TOO_SHORT_MIN_SRC_LEN = 120
+_MODEL_ARTIFACT_TOKENS = (
+    "costheta_user_prompt_delimiter_xyzzy",
+    "productive_output_tokenizer_used_for_thinking",
+)
 
 
 def lint_targets(
@@ -515,6 +520,16 @@ def lint_targets(
                     "译文与原文高度重合，疑似整段未译，请重新翻译",
                 )
             )
+
+        for token in _MODEL_ARTIFACT_TOKENS:
+            if token in t:
+                issues.append(
+                    LintIssue(
+                        i,
+                        ISSUE_MODEL_ARTIFACT,
+                        f"译文包含模型内部标记「{token}」，必须移除并重新翻译",
+                    )
+                )
 
     return issues
 

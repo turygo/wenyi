@@ -44,7 +44,7 @@ def _theme(chapters: list[Chapter]) -> ThemeService:
             role=None if kind == KIND_HEADING else "body",
         )
         for chapter in chapters
-        for position, (kind, _target, source) in enumerate(merged_paragraphs(chapter))
+        for position, (kind, _target, source, _preserve) in enumerate(merged_paragraphs(chapter))
     )
     profile = LayoutProfile(
         source_sha256="a" * 64,
@@ -71,7 +71,7 @@ def _processing() -> ChapterProcessing:
         review_required=False,
         reason="reference",
         source_sha256="source",
-        strategy_version="chapter_semantics_v1",
+        strategy_version="chapter_semantics_v2",
     )
 
 

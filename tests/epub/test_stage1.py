@@ -424,14 +424,14 @@ class TestPreservedChapterRanges(unittest.TestCase):
             review_required=False,
             reason="reference list",
             source_sha256="source",
-            strategy_version="chapter_semantics_v1",
+            strategy_version="chapter_semantics_v2",
         )
         translate = ChapterProcessing(
             action="translate",
             review_required=False,
             reason="narrative",
             source_sha256="source",
-            strategy_version="chapter_semantics_v1",
+            strategy_version="chapter_semantics_v2",
         )
         document.chapters = [
             Chapter(index=0, title="Story", segments=[story], processing=translate),
@@ -448,7 +448,7 @@ class TestPreservedChapterRanges(unittest.TestCase):
         self.assertEqual("".join(paragraphs[1].itertext()), "Reference Alpha.")
         self.assertEqual(paragraphs[1].get("{http://www.w3.org/XML/1998/namespace}lang"), "fr")
         self.assertEqual(paragraphs[1][0].get("lang"), "de")
-        self.assertEqual(root.get("lang"), "zh")
+        self.assertEqual(root.get("lang"), "zh-Hans")
 
         from trans_novel.assemble.epub.verification import verify_epub
 
@@ -542,7 +542,7 @@ class TestPreservedLanguageRanges(unittest.TestCase):
                     review_required=False,
                     reason="narrative",
                     source_sha256="source",
-                    strategy_version="chapter_semantics_v1",
+                    strategy_version="chapter_semantics_v2",
                 ),
             ),
             Chapter(
@@ -553,7 +553,7 @@ class TestPreservedLanguageRanges(unittest.TestCase):
                     review_required=False,
                     reason="reference list",
                     source_sha256="source",
-                    strategy_version="chapter_semantics_v1",
+                    strategy_version="chapter_semantics_v2",
                 ),
             ),
         ]
@@ -584,7 +584,7 @@ class TestPreservedLanguageRanges(unittest.TestCase):
 
 
 class TestPreservedNavigation(unittest.TestCase):
-    def test_nav_and_ncx_preserve_nested_labels_for_preserved_chapter(self):
+    def test_preserved_body_still_translates_navigation_titles(self):
         with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as handle:
             path = handle.name
         self.addCleanup(os.unlink, path)
@@ -617,7 +617,7 @@ class TestPreservedNavigation(unittest.TestCase):
                 review_required=False,
                 reason="reference list" if chapter.index == 0 else "narrative",
                 source_sha256="source",
-                strategy_version="chapter_semantics_v1",
+                strategy_version="chapter_semantics_v2",
             )
             for segment in chapter.segments:
                 segment.assign_translation(
@@ -633,9 +633,9 @@ class TestPreservedNavigation(unittest.TestCase):
                 )
         for entry in document.meta["toc_entries"]:
             entry["title_translated"] = (
-                "损坏明细"
+                "参考明细"
                 if entry["title"] == "Reference Detail"
-                else "损坏标题"
+                else "第一章"
                 if entry["title"] == "Chapter One"
                 else "第二章"
             )
@@ -658,10 +658,11 @@ class TestPreservedNavigation(unittest.TestCase):
                 nav = archive.read("OEBPS/nav.xhtml").decode()
                 ncx = archive.read("OEBPS/toc.ncx").decode()
             for markup in (nav, ncx):
-                self.assertIn("Chapter One", markup)
-                self.assertIn("Reference Detail", markup)
+                self.assertIn("第一章", markup)
+                self.assertIn("参考明细", markup)
                 self.assertIn("第二章", markup)
-                self.assertNotIn("损坏", markup)
+                self.assertNotIn("Chapter One", markup)
+                self.assertNotIn("Reference Detail", markup)
                 self.assertIn("text/chapter-1.xhtml#intro", markup)
             self.assertTrue(
                 verify_epub(

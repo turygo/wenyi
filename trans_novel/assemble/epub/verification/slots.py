@@ -19,7 +19,7 @@ from trans_novel.assemble.epub.verification import navigation as nav_module
 from trans_novel.epub.markup import resource_parser
 from trans_novel.epub.package import HTML_MEDIA, NCX_MEDIA, read_package
 from trans_novel.epub.slots import normalized_source_text, slot_contract_digest
-from trans_novel.ingest.models import preserved_toc_entry_ids
+from trans_novel.ingest import canonical_title_id, segment_preserves_source
 
 MAX_MEMBER_BYTES = archive_model.MAX_MEMBER_BYTES
 
@@ -187,12 +187,20 @@ def _check_segments(root_source, resource, segments, bilingual, slot_map, direct
                 archive_model.item("state", "slot_contract_mismatch", resource, "state")
             )
         seen: set[tuple[tuple[int, ...], str]] = set()
+        title_id = canonical_title_id(segment)
+        preserve_source = segment_preserves_source(segment)
+        if title_id is not None and (
+            segment.target is None or any(slot.target_value is None for slot in state.slots)
+        ):
+            failures.append(
+                archive_model.item("state", "canonical_title_target_missing", resource, "target")
+            )
         for slot in state.slots:
             location = (tuple(state.block_path) + tuple(slot.element_path), slot.field)
             if location in seen:
                 failures.append(archive_model.item("state", "slot_overlap", resource, "state"))
             seen.add(location)
-            slot_map[location] = (slot, segment.preserve_source)
+            slot_map[location] = (slot, preserve_source, title_id is not None)
             owner = dom.resolve_path_lxml(root_source, location[0])
             if owner is None:
                 failures.append(
@@ -219,12 +227,14 @@ def _check_output_slots(root_output, resource, slot_map, direct_cleared, failure
             if allowed.get("count") and actual_value != allowed.get("source"):
                 differences["toc_labels"] += 1
             continue
-        slot, preserve_source = allowed
+        slot, preserve_source, canonical_title = allowed
         expected_value = (
             slot.source_value
             if preserve_source
             else slot.target_value
             if slot.target_value is not None
+            else None
+            if canonical_title
             else slot.source_value
         )
         actual_value = getattr(owner, field)
@@ -331,7 +341,7 @@ def _validate_resource(
         root_output,
         slot_map,
         toc_label_paths=toc_label_paths,
-        allow_root_language=not is_ncx_resource,
+        allow_root_language=True,
         language_paths=language_paths,
     ):
         failures.append(archive_model.item("dom", "unauthorized_dom_change", resource, "immutable"))
@@ -438,17 +448,41 @@ def slot_proof(
     except AttributeError:
         source_lang = ""
     raw_meta = manifest.get("meta") if isinstance(manifest, dict) else {}
-    toc_entries = raw_meta.get("toc_entries") if isinstance(raw_meta, dict) else []
-    raw_toc = toc_entries if isinstance(toc_entries, list) else []
-    preserved_toc_ids = preserved_toc_entry_ids(chapters, raw_toc)
-    toc_entries = [
-        {**entry, "preserve_source": True} if entry.get("entry_id") in preserved_toc_ids else entry
-        for entry in raw_toc
-        if isinstance(entry, dict)
-    ]
+    raw_toc = raw_meta.get("toc_entries") if isinstance(raw_meta, dict) else []
+    toc_source = raw_toc if isinstance(raw_toc, list) else []
+    toc_entries = [entry for entry in toc_source if isinstance(entry, dict)]
+    canonical_targets = {
+        entry["entry_id"]: entry["title_translated"]
+        for entry in toc_entries
+        if isinstance(entry.get("entry_id"), str) and isinstance(entry.get("title_translated"), str)
+    }
+    if isinstance(manifest, dict):
+        raw_chapters = manifest.get("chapters", [])
+        chapter_entries = raw_chapters if isinstance(raw_chapters, list) else []
+        canonical_targets.update(
+            {
+                f"chapter:{chapter['index']}": chapter["title_translated"]
+                for chapter in chapter_entries
+                if isinstance(chapter, dict)
+                and type(chapter.get("index")) is int
+                and isinstance(chapter.get("title_translated"), str)
+            }
+        )
+    for segment in all_segments:
+        title_id = canonical_title_id(segment)
+        if title_id is not None and canonical_targets.get(title_id) != segment.target:
+            failures.append(
+                archive_model.item("state", "canonical_title_mismatch", "<state>", "target")
+            )
     root_lang = (
         source_lang
-        if chapters and all(chapter.preserve_source for chapter in chapters) and source_lang
+        if chapters
+        and all(
+            segment_preserves_source(segment)
+            for chapter in chapters
+            for segment in chapter.segments
+        )
+        and source_lang
         else target_lang
     )
     _validate_resources(

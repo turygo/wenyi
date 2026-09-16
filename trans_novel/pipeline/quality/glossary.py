@@ -14,6 +14,7 @@ from trans_novel.glossary.audit import (
     is_latin_source,
 )
 from trans_novel.glossary.store import GlossaryStore
+from trans_novel.ingest import segment_preserves_source
 
 
 def target_corpus(store) -> str:
@@ -21,16 +22,12 @@ def target_corpus(store) -> str:
     parts: list[str] = []
     for chapter in manifest["chapters"]:
         loaded = store.load_chapter(chapter["index"])
-        if not loaded.preserve_source:
-            parts.extend(segment.target or "" for segment in loaded.text_segments)
+        parts.extend(
+            segment.target or ""
+            for segment in loaded.text_segments
+            if not segment_preserves_source(segment)
+        )
     return "\n".join(parts)
-
-
-def _preserved_manifest_chapter(chapter: dict[str, Any]) -> bool:
-    processing = chapter.get("processing")
-    if isinstance(processing, dict):
-        return processing.get("action") == "preserve"
-    return getattr(processing, "action", None) == "preserve"
 
 
 def rewrite_targets(store, glossary: GlossaryStore, replace_map: dict[str, str]) -> int:
@@ -50,11 +47,11 @@ def rewrite_targets(store, glossary: GlossaryStore, replace_map: dict[str, str])
     changed = 0
     for chapter in manifest["chapters"]:
         loaded = store.load_chapter(chapter["index"])
-        if loaded.preserve_source:
-            continue
         dirty = False
         entries: list[dict[str, Any]] = []
         for index, segment in enumerate(loaded.segments):
+            if segment_preserves_source(segment):
+                continue
             if segment.target is None:
                 continue
             executed: list[dict[str, str]] = []
@@ -87,30 +84,31 @@ def rewrite_targets(store, glossary: GlossaryStore, replace_map: dict[str, str])
                 store.log_event("glossary_rewrite_applied", **entry)
 
     manifest_dirty = False
-    if "title_translated" in manifest:
-        old_title = manifest.pop("title_translated")
+
+    def rewrite_title(owner: dict[str, Any], *, event: dict[str, Any]) -> None:
+        nonlocal manifest_dirty
+        old_title = owner.get("title_translated")
+        new_title = apply(old_title, []) if isinstance(old_title, str) else old_title
+        if new_title == old_title:
+            return
+        owner["title_translated"] = new_title
         manifest_dirty = True
         store.log_event(
-            "glossary_book_title_translation_removed",
-            title=True,
+            "glossary_title_rewrite_applied",
+            **event,
             before=old_title,
+            after=new_title,
             replace_map=replace_map,
         )
+
+    rewrite_title(manifest, event={"title": True})
     for chapter in manifest["chapters"]:
-        if _preserved_manifest_chapter(chapter):
-            continue
-        old_title = chapter.get("title_translated")
-        new_title = apply(old_title, []) if isinstance(old_title, str) else old_title
-        if new_title != old_title:
-            chapter["title_translated"] = new_title
-            manifest_dirty = True
-            store.log_event(
-                "glossary_title_rewrite_applied",
-                chapter=chapter["index"],
-                before=old_title,
-                after=new_title,
-                replace_map=replace_map,
-            )
+        rewrite_title(chapter, event={"chapter": chapter["index"]})
+    meta = manifest.get("meta")
+    toc_entries = meta.get("toc_entries", []) if isinstance(meta, dict) else []
+    for entry in toc_entries:
+        if isinstance(entry, dict):
+            rewrite_title(entry, event={"toc_entry_id": entry.get("entry_id")})
     if manifest_dirty:
         store.save_manifest(manifest)
     return changed

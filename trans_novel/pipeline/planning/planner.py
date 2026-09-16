@@ -115,22 +115,26 @@ class Planner:
     ) -> WorkflowPlan:
         self.definition.validate_goal(goal.phases)
         state = store.load_state() if store.exists() else RunState()
-        legacy = (
+        if (
             store.exists()
             and state.identity.translation_policy_version != TRANSLATION_POLICY_VERSION
-        )
+        ):
+            raise IdentityMismatchError(
+                "翻译策略版本不一致；请创建新的状态目录重新翻译，原有结果保持不变。"
+            )
         chapters = list(state.chapters)
-        if not legacy:
-            self._validate_processing(store, chapters)
+        self._validate_processing(store, chapters)
         if goal.only_chapter is not None and goal.only_chapter not in {c.index for c in chapters}:
             raise ValueError(f"章节编号 {goal.only_chapter} 不存在")
-        if store.exists() and not legacy:
+        if store.exists():
             computed = {}
             for key in state.nodes:
                 base, sep, suffix = key.partition(":")
                 if base not in self.definition.node_ids:
                     continue
                 ci = int(suffix) if sep and suffix.isdigit() else None
+                if goal.only_chapter is not None and ci != goal.only_chapter:
+                    continue
                 fingerprint = self._fingerprint(base, ci, prescan)
                 if fingerprint is not None:
                     computed[key] = fingerprint
@@ -191,14 +195,6 @@ class Planner:
             need(NODE_REPORT, force=True)
         if "assemble" in goal.phases:
             need(NODE_ASSEMBLE, force=True)
-        if legacy and any(
-            entry.action == "run" and entry.node_id in _MODEL_WRITING_NODES
-            for entry in needed.values()
-        ):
-            raise IdentityMismatchError(
-                "旧翻译策略的运行缺少所需结果，不能补译或修复；"
-                "请创建新的状态目录重新翻译，原有结果保持不变。"
-            )
         self._schedule(plan, needed, chapters, policy)
         return plan
 
@@ -291,9 +287,7 @@ class Planner:
         elif node == NODE_DETERMINISTIC_QA:
             self._need(NODE_TITLES, None, False, chapters, policy, prescan, state, needed, add)
         elif node == NODE_REPORT:
-            repair_force = (
-                force and state.identity.translation_policy_version >= TRANSLATION_POLICY_VERSION
-            )
+            repair_force = force
             self._need(
                 NODE_REPAIR,
                 None,

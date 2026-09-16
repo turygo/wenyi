@@ -17,6 +17,7 @@ from trans_novel.pipeline.contracts import (
     assemble_goal,
     qa_goal,
     report_goal,
+    translate_chapter_goal,
 )
 from trans_novel.pipeline.planning import (
     Planner,
@@ -38,6 +39,7 @@ from trans_novel.pipeline.state import (
     NODE_TITLES,
     NODE_TRANSLATE,
     IdentityMismatchError,
+    NodeState,
     RunIdentity,
     RunStore,
 )
@@ -111,6 +113,108 @@ class TestPlanner(unittest.TestCase):
         state["initialized"] = True
         store.save_manifest(state)
         return store
+
+    def _fingerprinted_store(self, tmp: str) -> tuple[RunStore, PrescanInputs]:
+        store = self._store(tmp)
+        state = store.load_state()
+        state.nodes = {
+            NODE_PREPARE: NodeState(
+                node_id=NODE_PREPARE, status="succeeded", input_fingerprint="old-book"
+            ),
+            "analyze": NodeState(
+                node_id="analyze", status="succeeded", input_fingerprint="old-analysis"
+            ),
+            f"{NODE_TRANSLATE}:0": NodeState(
+                node_id=f"{NODE_TRANSLATE}:0",
+                status="succeeded",
+                input_fingerprint="old-selected",
+            ),
+            f"{NODE_POLISH}:0": NodeState(
+                node_id=f"{NODE_POLISH}:0",
+                status="succeeded",
+                input_fingerprint="current-polish-0",
+            ),
+            f"{NODE_TRANSLATE}:1": NodeState(
+                node_id=f"{NODE_TRANSLATE}:1",
+                status="succeeded",
+                input_fingerprint="old-nonselected",
+            ),
+            f"{NODE_POLISH}:1": NodeState(
+                node_id=f"{NODE_POLISH}:1", status="succeeded", input_fingerprint=""
+            ),
+        }
+        for chapter_index in (0, 1):
+            chapter = store.load_chapter(chapter_index)
+            chapter.text_segments[0].target = f"Paid translation {chapter_index}"
+            store.save_chapter(chapter)
+            state.progress[chapter_index].status = "done"
+        store.save_state(state)
+        store.save_analysis({"style_guide": "Paid analysis"})
+        return store, PrescanInputs(
+            prepare_fingerprint=lambda: "new-book",
+            analyze_fingerprint=lambda: "new-analysis",
+            translate_fingerprint=lambda ci: f"new-translate-{ci}",
+            polish_fingerprint=lambda ci: f"current-polish-{ci}",
+        )
+
+    def test_only_chapter_reconciles_only_the_selected_chapter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store, prescan = self._fingerprinted_store(directory)
+            protected_keys = (
+                NODE_PREPARE,
+                "analyze",
+                f"{NODE_TRANSLATE}:1",
+                f"{NODE_POLISH}:1",
+            )
+            before_state = store.load_state()
+            before = {
+                "nodes": {
+                    key: before_state.nodes[key].model_dump(mode="json") for key in protected_keys
+                },
+                "progress": before_state.progress[1].model_dump(mode="json"),
+                "chapter": store.load_chapter(1).model_dump(mode="json"),
+                "analysis": store.load_analysis(),
+            }
+
+            plan = Planner(build_workflow_definition()).build_plan(
+                goal=translate_chapter_goal(0),
+                store=store,
+                policy=WorkflowPolicy(polish=True),
+                prescan=prescan,
+            )
+
+            after_state = store.load_state()
+            after = {
+                "nodes": {
+                    key: after_state.nodes[key].model_dump(mode="json") for key in protected_keys
+                },
+                "progress": after_state.progress[1].model_dump(mode="json"),
+                "chapter": store.load_chapter(1).model_dump(mode="json"),
+                "analysis": store.load_analysis(),
+            }
+            self.assertEqual(after, before)
+            self.assertEqual(plan.targets, [0])
+            self.assertIn(f"{NODE_TRANSLATE}:0", plan.entry_keys())
+            self.assertEqual(after_state.nodes[f"{NODE_TRANSLATE}:0"].status, "pending")
+            self.assertIsNone(store.load_chapter(0).text_segments[0].target)
+
+    def test_full_book_reconciles_stale_book_and_nonselected_chapter_nodes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store, prescan = self._fingerprinted_store(directory)
+
+            plan = Planner(build_workflow_definition()).build_plan(
+                goal=GOAL_RUN_ALL,
+                store=store,
+                policy=WorkflowPolicy(polish=True),
+                prescan=prescan,
+            )
+
+            state = store.load_state()
+            self.assertEqual(plan.targets, [0, 1])
+            self.assertEqual(state.nodes[NODE_PREPARE].status, "pending")
+            self.assertEqual(state.nodes[f"{NODE_TRANSLATE}:1"].status, "pending")
+            self.assertIsNone(store.load_chapter(1).text_segments[0].target)
+            self.assertIsNone(store.load_analysis())
 
     def test_disabled_polish_skip_is_terminal(self):
         with tempfile.TemporaryDirectory() as d:
@@ -221,91 +325,68 @@ class TestTranslationPolicy(unittest.TestCase):
         store.save_analysis({"style_guide": "Saved style"})
         return store
 
-    def test_old_or_unknown_policy_rejects_writing_before_reading_inputs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = self._legacy_store(tmp)
-            for version in (None, TRANSLATION_POLICY_VERSION + 1):
+    def test_old_or_future_policy_rejects_every_phase_without_state_changes(self):
+        phases = (
+            "prepare",
+            "prescan",
+            "translate",
+            "titles",
+            "qa",
+            "repair",
+            "polish",
+            "report",
+            "layout",
+            "assemble",
+        )
+        for version in (0, TRANSLATION_POLICY_VERSION + 1):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                store = self._legacy_store(tmp)
                 raw = store.read_json(store.manifest_path)
-                if version is not None:
-                    raw["identity"]["translation_policy_version"] = version
-                    store.write_json(store.manifest_path, raw)
+                raw["identity"]["translation_policy_version"] = version
+                store.write_json(store.manifest_path, raw)
                 before = Path(store.manifest_path).read_bytes()
-                for phase in ("prepare", "prescan", "translate", "titles", "repair", "polish"):
-                    with self.subTest(version=version, phase=phase):
-                        with self.assertRaises(IdentityMismatchError):
-                            build_prescan_inputs(
-                                Config(),
-                                store,
-                                WorkflowPolicy(),
-                                None,
-                                ExecutionGoal(name=phase, phases=(phase,)),
-                            )
-                        self.assertEqual(Path(store.manifest_path).read_bytes(), before)
+                for phase in phases:
+                    with self.subTest(phase=phase), self.assertRaises(IdentityMismatchError):
+                        build_prescan_inputs(
+                            Config(),
+                            store,
+                            WorkflowPolicy(),
+                            None,
+                            ExecutionGoal(name=phase, phases=(phase,)),
+                        )
+                self.assertEqual(Path(store.manifest_path).read_bytes(), before)
                 self.assertEqual(
                     store.load_chapter(0).text_segments[0].target, "Saved translation 0"
                 )
                 self.assertEqual(store.load_analysis(), {"style_guide": "Saved style"})
 
-    def test_old_complete_run_can_plan_qa_and_export_without_reconciliation(self):
+    def test_planner_directly_rejects_old_policy_for_output_only_goals(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = self._legacy_store(tmp)
             before = Path(store.manifest_path).read_bytes()
-            self.assertEqual(store.load_state().identity.translation_policy_version, 0)
             for goal in (qa_goal(), assemble_goal(out_format="txt")):
-                with self.subTest(goal=goal.name):
-                    prescan = build_prescan_inputs(Config(), store, WorkflowPolicy(), None, goal)
-                    plan = Planner(build_workflow_definition()).build_plan(
-                        goal=goal, store=store, policy=WorkflowPolicy(), prescan=prescan
+                with self.subTest(goal=goal.name), self.assertRaises(IdentityMismatchError):
+                    Planner(build_workflow_definition()).build_plan(
+                        goal=goal,
+                        store=store,
+                        policy=WorkflowPolicy(),
+                        prescan=PrescanInputs(),
                     )
-                    self.assertEqual(
-                        plan.entry_keys(),
-                        {"deterministic_qa"} if goal.name == "qa" else {"layout", "assemble"},
-                    )
-                    self.assertEqual(Path(store.manifest_path).read_bytes(), before)
-                    self.assertEqual(
-                        store.load_chapter(0).text_segments[0].target, "Saved translation 0"
-                    )
+            self.assertEqual(Path(store.manifest_path).read_bytes(), before)
 
-    def test_forced_report_reuses_completed_repair_only_for_older_policy(self):
+    def test_forced_report_runs_repair_for_current_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = self._legacy_store(tmp)
-            planner = Planner(build_workflow_definition())
-            goal = report_goal()
-
-            legacy_plan = planner.build_plan(
-                goal=goal,
-                store=store,
-                policy=WorkflowPolicy(),
-                prescan=PrescanInputs(),
-            )
-            self.assertEqual(legacy_plan.entry_keys(), {NODE_REPORT})
-
             state = store.load_state()
             state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION
             store.save_state(state)
-            current_plan = planner.build_plan(
-                goal=goal,
+            plan = Planner(build_workflow_definition()).build_plan(
+                goal=report_goal(),
                 store=store,
                 policy=WorkflowPolicy(),
                 prescan=PrescanInputs(),
             )
-            self.assertEqual(current_plan.entry_keys(), {NODE_REPAIR, NODE_REPORT})
-
-    def test_old_incomplete_export_rejects_implicit_model_work_without_changes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = self._legacy_store(tmp)
-            raw = store.read_json(store.manifest_path)
-            del raw["nodes"]["translate:0"]
-            store.write_json(store.manifest_path, raw)
-            before = Path(store.manifest_path).read_bytes()
-            goal = assemble_goal(out_format="txt")
-            prescan = build_prescan_inputs(Config(), store, WorkflowPolicy(), None, goal)
-            with self.assertRaises(IdentityMismatchError):
-                Planner(build_workflow_definition()).build_plan(
-                    goal=goal, store=store, policy=WorkflowPolicy(), prescan=prescan
-                )
-            self.assertEqual(Path(store.manifest_path).read_bytes(), before)
-            self.assertEqual(store.load_chapter(0).text_segments[0].target, "Saved translation 0")
+            self.assertEqual(plan.entry_keys(), {NODE_REPAIR, NODE_REPORT})
 
     def test_staging_stamps_new_identity_without_mutating_supplied_identity(self):
         with tempfile.TemporaryDirectory() as tmp:

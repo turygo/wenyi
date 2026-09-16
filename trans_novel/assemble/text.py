@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from trans_novel.ingest import KIND_HEADING, Chapter
+from trans_novel.ingest import (
+    KIND_HEADING,
+    Chapter,
+    canonical_title_id,
+    segment_preserves_source,
+)
 from trans_novel.postprocess.punct import normalize_heading_numbering
 
 
-def merged_paragraphs(chapter: Chapter) -> list[tuple[str, str, str]]:
+def merged_paragraphs(chapter: Chapter) -> list[tuple[str, str, str, bool]]:
     """Merge continuation segments into paragraphs."""
     paras: list[list[str]] = []
     srcs: list[list[str]] = []
@@ -15,9 +20,14 @@ def merged_paragraphs(chapter: Chapter) -> list[tuple[str, str, str]]:
     for segment in chapter.segments:
         if not segment.source.strip():
             continue
+        preserve = segment_preserves_source(segment)
+        if canonical_title_id(segment) is not None and not (
+            segment.target and segment.target.strip()
+        ):
+            raise ValueError("canonical title target missing")
         target = (
             segment.source
-            if segment.preserve_source
+            if preserve
             else segment.target
             if segment.target and segment.target.strip()
             else segment.source
@@ -25,12 +35,12 @@ def merged_paragraphs(chapter: Chapter) -> list[tuple[str, str, str]]:
         if segment.cont and paras:
             paras[-1].append(target)
             srcs[-1].append(segment.source)
-            preserved[-1] = preserved[-1] and segment.preserve_source
+            preserved[-1] = preserved[-1] and preserve
         else:
             paras.append([target])
             srcs.append([segment.source])
             kinds.append(segment.kind)
-            preserved.append(segment.preserve_source)
+            preserved.append(preserve)
     return [
         (
             kind,
@@ -40,6 +50,7 @@ def merged_paragraphs(chapter: Chapter) -> list[tuple[str, str, str]]:
                 else "".join(target)
             ),
             "".join(source),
+            preserve,
         )
         for kind, target, source, preserve in zip(kinds, paras, srcs, preserved, strict=False)
     ]
@@ -58,10 +69,13 @@ def assemble_text(
     for chapter_meta in manifest["chapters"]:
         chapter = store.load_chapter(chapter_meta["index"])
         blocks: list[str] = []
-        for kind, target, source in merged_paragraphs(chapter):
+        for kind, target, source, preserve in merged_paragraphs(chapter):
             src = (
                 bilingual_source(source, target)
-                if bilingual and kind != KIND_HEADING and not chapter.preserve_source
+                if bilingual
+                and kind != KIND_HEADING
+                and not preserve
+                and not chapter.preserve_source
                 else ""
             )
             if not src:

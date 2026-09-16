@@ -18,7 +18,7 @@ from trans_novel.ingest.models import (
     chapter_source_digest,
 )
 
-_CACHE_SCHEMA_VERSION = 1
+_CACHE_SCHEMA_VERSION = 2
 _MAX_SOURCE_CHARS = 16_000
 _CACHE_NAME = "chapter_classification.json"
 
@@ -51,8 +51,8 @@ class _CachedChapter(BaseModel):
 class _ClassificationCache(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    schema_version: Literal[1]
-    strategy_version: Literal["chapter_semantics_v1"]
+    schema_version: Literal[2]
+    strategy_version: Literal["chapter_semantics_v2"]
     source_fingerprint: str = Field(min_length=1)
     configured_analyst_models: list[str] = Field(min_length=1)
     chapters: dict[str, _CachedChapter] = Field(default_factory=dict)
@@ -68,11 +68,11 @@ def _source_fingerprint(chapters: list[Chapter]) -> str:
     return _sha256(canonical)
 
 
-def _source_chunks(chapter: Chapter) -> list[str]:
+def _split_source_group(sources: list[str]) -> list[str]:
     chunks: list[str] = []
     current = ""
-    for segment_index, segment in enumerate(chapter.segments):
-        paragraph = ("\n\n" if segment_index else "") + segment.source
+    for source in sources:
+        paragraph = ("\n\n" if current else "") + source
         if len(current) + len(paragraph) <= _MAX_SOURCE_CHARS:
             current += paragraph
             continue
@@ -86,6 +86,27 @@ def _source_chunks(chapter: Chapter) -> list[str]:
     if current:
         chunks.append(current)
     return [chunk for chunk in chunks if chunk.strip()]
+
+
+def _source_chunks(chapter: Chapter) -> list[tuple[str, str]]:
+    groups: list[tuple[str, list[str]]] = []
+    missing_href = "(non-EPUB source)"
+    for segment in chapter.segments:
+        resource = segment.resource_href or missing_href
+        if not groups or groups[-1][0] != resource:
+            groups.append((resource, []))
+        if segment.source.strip():
+            groups[-1][1].append(segment.source)
+    units: list[tuple[str, str]] = []
+    for resource_ordinal, (resource, sources) in enumerate(groups, 1):
+        chunks = _split_source_group(sources)
+        for chunk_ordinal, source in enumerate(chunks, 1):
+            context = (
+                f"Physical resource {resource_ordinal} of {len(groups)}: {resource}; "
+                f"chunk {chunk_ordinal} of {len(chunks)}."
+            )
+            units.append((context, source))
+    return units
 
 
 def _load_cache(path: str, chapters: list[Chapter]) -> _ClassificationCache | None:
@@ -216,7 +237,7 @@ def ensure_chapter_classification(
         )
         if len(cached.chunks) > len(chunks):
             raise ValueError(f"章节分类缓存覆盖冲突: {chapter.index}")
-        for chunk_index, source in enumerate(chunks):
+        for chunk_index, (context, source) in enumerate(chunks):
             digest = _sha256(source)
             if chunk_index < len(cached.chunks):
                 if cached.chunks[chunk_index].source_sha256 != digest:
@@ -225,7 +246,7 @@ def ensure_chapter_classification(
             observation = classifier.classify(
                 chapter_id=chapter.index,
                 title=chapter.title[:1000],
-                context=f"Consecutive source chunk {chunk_index + 1} of {len(chunks)}.",
+                context=context,
                 source=source,
                 hints=hints,
             )

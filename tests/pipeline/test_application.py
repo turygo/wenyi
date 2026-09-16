@@ -351,7 +351,7 @@ class TestMinimalPipeline(unittest.TestCase):
             self.assertEqual(segment.target, literal)
             self.assertEqual(client.calls, [])
 
-    def test_titles_are_translated_one_per_call(self):
+    def test_titles_are_translated_in_one_whole_book_call(self):
         with tempfile.TemporaryDirectory() as d:
             doc = _document()
             doc.chapters.append(
@@ -364,10 +364,11 @@ class TestMinimalPipeline(unittest.TestCase):
             Application(_config(d), client=client).run_document_goal(doc, source, goal)
 
             title_calls = [call for call in client.calls if call["operation"] == "title.translate"]
-            self.assertEqual(len(title_calls), 2)
-            self.assertTrue(
-                all("[1]" not in call["messages"][-1]["content"] for call in title_calls)
-            )
+            self.assertEqual(len(title_calls), 1)
+            request = title_calls[0]["messages"][-1]["content"]
+            self.assertIn('"id":"book"', request)
+            self.assertIn('"id":"chapter:0"', request)
+            self.assertIn('"id":"chapter:1"', request)
 
     def test_polish_disabled_body_chapter_reaches_done(self):
         with tempfile.TemporaryDirectory() as d:
@@ -464,7 +465,7 @@ class TestMixedChapterClassification(unittest.TestCase):
 
 
 class TestTranslationContextRecovery(unittest.TestCase):
-    def test_legacy_policy_exports_without_retranslation_or_invalidation(self):
+    def test_completed_old_policy_state_is_rejected_before_assembly_or_model_calls(self):
         with tempfile.TemporaryDirectory() as directory:
             config = _config(f"{directory}/state")
             source_path = _write_source(directory)
@@ -472,67 +473,46 @@ class TestTranslationContextRecovery(unittest.TestCase):
             _, store = Application(
                 config, client=FakeClient(handler=routing_handler)
             ).run_document_goal(_document(), source_path, goal)
-            manifest = store.load_manifest()
-            manifest["identity"].pop("translation_policy_version", None)
-            for key, node in manifest["nodes"].items():
-                if key.split(":")[0] in {"analyze", "translate", "polish"}:
-                    node["input_fingerprint"] = f"legacy-{key}"
-            store.save_manifest(manifest)
-            before = [s.target for s in store.load_chapter(0).text_segments]
-            client = FakeClient(
-                handler=lambda *_args: self.fail("legacy output run must be offline")
-            )
-            app = Application(config, client=client)
-            outputs = app.assemble(
-                store, source_path, out_format="txt", out_path=f"{directory}/legacy.txt"
-            )
-            with open(outputs[0], encoding="utf-8") as stream:
-                exported = stream.read()
-            for target in before:
-                self.assertIn(target, exported)
-            result, store = app.run_document_goal(_document(), source_path, goal)
-            self.assertIsNotNone(result.artifact("report", "report"))
-            self.assertEqual(client.calls, [])
-            self.assertEqual([s.target for s in store.load_chapter(0).text_segments], before)
             state = store.load_state()
-            self.assertEqual(state.identity.translation_policy_version, 0)
-            for key, node in manifest["nodes"].items():
-                if key.split(":")[0] in {"analyze", "translate", "polish"}:
-                    self.assertEqual(state.nodes[key].input_fingerprint, node["input_fingerprint"])
-                    self.assertEqual(state.nodes[key].status, node["status"])
+            state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION - 1
+            store.save_state(state)
+            before = [segment.target for segment in store.load_chapter(0).text_segments]
+            client = FakeClient(handler=lambda *_args: self.fail("旧策略状态不得调用模型"))
+            app = Application(config, client=client)
 
-    def test_legacy_admission_rejects_incomplete_and_future_states(self):
-        for case in ("incomplete", "future"):
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
-                config = _config(f"{directory}/state")
-                source_path = _write_source(directory)
-                goal = ExecutionGoal(name="run_all", phases=GOAL_RUN_ALL.phases, out_format="txt")
-                _, store = Application(
-                    config, client=FakeClient(handler=routing_handler)
-                ).run_document_goal(_document(), source_path, goal)
-                before = [s.target for s in store.load_chapter(0).text_segments]
-                state = store.load_state()
-                if case == "incomplete":
-                    state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION - 1
-                    state.progress[0].status = "pending"
-                else:
-                    state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION + 1
-                store.save_state(state)
-                client = FakeClient(
-                    handler=lambda *_args: self.fail("rejected run must not call a model")
+            with self.assertRaisesRegex(IdentityMismatchError, "翻译策略版本不一致"):
+                app.assemble(
+                    store,
+                    source_path,
+                    out_format="txt",
+                    out_path=f"{directory}/legacy.txt",
                 )
+            with self.assertRaisesRegex(IdentityMismatchError, "翻译策略版本不一致"):
+                app.run_document_goal(_document(), source_path, goal)
 
-                with self.assertRaises(IdentityMismatchError):
-                    Application(config, client=client).run_document_goal(
-                        _document(), source_path, goal
-                    )
+            self.assertEqual(client.calls, [])
+            self.assertEqual(
+                [segment.target for segment in store.load_chapter(0).text_segments],
+                before,
+            )
 
-                self.assertEqual(client.calls, [])
-                self.assertEqual(
-                    store.load_state().identity.translation_policy_version,
-                    state.identity.translation_policy_version,
-                )
-                self.assertEqual([s.target for s in store.load_chapter(0).text_segments], before)
+    def test_future_policy_state_is_rejected_without_model_calls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(f"{directory}/state")
+            source_path = _write_source(directory)
+            goal = ExecutionGoal(name="run_all", phases=GOAL_RUN_ALL.phases, out_format="txt")
+            _, store = Application(
+                config, client=FakeClient(handler=routing_handler)
+            ).run_document_goal(_document(), source_path, goal)
+            state = store.load_state()
+            state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION + 1
+            store.save_state(state)
+            client = FakeClient(handler=lambda *_args: self.fail("未来策略状态不得调用模型"))
+
+            with self.assertRaisesRegex(IdentityMismatchError, "翻译策略版本不一致"):
+                Application(config, client=client).run_document_goal(_document(), source_path, goal)
+
+            self.assertEqual(client.calls, [])
 
     def test_resume_rebuilds_committed_history_without_cached_future(self):
         sources = [f"Source paragraph {i} has a sentence." for i in range(9)]
@@ -593,7 +573,8 @@ class TestTranslationContextRecovery(unittest.TestCase):
             self.assertIn(targets[0], recovered[1][-1]["content"])
             self.assertNotIn(targets[0], recovered[-1][-1]["content"])
             self.assertEqual(
-                [segment.target for segment in store.load_chapter(0).text_segments], targets
+                [segment.target for segment in store.load_chapter(0).text_segments],
+                targets,
             )
 
 

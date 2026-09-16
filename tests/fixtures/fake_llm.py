@@ -74,9 +74,17 @@ def routing_handler(messages, agent, operation, json_mode):
             ensure_ascii=False,
         )
 
-    if "标题翻译" in system:
-        n = _count_numbered(user)
-        return json.dumps({"titles": [f"标题{i}" for i in range(n)]}, ensure_ascii=False)
+    if operation == "title.translate":
+        payload = json.loads(user.split("【全书有序标题体系（JSON）】", 1)[-1].split("\n\n", 1)[0])
+        return json.dumps(
+            {
+                "titles": [
+                    {"id": item["id"], "target": f"标题{i}"}
+                    for i, item in enumerate(payload["titles"])
+                ]
+            },
+            ensure_ascii=False,
+        )
 
     if operation == "translate.repair":
         current = (

@@ -172,19 +172,3 @@ def navigation_slots(
             "count": True,
         }
         _allow_cleared_descendants(label, path, slot_map)
-        if entry.get("preserve_source") is True and source_lang and not is_ncx:
-            language_paths.add(path)
-            output_label = dom.resolve_path_lxml(root_output, path)
-            languages = (
-                {
-                    key: value
-                    for key, value in output_label.attrib.items()
-                    if key.rsplit("}", 1)[-1].split(":", 1)[-1] == "lang"
-                }
-                if output_label is not None
-                else {}
-            )
-            if not languages or any(value != source_lang for value in languages.values()):
-                failures.append(
-                    archive_model.item("nav", "label_language_mismatch", resource, "source")
-                )

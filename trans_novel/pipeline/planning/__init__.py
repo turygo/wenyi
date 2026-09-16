@@ -39,6 +39,11 @@ from trans_novel.pipeline.planning.planner import (
     WorkflowPolicy,
 )
 from trans_novel.pipeline.planning.prescan import build_prescan_inputs, sample_text
+from trans_novel.pipeline.planning.title_catalog import (
+    TitleCatalog,
+    TitleItem,
+    build_title_catalog,
+)
 
 __all__ = [
     "NodeSpec",
@@ -46,6 +51,8 @@ __all__ = [
     "PlannedStage",
     "Planner",
     "PrescanInputs",
+    "TitleCatalog",
+    "TitleItem",
     "WorkflowDefinition",
     "WorkflowDefinitionError",
     "WorkflowPlan",
@@ -54,6 +61,7 @@ __all__ = [
     "analyze_input_fingerprint",
     "assemble_input_fingerprint",
     "build_prescan_inputs",
+    "build_title_catalog",
     "deterministic_qa_input_fingerprint",
     "editor_model_profile",
     "fast_model_profile",

@@ -15,6 +15,8 @@ from trans_novel.assemble.epub.rendering.theme import ThemeBundle
 from trans_novel.assemble.epub.rendering.theme.projection import build_projection
 from trans_novel.assemble.epub.rendering.theme.service import ThemeService
 from trans_novel.epub.layout import LayoutAssignment, LayoutProfile, source_node_digest
+from trans_novel.epub.slots import distribute_slot_translation
+from trans_novel.ingest import CANONICAL_TITLE_ID_META
 from trans_novel.ingest.epub.reader import read_epub
 
 _CONTAINER = b"""<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="O/content.opf"/></rootfiles></container>"""
@@ -43,9 +45,19 @@ class _Store:
     def load_manifest(self):
         return {
             "meta": self.document.meta,
+            "chapters": [
+                {
+                    "index": chapter.index,
+                    **(
+                        {"title_translated": chapter.meta["title_translated"]}
+                        if isinstance(chapter.meta.get("title_translated"), str)
+                        else {}
+                    ),
+                }
+                for chapter in self.document.chapters
+            ],
             "source_lang": self.document.source_lang,
             "target_lang": self.document.target_lang,
-            "chapters": [{"index": chapter.index} for chapter in self.document.chapters],
         }
 
     def load_chapter(self, index):
@@ -317,6 +329,127 @@ class TestSourceThemeRenderer(unittest.TestCase):
 
         root = etree.fromstring(rendered)
         self.assertEqual(len(root.xpath("//*[local-name()='span']")), 50_001)
+
+    def test_preserved_resource_renders_and_verifies_canonical_title_markers(self) -> None:
+        from trans_novel.assemble.epub.verification import verify_epub
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.epub"
+            self._book(source)
+            store, _translated = self._store(source)
+            segments = store.document.chapters[0].segments
+            store.document.chapters[0].meta["title_translated"] = "第五章"
+            for segment in segments:
+                segment.preserve_source = True
+            heading = next(segment for segment in segments if "Plain source" in segment.source)
+            heading.kind = "heading"
+            heading.assign_translation(distribute_slot_translation(heading.epub_state, "第五章"))
+            heading.meta[CANONICAL_TITLE_ID_META] = "chapter:0"
+            mirror = next(segment for segment in segments if "Container source" in segment.source)
+            mirror.assign_translation(distribute_slot_translation(mirror.epub_state, "第五章"))
+            mirror.meta["mirrored_toc_entry_id"] = "toc:0"
+            mirror.meta[CANONICAL_TITLE_ID_META] = "chapter:0"
+            output = Path(directory) / "canonical.epub"
+
+            assemble_source_epub(
+                store,
+                str(source),
+                str(output),
+                target_lang="zh",
+                bilingual=False,
+            )
+
+            with zipfile.ZipFile(output) as archive:
+                root = etree.fromstring(archive.read("O/c.xhtml"))
+                entries = [(info, archive.read(info.filename)) for info in archive.infolist()]
+            self.assertEqual(root.get("lang"), "zh-Hans")
+            plain = root.xpath("//*[@id='plain']")[0]
+            noteref = root.xpath("//*[@id='ref']")[0]
+            self.assertEqual("".join(plain.itertext()), "第五†章")
+            self.assertEqual(noteref.get("role"), "doc-noteref")
+            self.assertEqual("".join(noteref.itertext()), "†")
+            self.assertEqual("".join(root.xpath("//*[@id='container']")[0].itertext()), "第五章")
+            self.assertEqual("".join(root.xpath("//*[@id='direct']")[0].itertext()), "OneTwo")
+            self.assertEqual(
+                root.xpath("//*[@id='direct']")[0].get(
+                    "{http://www.w3.org/XML/1998/namespace}lang"
+                ),
+                "ja",
+            )
+
+            valid_report = verify_epub(
+                output,
+                source_path=source,
+                store=store,
+                mode="monolingual",
+            )
+            self.assertTrue(valid_report["passed"], valid_report["failures"])
+
+            state = heading.epub_state
+            for slot in state.slots:
+                owner = resolve_element_path(root, (*state.block_path, *slot.element_path))
+                setattr(owner, slot.field, slot.source_value)
+            rewritten = Path(directory) / "tampered.epub"
+            with zipfile.ZipFile(rewritten, "w") as archive:
+                for info, data in entries:
+                    archive.writestr(
+                        info,
+                        etree.tostring(root) if info.filename == "O/c.xhtml" else data,
+                    )
+            report = verify_epub(
+                rewritten,
+                source_path=source,
+                store=store,
+                mode="monolingual",
+            )
+            self.assertIn(
+                "slot_value_mismatch",
+                {item["code"] for item in report["failures"]},
+            )
+
+    def test_canonical_title_marker_contract_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.epub"
+            self._book(source)
+
+            for case in ("invalid", "missing_target", "ambiguous"):
+                with self.subTest(case=case):
+                    document = read_epub(str(source), "ja", "zh")
+                    heading = next(
+                        segment
+                        for segment in document.chapters[0].segments
+                        if "Plain source" in segment.source
+                    )
+                    heading.kind = "heading"
+                    heading.preserve_source = True
+                    if case == "invalid":
+                        heading.meta[CANONICAL_TITLE_ID_META] = ""
+                        segments = [heading]
+                        message = "canonical title ID"
+                    elif case == "missing_target":
+                        heading.reset_translation()
+                        heading.meta[CANONICAL_TITLE_ID_META] = "chapter:0"
+                        segments = [heading]
+                        message = "canonical title target missing"
+                    else:
+                        heading.assign_translation(
+                            distribute_slot_translation(heading.epub_state, "第五章")
+                        )
+                        heading.meta[CANONICAL_TITLE_ID_META] = "chapter:0"
+                        preserved = heading.model_copy(deep=True)
+                        preserved.meta.pop(CANONICAL_TITLE_ID_META)
+                        segments = [heading, preserved]
+                        message = "preserve range is ambiguous"
+                    with self.assertRaisesRegex(ValueError, message):
+                        render_source_resource(
+                            _XHTML,
+                            "O/c.xhtml",
+                            segments,
+                            expected_digest=hashlib.sha256(_XHTML).hexdigest(),
+                            expected_mode="xml",
+                            target_lang="zh",
+                            source_lang="ja",
+                        )
 
     def test_fully_preserved_resource_is_not_themed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -232,6 +232,20 @@ class TestRepairContracts(unittest.TestCase):
         self.assertEqual(len(translator.calls), 1)
         self.assertEqual(store.load_chapter(0).segments[0].target, "他有24个苹果。")
 
+    def test_model_artifact_issue_is_consumed_by_existing_repair_flow(self):
+        store = self._store(
+            "The answer is ready and contains enough ordinary context for a reliable sentence.",
+            "答案已准备好。productive_output_tokenizer_used_for_thinking",
+        )
+        translator = _RepairTranslator(["答案已准备好。"])
+
+        self._run(store, translator)
+
+        self.assertEqual(len(translator.calls), 1)
+        self.assertEqual(translator.calls[0][2]["issue_type"], "model_artifact")
+        self.assertEqual(store.load_chapter(0).segments[0].target, "答案已准备好。")
+        self.assertEqual(self._record(store).status, "resolved")
+
     def test_target_reads_committed_plain_text_target(self):
         segment = Segment(index=0, source="Hello", target="已提交")
         self.assertEqual(RepairNode._target(segment), "已提交")

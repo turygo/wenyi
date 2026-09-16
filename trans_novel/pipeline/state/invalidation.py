@@ -23,7 +23,8 @@ def clear_translation_targets(chapter, state, ci: int) -> None:
 
 
 def clear_translated_titles(state) -> None:
-    """Clear translated chapter and TOC titles from the manifest state."""
+    """Clear translated book, chapter, and TOC titles from manifest state."""
+    state.title_translated = None
     for chapter in state.chapters:
         chapter.title_translated = None
     raw_toc = state.meta.get("toc_entries") if isinstance(state.meta, dict) else None

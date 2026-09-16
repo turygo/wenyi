@@ -14,6 +14,7 @@ from trans_novel.assemble.epub.rendering.generated import build_epub_from_chapte
 from trans_novel.assemble.epub.rendering.source_archive import assemble_epub
 from trans_novel.assemble.text import assemble_text
 from trans_novel.epub.slots import distribute_slot_translation
+from trans_novel.ingest import segment_preserves_source
 
 if TYPE_CHECKING:
     from trans_novel.assemble.epub.rendering.theme.service import ThemeService
@@ -71,7 +72,7 @@ def preflight_epub(
     doc = doc.model_copy(deep=True)
     for chapter in doc.chapters:
         for segment in chapter.segments:
-            if segment.preserve_source or not segment.source.strip():
+            if segment_preserves_source(segment) or not segment.source.strip():
                 continue
             marker = f"预检译文 {chapter.index}-{segment.index}"
             segment.assign_translation(

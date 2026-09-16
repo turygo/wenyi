@@ -24,7 +24,7 @@ from trans_novel.assemble.epub.rendering.theme.service import ThemeService
 from trans_novel.epub.archive import MetadataZipFile, ZipSafetyError, preflight_zip, read_member
 from trans_novel.epub.notes import NoteRelations
 from trans_novel.epub.slots import slot_contract_digest
-from trans_novel.ingest import Segment, preserved_toc_entry_ids
+from trans_novel.ingest import Segment, segment_preserves_source
 from trans_novel.ingest.epub.reader import ensure_slot_compatibility, read_epub
 
 
@@ -41,12 +41,18 @@ def _write_source_member(
     zout.writestr(preserved, data)
 
 
-def _rewrite_opf_language_lxml(tree: etree._ElementTree, target_lang: str) -> None:
+def _rewrite_opf_metadata_lxml(
+    tree: etree._ElementTree, target_lang: str, translated_title: str
+) -> None:
     dc_language = "{http://purl.org/dc/elements/1.1/}language"
+    dc_title = "{http://purl.org/dc/elements/1.1/}title"
+    language_rewritten = False
     for node in tree.getroot().iter():
-        if node.tag == dc_language:
+        if node.tag == dc_language and not language_rewritten:
             node.text = target_lang
-            break
+            language_rewritten = True
+        elif node.tag == dc_title:
+            node.text = translated_title
 
 
 def _archive_digest(source_path: str) -> str:
@@ -66,6 +72,7 @@ def _source_state(
     list[Segment],
     list[dict[str, object]],
     NoteRelations,
+    str,
     str,
 ]:
     manifest = store.load_manifest()
@@ -100,14 +107,7 @@ def _source_state(
     ensure_slot_compatibility(current, chapters)
     raw_toc = meta.get("toc_entries", [])
     toc_source = raw_toc if isinstance(raw_toc, list) else []
-    preserved_toc_ids = preserved_toc_entry_ids(chapters, toc_source)
-    toc_entries = [
-        {**entry, "preserve_source": True}
-        if entry.get("id") in preserved_toc_ids or entry.get("entry_id") in preserved_toc_ids
-        else entry
-        for entry in toc_source
-        if isinstance(entry, dict)
-    ]
+    toc_entries = [entry for entry in toc_source if isinstance(entry, dict)]
     return (
         meta,
         source_lang,
@@ -116,6 +116,7 @@ def _source_state(
         toc_entries,
         cast(NoteRelations, current.meta["epub_notes"]),
         str(current.meta["epub_sha256"]),
+        str(manifest.get("title_translated") or manifest.get("title") or ""),
     )
 
 
@@ -125,6 +126,20 @@ def _resource_note_paths(relations: NoteRelations, resource: str) -> tuple[tuple
         for item in (*relations["markers"], *relations["targets"])
         if item["resource_href"] == resource
     )
+
+
+def _archive_language(grouped: dict[str, list[Segment]], source_lang: str, target_lang: str) -> str:
+    if (
+        grouped
+        and all(
+            segment_preserves_source(segment)
+            for segments in grouped.values()
+            for segment in segments
+        )
+        and source_lang
+    ):
+        return source_lang
+    return target_lang
 
 
 def _render_source_archive(
@@ -141,15 +156,10 @@ def _render_source_archive(
     order: str,
     note_relations: NoteRelations,
     source_sha256: str,
+    translated_title: str,
     theme: ThemeService | None = None,
 ) -> ThemePlan | None:
-    archive_lang = (
-        source_lang
-        if grouped
-        and all(segment.preserve_source for segments in grouped.values() for segment in segments)
-        and source_lang
-        else target_lang
-    )
+    archive_lang = _archive_language(grouped, source_lang, target_lang)
     scopes: dict[str, ResourceThemeScope] | None = {} if theme is not None else None
     with zipfile.ZipFile(source_path, "r") as zin:
         try:
@@ -179,7 +189,7 @@ def _render_source_archive(
                     raise ValueError(f"EPUB resource digest mismatch: {name}")
                 if name == opf_path:
                     tree, mode = parse_source_markup(data)
-                    _rewrite_opf_language_lxml(tree, archive_lang)
+                    _rewrite_opf_metadata_lxml(tree, archive_lang, translated_title)
                     _write_source_member(zout, info, serialize_source_tree(tree, data, mode))
                 elif name in grouped:
                     resource = resources_meta.get(name)
@@ -259,6 +269,7 @@ def assemble_source_epub(
 ) -> ThemePlan | None:
     if order not in {"target_first", "source_first"}:
         raise ValueError(f"invalid bilingual order: {order!r}")
+    target_lang = epub_language(target_lang)
     (
         meta,
         source_lang,
@@ -267,6 +278,7 @@ def assemble_source_epub(
         toc_entries,
         note_relations,
         source_sha256,
+        translated_title,
     ) = _source_state(store, source_path)
     grouped: dict[str, list[Segment]] = {}
     for segment in deduped_segments:
@@ -286,6 +298,7 @@ def assemble_source_epub(
         theme=theme,
         note_relations=note_relations,
         source_sha256=source_sha256,
+        translated_title=translated_title,
     )
 
 

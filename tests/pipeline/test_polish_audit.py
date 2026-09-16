@@ -245,7 +245,7 @@ class TestPolishAudit(unittest.TestCase):
                     review_required=False,
                     reason="reference list",
                     source_sha256="source",
-                    strategy_version="chapter_semantics_v1",
+                    strategy_version="chapter_semantics_v2",
                 )
             )
             store = RunStore(directory)

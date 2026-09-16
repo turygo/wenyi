@@ -178,9 +178,6 @@ def rewrite_nav_labels(
         title = translated_toc_title(entry)
         if title:
             set_visible_label(label, title)
-        if entry.get("preserve_source") is True and source_lang:
-            label.set("lang", source_lang)
-            label.set("{http://www.w3.org/XML/1998/namespace}lang", source_lang)
 
 
 def toc_kind_at(toc_entries: list[dict[str, object]], name: str) -> str | None:

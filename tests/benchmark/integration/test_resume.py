@@ -404,7 +404,7 @@ class TestBenchmarkIntegrationResumeContinuation(unittest.TestCase):
 
             def fallback_handler(messages, agent, operation, json_mode):
                 if operation == 'title.translate':
-                    return json.dumps({'titles': ['标题']}, ensure_ascii=False)
+                    return routing_handler(messages, agent, operation, json_mode)
                 if agent == 'translator':
                     return '译' * 300
                 return '分析译文'

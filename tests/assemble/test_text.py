@@ -136,7 +136,9 @@ class TestAssembleText(unittest.TestCase):
             self.assertEqual(os.path.basename(out), "novel.zh.txt")
             with open(out, encoding="utf-8") as f:
                 content = f.read()
-            self.assertIn("润0", content)  # 译文已写入
+            self.assertIn("标题1", content)
+            for index in range(1, 4):
+                self.assertIn(f"润{index}", content)
 
     def test_txt_input_to_epub(self):
         with tempfile.TemporaryDirectory() as d:
@@ -156,21 +158,38 @@ class TestAssembleText(unittest.TestCase):
     def test_generated_outputs_keep_preserved_chapter_once_in_source_language(self):
         from trans_novel.assemble.epub.rendering.generated import build_epub_from_chapters
         from trans_novel.assemble.text import assemble_text
-        from trans_novel.ingest.models import Chapter, ChapterProcessing, Segment
+        from trans_novel.ingest.models import (
+            CANONICAL_TITLE_ID_META,
+            Chapter,
+            ChapterProcessing,
+            Segment,
+        )
 
         processing = ChapterProcessing(
             action="preserve",
             review_required=False,
             reason="reference list",
             source_sha256="source",
-            strategy_version="chapter_semantics_v1",
+            strategy_version="chapter_semantics_v2",
         )
         chapter = Chapter(
             index=0,
             title="Chapter 5 Sources",
             segments=[
-                Segment(index=0, source="Chapter 5 Sources", target="第五章 来源", kind="heading"),
+                Segment(
+                    index=0,
+                    source="Chapter 5 Sources",
+                    target="第五章 来源",
+                    kind="heading",
+                    meta={CANONICAL_TITLE_ID_META: "chapter:0"},
+                ),
                 Segment(index=1, source="Smith, 2020.", target="史密斯，2020。"),
+                Segment(
+                    index=2,
+                    source="Chapter 5 Sources",
+                    target="第五章 来源",
+                    meta={CANONICAL_TITLE_ID_META: "chapter:0"},
+                ),
             ],
             processing=processing,
         )
@@ -201,6 +220,8 @@ class TestAssembleText(unittest.TestCase):
                 plain_text = rendered_text.read()
             self.assertEqual(plain_text.count("Smith, 2020."), 1)
             self.assertNotIn("史密斯", plain_text)
+            self.assertEqual(plain_text.count("第五章 来源"), 2)
+            self.assertNotIn("Chapter 5 Sources", plain_text)
 
             output = os.path.join(directory, "preserved.epub")
             build_epub_from_chapters(Store(), "unused.txt", output, bilingual=True)
@@ -211,11 +232,16 @@ class TestAssembleText(unittest.TestCase):
                 rendered = BeautifulSoup(archive.read(chapter_name), "xml")
                 nav_name = next(name for name in archive.namelist() if name.endswith("/nav.xhtml"))
                 nav = BeautifulSoup(archive.read(nav_name), "xml")
-            self.assertEqual(rendered.html.get("xml:lang"), "en")
+            self.assertEqual(rendered.html.get("xml:lang"), "zh-Hans")
+            self.assertEqual(rendered.find("h1").get_text(), "第五章 来源")
+            self.assertEqual(rendered.find("h1").get("xml:lang"), None)
+            self.assertEqual(rendered.find("p").get("xml:lang"), "en")
             self.assertEqual(rendered.get_text().count("Smith, 2020."), 1)
+            self.assertEqual(rendered.head.title.get_text(), "第五章 来源")
+            self.assertEqual(rendered.body.get_text().count("第五章 来源"), 2)
             self.assertNotIn("史密斯", rendered.get_text())
-            self.assertIsNone(rendered.select_one(".tn-source"))
-            self.assertIn("Chapter 5 Sources", nav.get_text())
+            self.assertEqual(nav.html.get("xml:lang"), "zh-Hans")
+            self.assertIn("第五章 来源", nav.get_text())
             from trans_novel.assemble.epub.verification import verify_epub
 
             report = verify_epub(output, store=Store(), mode="generated", bilingual=True)
@@ -237,7 +263,7 @@ class TestAssembleText(unittest.TestCase):
                 "preserved_generated_text_mismatch",
                 {item["code"] for item in report["failures"]},
             )
-            self.assertNotIn("第五章", nav.get_text())
+            self.assertNotIn("Chapter 5 Sources", nav.get_text())
 
 
 class TestHeadingNumberInWriter(unittest.TestCase):

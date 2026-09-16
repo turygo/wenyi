@@ -304,6 +304,29 @@ class TestUntranslated(unittest.TestCase):
         self.assertNotIn("untranslated", _types(issues, 0))
 
 
+class TestModelArtifact(unittest.TestCase):
+    def test_exact_model_artifact_tokens_flag(self):
+        for token in (
+            "costheta_user_prompt_delimiter_xyzzy",
+            "productive_output_tokenizer_used_for_thinking",
+        ):
+            with self.subTest(token=token):
+                issues = lint_targets(
+                    ["The answer is ready."],
+                    [f"答案已准备好。{token}"],
+                    src_lang="en",
+                )
+                self.assertIn("model_artifact", _types(issues, 0))
+
+    def test_ordinary_english_does_not_flag_model_artifact(self):
+        issues = lint_targets(
+            ["The productive tokenizer is ready."],
+            ["这个 productive tokenizer 已准备好。"],
+            src_lang="en",
+        )
+        self.assertNotIn("model_artifact", _types(issues, 0))
+
+
 class TestLengthFlagsReuse(unittest.TestCase):
     def test_empty_target_flags(self):
         issues = lint_targets(["这是一段有内容的原文用于测试。"], [""], src_lang="zh")

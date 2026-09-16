@@ -25,9 +25,11 @@ class _Classifier:
         self.kinds = list(kinds)
         self.fail_at = fail_at
         self.calls: list[str] = []
+        self.contexts: list[str] = []
 
     def classify(self, *, chapter_id, title, context, source, hints):
         self.calls.append(source)
+        self.contexts.append(context)
         if self.fail_at is not None and len(self.calls) == self.fail_at:
             raise RuntimeError("interrupted")
         kind = self.kinds.pop(0)
@@ -64,7 +66,7 @@ class TestClassificationModels(unittest.TestCase):
             review_required=False,
             reason="references only",
             source_sha256=chapter_source_digest(chapter),
-            strategy_version="chapter_semantics_v1",
+            strategy_version="chapter_semantics_v2",
         )
         chapter.set_processing(processing)
         self.assertTrue(chapter.preserve_source)
@@ -89,6 +91,9 @@ class TestClassificationModels(unittest.TestCase):
         ):
             with self.subTest(changed=changed):
                 self.assertNotEqual(chapter_source_digest(changed), digest)
+        changed_resource = chapter.model_copy(deep=True)
+        changed_resource.segments[0].resource_href = "chapter.xhtml"
+        self.assertNotEqual(chapter_source_digest(changed_resource), digest)
 
 
 class TestChapterClassificationPersistence(unittest.TestCase):
@@ -115,6 +120,29 @@ class TestChapterClassificationPersistence(unittest.TestCase):
             self.assertEqual(manifest["chapters"][0]["processing"]["action"], "preserve")
             self.assertTrue(all(len(source) <= 16_000 for source in classifier.calls))
             self.assertEqual("".join(classifier.calls), "A" * 10_000 + "\n\n" + "B" * 10_000)
+
+    def test_adjacent_epub_resources_are_independent_classification_units(self):
+        chapter = Chapter(
+            index=0,
+            segments=[
+                Segment(index=0, source="A", resource_href="front.xhtml"),
+                Segment(index=1, source="B", resource_href="front.xhtml"),
+                Segment(index=2, source="C", resource_href="body.xhtml"),
+                Segment(index=3, source="D", resource_href="notes.xhtml"),
+            ],
+        )
+        document = _document(chapter)
+        classifier = _Classifier(["translatable", "translatable", "translatable"])
+        with tempfile.TemporaryDirectory() as directory:
+            store = RunStore(directory)
+            manifest = _stage(store, document)
+            ensure_chapter_classification(document, store, classifier, manifest)
+
+        self.assertEqual(classifier.calls, ["A\n\nB", "C", "D"])
+        self.assertEqual(len(classifier.contexts), 3)
+        self.assertIn("front.xhtml", classifier.contexts[0])
+        self.assertIn("body.xhtml", classifier.contexts[1])
+        self.assertIn("notes.xhtml", classifier.contexts[2])
 
     def test_uncertain_observation_translates_with_review_flag(self):
         document = _document(Chapter(index=0, segments=[Segment(index=0, source="Source")]))

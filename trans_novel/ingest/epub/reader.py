@@ -17,6 +17,7 @@ from trans_novel.epub.notes import detect_note_relations
 from trans_novel.epub.package import HTML_MEDIA, read_package
 from trans_novel.ingest.epub.chapters import logical_chapters
 from trans_novel.ingest.epub.markup import annotate_resource
+from trans_novel.ingest.epub.mirrored_toc import mark_mirrored_toc_segments
 from trans_novel.ingest.models import Chapter, Document
 
 _ParsedResource = tuple[int, str, bytes, etree._ElementTree, str, list[dict[str, object]]]
@@ -74,6 +75,44 @@ def _note_resources_by_semantics(
     return {href: next(iter(kinds)) for href, kinds in evidence.items() if len(kinds) == 1}
 
 
+def _parse_resources(zf: zipfile.ZipFile, content_paths: list[str]) -> list[_ParsedResource]:
+    parsed_resources: list[_ParsedResource] = []
+    for resource_index, href in enumerate(content_paths):
+        data = read_member(zf, zf.getinfo(href))
+        tree, parse_mode, diagnostics = resource_parser(data)
+        parsed_resources.append((resource_index, href, data, tree, parse_mode, diagnostics))
+    return parsed_resources
+
+
+def _resource_trees(
+    parsed_resources: list[_ParsedResource],
+) -> dict[str, etree._Element]:
+    return {href: tree.getroot() for _, href, _, tree, _, _ in parsed_resources}
+
+
+def _note_paths_by_resource(
+    content_paths: list[str],
+    note_relations: dict[str, Any],
+) -> tuple[dict[str, set[tuple[Any, ...]]], dict[str, set[tuple[Any, ...]]]]:
+    protected_paths = {
+        href: {
+            tuple(marker["path"])
+            for marker in note_relations["markers"]
+            if marker["resource_href"] == href
+        }
+        for href in content_paths
+    }
+    note_target_paths = {
+        href: {
+            tuple(target["path"])
+            for target in note_relations["targets"]
+            if target["resource_href"] == href
+        }
+        for href in content_paths
+    }
+    return protected_paths, note_target_paths
+
+
 def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
     """Read a source EPUB into schema-4 structural text-slot state."""
     try:
@@ -87,6 +126,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             opf_path = package["opf_path"]
             model = package["model"]
             book_title = model["title"]
+            document_title = book_title or os.path.splitext(os.path.basename(path))[0]
             hrefs = _spine_paths(model)
             toc_paths = model["toc_paths"]
             toc_entries = parse_toc_entries(zf, model["toc_kinds"])
@@ -94,36 +134,20 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             resource_hints = _semantic_hints_by_resource(model["guide_entries"], landmarks)
             note_resources = _note_resources_by_semantics(model["guide_entries"], landmarks)
 
-            parsed_resources: list[_ParsedResource] = []
             archive_hash = hashlib.sha256()
             with open(path, "rb") as source_file:
                 for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
                     archive_hash.update(chunk)
-            for resource_index, href in enumerate(model["content_paths"]):
-                data = read_member(zf, zf.getinfo(href))
-                tree, parse_mode, diagnostics = resource_parser(data)
-                parsed_resources.append((resource_index, href, data, tree, parse_mode, diagnostics))
+            parsed_resources = _parse_resources(zf, model["content_paths"])
+            resource_trees = _resource_trees(parsed_resources)
             note_relations = detect_note_relations(
-                {href: tree.getroot() for _, href, _, tree, _, _ in parsed_resources},
+                resource_trees,
                 excluded_resources=toc_paths,
                 note_resources=note_resources,
             )
-            protected_paths = {
-                href: {
-                    tuple(marker["path"])
-                    for marker in note_relations["markers"]
-                    if marker["resource_href"] == href
-                }
-                for href in model["content_paths"]
-            }
-            note_target_paths = {
-                href: {
-                    tuple(target["path"])
-                    for target in note_relations["targets"]
-                    if target["resource_href"] == href
-                }
-                for href in model["content_paths"]
-            }
+            protected_paths, note_target_paths = _note_paths_by_resource(
+                model["content_paths"], note_relations
+            )
 
             resources: list[dict[str, object]] = []
             for (
@@ -157,11 +181,19 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             chapters, split_strategy, split_toc_path = logical_chapters(
                 spine_resources, toc_entries
             )
+            mark_mirrored_toc_segments(
+                resources,
+                resource_trees,
+                toc_entries,
+                toc_paths,
+                split_toc_path,
+                document_title,
+            )
     except ZipSafetyError as exc:
         raise ValueError(f"EPUB archive rejected: {exc.code}") from exc
 
     return Document(
-        title=book_title or os.path.splitext(os.path.basename(path))[0],
+        title=document_title,
         source_lang=source_lang,
         target_lang=target_lang,
         fmt="epub",

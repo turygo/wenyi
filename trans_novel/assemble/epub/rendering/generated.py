@@ -193,7 +193,7 @@ def build_epub_from_chapters(
     from ebooklib import epub
 
     manifest = store.load_manifest()
-    title = manifest.get("title", "translated")
+    title = manifest.get("title_translated") or manifest.get("title", "translated")
     chapters, target_lang, source_lang = (
         [
             (chapter_meta, store.load_chapter(chapter_meta["index"]))
@@ -202,8 +202,7 @@ def build_epub_from_chapters(
         epub_language(manifest.get("target_lang", "zh")),
         str(manifest.get("source_lang") or ""),
     )
-    all_preserved = chapters and all(chapter.preserve_source for _, chapter in chapters)
-    lang = source_lang if all_preserved else target_lang
+    lang = target_lang
     book = epub.EpubBook()
     book.set_identifier(f"trans-novel-{title}")
     book.set_title(title)
@@ -219,10 +218,8 @@ def build_epub_from_chapters(
     ] = {}
     image_hrefs = _add_fb2_images(book, manifest, source_path)
     for chapter_meta, chapter in chapters:
-        chapter_lang = source_lang if chapter.preserve_source and source_lang else target_lang
-        chapter_title = (
-            chapter.title if chapter.preserve_source else _ch_title(chapter_meta) or chapter.title
-        )
+        chapter_lang = target_lang
+        chapter_title = _ch_title(chapter_meta) or chapter.title
         body_parts: list[str] = []
         source_pairs: list[tuple[int, int]] = []
         images_by_position, layout_bindings = {}, []
@@ -240,13 +237,16 @@ def build_epub_from_chapters(
                 if href:
                     images_by_position.setdefault(position, []).append(href)
         paragraphs = merged_paragraphs(chapter)
-        for position, (kind, target, source) in enumerate(paragraphs):
+        for position, (kind, target, source, preserve) in enumerate(paragraphs):
             body_parts.extend(
                 f'<div class="fb2-image"><img src="{escape(href, quote=True)}" alt=""/></div>'
                 for href in images_by_position.get(position, [])
             )
             tag = "h1" if kind == KIND_HEADING else "p"
-            target_html = f"<{tag}>{escape(target)}</{tag}>"
+            paragraph_lang = (
+                f' xml:lang="{escape(source_lang, quote=True)}"' if preserve and source_lang else ""
+            )
+            target_html = f"<{tag}{paragraph_lang}>{escape(target)}</{tag}>"
             source_sha256 = source_node_digest(tag, {}, source)
             src = (
                 bilingual_source(source, target)

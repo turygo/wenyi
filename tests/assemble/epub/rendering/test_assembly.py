@@ -23,9 +23,11 @@ from trans_novel.assemble import assemble
 from trans_novel.assemble.epub.verification import validate_epub_triplet
 from trans_novel.config import Config
 from trans_novel.epub.slots import distribute_slot_translation
+from trans_novel.ingest import canonical_title_id
 from trans_novel.ingest.models import Chapter
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline import Application
+from trans_novel.pipeline.planning import build_title_catalog
 from trans_novel.pipeline.state import RunStore
 from trans_novel.postprocess.punct import normalize_heading_numbering
 
@@ -109,6 +111,42 @@ def _stamp_formal_prereqs(store):
         state.nodes.setdefault(node_id, NodeState(node_id=node_id, status="succeeded"))
     store.save_state(state)
     return store
+
+
+def _override_toc_titles(store, translate) -> None:
+    """Keep manual TOC fixture overrides coherent with canonical title markers."""
+    manifest = store.load_manifest()
+    catalog = build_title_catalog(manifest)
+    targets: dict[str, str] = {}
+    entries = manifest["meta"]["toc_entries"]
+    for entry in entries:
+        entry_id = entry.get("entry_id")
+        canonical_id = catalog.entry_aliases.get(entry_id) if isinstance(entry_id, str) else None
+        if canonical_id is None:
+            continue
+        target = translate(entry)
+        entry["title_translated"] = target
+        targets[canonical_id] = target
+    for chapter_meta in manifest["chapters"]:
+        canonical_id = catalog.chapter_title_ids.get(chapter_meta["index"])
+        if canonical_id in targets:
+            chapter_meta["title_translated"] = targets[canonical_id]
+    store.save_manifest(manifest)
+    for chapter_meta in manifest["chapters"]:
+        chapter = store.load_chapter(chapter_meta["index"])
+        changed = False
+        for segment in chapter.segments:
+            target = targets.get(canonical_title_id(segment))
+            if target is None:
+                continue
+            segment.assign_translation(
+                distribute_slot_translation(segment.epub_state, target)
+                if segment.epub_state is not None
+                else target
+            )
+            changed = True
+        if changed:
+            store.save_chapter(chapter)
 
 
 class TestAssembleEpub(unittest.TestCase):
@@ -373,7 +411,7 @@ class TestHeadingNumberInWriter(unittest.TestCase):
             )
             store.save_chapter(ch)
             m = store.load_manifest()
-            m["chapters"][0]["title_translated"] = "第5章 迫击炮"  # 目录/nav 用的标题译名
+            m["chapters"][0]["title_translated"] = complete  # 与 canonical heading 保持一致
             store.save_manifest(m)
 
             out = assemble(store, ep, out_format="epub")
@@ -542,11 +580,7 @@ class TestTocRoutingAndSchemaFindings(unittest.TestCase):
             ep = os.path.join(d, "toc-xml.epub")
             write_nested_toc_epub(ep, ncx_filename="toc.xml")
             store, _ = _run(ep, os.path.join(d, "state"))
-            m = store.load_manifest()
-            meta = m.setdefault("meta", {})
-            for entry in meta["toc_entries"]:
-                entry["title_translated"] = f"译-{entry['title']}"
-            store.save_manifest(m)
+            _override_toc_titles(store, lambda entry: f"译-{entry['title']}")
 
             out = assemble(store, ep, out_format="epub")
             with zipfile.ZipFile(out) as z:
@@ -562,11 +596,7 @@ class TestTocRoutingAndSchemaFindings(unittest.TestCase):
             ep = os.path.join(d, "navtypeless.epub")
             write_epub_type_less_nav_epub(ep)
             store, _ = _run(ep, os.path.join(d, "state"))
-            m = store.load_manifest()
-            meta = m.setdefault("meta", {})
-            for entry in meta["toc_entries"]:
-                entry["title_translated"] = "译-One"
-            store.save_manifest(m)
+            _override_toc_titles(store, lambda _entry: "译-One")
 
             out = assemble(store, ep, out_format="epub")
             with zipfile.ZipFile(out) as z:

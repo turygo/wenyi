@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
 from trans_novel.config import Config
-from trans_novel.ingest import Chapter, Document, preserved_toc_entry_ids
+from trans_novel.ingest import Chapter, Document
 from trans_novel.pipeline.planning.fingerprints import (
     analyst_model_profile,
     analyze_input_fingerprint,
@@ -24,6 +26,7 @@ from trans_novel.pipeline.planning.fingerprints import (
     translation_structure_fingerprint_part,
 )
 from trans_novel.pipeline.planning.planner import PrescanInputs, WorkflowPolicy
+from trans_novel.pipeline.planning.title_catalog import build_title_catalog
 from trans_novel.pipeline.state import IdentityMismatchError, RunState, normalize_lang_code
 from trans_novel.pipeline.state.models import TRANSLATION_POLICY_VERSION
 
@@ -67,51 +70,20 @@ def _build_text_inputs(store, state):
         )
 
     def titles():
-        toc = state.meta.get("toc_entries") if isinstance(state.meta, dict) else []
-        stored_chapters = [store.load_chapter(chapter.index) for chapter in state.chapters]
-        preserved_entries = preserved_toc_entry_ids(stored_chapters, toc)
-        values = [
-            c.title
-            for c in state.chapters
-            if c.title and (c.processing is None or c.processing.action != "preserve")
-        ]
-        return values + [
-            str(x.get("title", ""))
-            for x in toc
-            if isinstance(x, dict) and x.get("title") and x.get("entry_id") not in preserved_entries
+        catalog = build_title_catalog(state.model_dump(mode="json"))
+        return [
+            json.dumps(item.request_record(), ensure_ascii=False, sort_keys=True)
+            for item in catalog.items
         ]
 
     return source, done_targets, titles
 
 
-def _check_policy(store, state: RunState, goal) -> bool:
-    legacy = (
-        store.exists() and state.identity.translation_policy_version != TRANSLATION_POLICY_VERSION
-    )
-    if legacy and {"prepare", "prescan", "translate", "titles", "repair", "polish"}.intersection(
-        goal.phases
-    ):
+def _check_policy(store, state: RunState) -> None:
+    if store.exists() and state.identity.translation_policy_version != TRANSLATION_POLICY_VERSION:
         raise IdentityMismatchError(
             "翻译策略版本不一致；请创建新的状态目录重新翻译，原有结果保持不变。"
         )
-    return legacy
-
-
-def _historical_inputs(inputs: PrescanInputs, state: RunState) -> PrescanInputs:
-    def saved(key: str) -> str:
-        node = state.nodes.get(key)
-        return node.input_fingerprint if node else ""
-
-    inputs.prepare_fingerprint = lambda: saved("prepare")
-    inputs.analyze_fingerprint = lambda: saved("analyze")
-    inputs.mine_fingerprint = lambda: saved("mine_terms")
-    inputs.name_terms_fingerprint = lambda: saved("name_terms")
-    inputs.translate_fingerprint = lambda ci: saved(f"translate:{ci}")
-    inputs.polish_fingerprint = lambda ci: saved(f"polish:{ci}")
-    inputs.titles_fingerprint = lambda: saved("titles")
-    inputs.deterministic_qa_fingerprint = lambda: saved("deterministic_qa")
-    inputs.report_fingerprint = lambda: saved("report")
-    return inputs
 
 
 def _preserve_paid_inputs(inputs: PrescanInputs, state: RunState) -> PrescanInputs:
@@ -164,7 +136,7 @@ def build_prescan_inputs(
     cfg = config
     output = context.output if context is not None else cfg.output
     state = store.load_state() if store.exists() else RunState()
-    legacy = _check_policy(store, state, goal)
+    _check_policy(store, state)
     src = state.identity.source_lang or normalize_lang_code(cfg.source_lang)
     tgt = state.identity.target_lang or normalize_lang_code(cfg.target_lang)
     source, done_targets, titles = _build_text_inputs(store, state)
@@ -262,8 +234,6 @@ def build_prescan_inputs(
         report_fingerprint=report_fp,
         **_output_fingerprint_inputs(context, output, goal, done_targets),
     )
-    if legacy:
-        return _historical_inputs(inputs, state)
     if set(goal.phases).issubset({"layout", "assemble"}):
         return _preserve_paid_inputs(inputs, state)
     return inputs

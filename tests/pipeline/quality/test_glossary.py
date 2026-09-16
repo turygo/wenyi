@@ -11,7 +11,12 @@ from tests.fixtures.books import write_sample_txt
 from tests.fixtures.fake_llm import fake_llm_dict, routing_handler
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore, GlossaryTerm
-from trans_novel.ingest.models import Chapter, ChapterProcessing, Segment
+from trans_novel.ingest.models import (
+    CANONICAL_TITLE_ID_META,
+    Chapter,
+    ChapterProcessing,
+    Segment,
+)
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline import Application
 from trans_novel.pipeline.state import (
@@ -235,8 +240,12 @@ class TestGlossaryAudit(unittest.TestCase):
                 self.assertIn("term_source", e)
                 self.assertIn("term_target", e)
 
-    def test_preserved_chapters_are_immune_to_all_glossary_rewrites(self):
-        from trans_novel.pipeline.quality import fix_latin_residue, rewrite_targets
+    def test_preserved_body_is_immune_but_canonical_titles_follow_glossary(self):
+        from trans_novel.pipeline.quality import (
+            fix_latin_residue,
+            rewrite_targets,
+            target_corpus,
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             store = RunStore(os.path.join(directory, "state"))
@@ -245,7 +254,7 @@ class TestGlossaryAudit(unittest.TestCase):
                 review_required=False,
                 reason="reference list",
                 source_sha256="source",
-                strategy_version="chapter_semantics_v1",
+                strategy_version="chapter_semantics_v2",
             )
             store.save_state(
                 RunState(
@@ -261,18 +270,45 @@ class TestGlossaryAudit(unittest.TestCase):
             chapter = Chapter(
                 index=0,
                 title="Sources",
-                segments=[Segment(index=0, source="Smith Kaho", target="Smith Kaho 中文")],
+                segments=[
+                    Segment(index=0, source="Smith Kaho", target="Smith Kaho 中文"),
+                    Segment(
+                        index=1,
+                        source="Sources",
+                        target="Smith Sources",
+                        kind="heading",
+                        meta={CANONICAL_TITLE_ID_META: "chapter:0"},
+                    ),
+                ],
                 processing=processing,
             )
             store.save_chapter(chapter)
+            manifest = store.load_manifest()
+            manifest["title_translated"] = "Smith Book"
+            manifest["chapters"][0]["title_translated"] = "Smith Sources"
+            manifest["meta"] = {
+                "toc_entries": [{"entry_id": "chapter:0", "title_translated": "Smith Sources"}]
+            }
+            store.save_manifest(manifest)
             glossary = GlossaryStore(store.glossary_path)
             glossary.upsert_term(
                 GlossaryTerm(source="Kaho", target="佳穂", confidence="high", locked=True)
             )
 
-            self.assertEqual(rewrite_targets(store, glossary, {"Smith": "史密斯"}), 0)
+            self.assertIn("Smith Sources", target_corpus(store))
+            self.assertNotIn("Smith Kaho 中文", target_corpus(store))
+            self.assertEqual(rewrite_targets(store, glossary, {"Smith": "史密斯"}), 1)
             self.assertEqual(fix_latin_residue(store, glossary), [])
-            self.assertEqual(store.load_chapter(0).segments[0].target, "Smith Kaho 中文")
+            saved = store.load_chapter(0)
+            self.assertEqual(saved.segments[0].target, "Smith Kaho 中文")
+            self.assertEqual(saved.segments[1].target, "史密斯 Sources")
+            rewritten = store.load_manifest()
+            self.assertEqual(rewritten["title_translated"], "史密斯 Book")
+            self.assertEqual(rewritten["chapters"][0]["title_translated"], "史密斯 Sources")
+            self.assertEqual(
+                rewritten["meta"]["toc_entries"][0]["title_translated"],
+                "史密斯 Sources",
+            )
             glossary.close()
 
 

@@ -126,6 +126,7 @@ def _check_package(
     output: Path,
     mode: str,
     target_lang: str | None,
+    translated_title: str | None,
     differences: dict[str, int],
     failures: list[dict[str, str]],
 ) -> None:
@@ -154,6 +155,7 @@ def _check_package(
                         if left.tag != right.tag or dict(left.attrib) != dict(right.attrib):
                             return False
                         is_language = left.tag == "{http://purl.org/dc/elements/1.1/}language"
+                        is_title = left.tag == "{http://purl.org/dc/elements/1.1/}title"
                         first_language = is_language and not language_seen
                         if is_language:
                             language_seen = True
@@ -162,6 +164,9 @@ def _check_package(
                                 return False
                             if left.text != right.text:
                                 opf_language_changed += 1
+                        elif is_title:
+                            if translated_title and right.text != translated_title:
+                                return False
                         elif left.text != right.text:
                             return False
                         if left.tail != right.tail:
@@ -321,6 +326,13 @@ def _new_structural_failures(
     return result
 
 
+def _resource_assurance(resources: Mapping[str, Any]) -> str:
+    assurance = "verified"
+    if any(str(item.get("parse_mode")) == "recovered" for item in resources.values()):
+        assurance = "recovered"
+    return assurance
+
+
 def _verify_epub(
     output_path: str | os.PathLike[str],
     *,
@@ -358,11 +370,16 @@ def _verify_epub(
                 failures.append(
                     archive_model.item("state", "state_unreadable", "<state>", "digest")
                 )
-    if target_lang is None and store is not None:
+    translated_title = None
+    if store is not None:
         try:
-            target_lang = epub_language(store.load_manifest().get("target_lang"))
+            manifest = store.load_manifest()
+            translated_title = manifest.get("title_translated")
+            if target_lang is None:
+                target_lang = manifest.get("target_lang")
         except Exception:
-            target_lang = None
+            translated_title = None
+    target_lang = epub_language(target_lang)
     structural_bilingual = bilingual
     if mode == "generated" and bilingual and store is not None:
         try:
@@ -384,7 +401,7 @@ def _verify_epub(
         else []
     )
     _check_source_archive(source, output, mode, store, failures)
-    _check_package(source, output, mode, target_lang, differences, failures)
+    _check_package(source, output, mode, target_lang, translated_title, differences, failures)
     failures.extend(
         _new_structural_failures(
             structural.get("failures", []),
@@ -420,9 +437,7 @@ def _verify_epub(
         preservation.generated_chapter_proof(output, store, failures, checked)
     failures = archive_model.sort_items([report_item(item) for item in failures])
     warnings = archive_model.sort_items([report_item(item) for item in warnings])
-    assurance = "verified"
-    if any(str(item.get("parse_mode")) == "recovered" for item in resources.values()):
-        assurance = "recovered"
+    assurance = _resource_assurance(resources)
     return {
         "schema_version": 1,
         "mode": mode,

@@ -8,18 +8,27 @@
 
 from __future__ import annotations
 
+import json
+
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+
 from trans_novel.agents import prompts
 from trans_novel.agents.base import WorkflowProtocolError, retry_protocol
 from trans_novel.assemble import assemble_outputs, bilingual_out_path
 from trans_novel.assemble.report import build_report
 from trans_novel.config import Config, OutputConfig
+from trans_novel.epub.slots import distribute_slot_translation
 from trans_novel.glossary.store import GlossaryStore, terms_matching_text
-from trans_novel.ingest import KIND_HEADING, preserved_toc_entry_ids
-from trans_novel.ingest.models import sanitize_generated_text
+from trans_novel.ingest.models import (
+    CANONICAL_TITLE_ID_META,
+    KIND_HEADING,
+    sanitize_generated_text,
+)
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.planning import (
     analyst_model_profile,
     assemble_input_fingerprint,
+    build_title_catalog,
     deterministic_qa_input_fingerprint,
     glossary_semantic_fingerprint_part,
     report_input_fingerprint,
@@ -33,27 +42,31 @@ from trans_novel.pipeline.state import (
     NODE_TITLES,
     SCOPE_BOOK,
 )
+from trans_novel.postprocess.punct import normalize_heading_numbering
 
 
-def _toc_state(store, manifest):
-    chapters = manifest.get("chapters", [])
-    raw_meta = manifest.get("meta")
-    meta = raw_meta if isinstance(raw_meta, dict) else {}
-    raw_entries = meta.get("toc_entries", [])
-    toc_entries = raw_entries if isinstance(raw_entries, list) else []
-    stored = [store.load_chapter(chapter["index"]) for chapter in chapters]
-    preserved_chapters = {chapter.index for chapter in stored if chapter.preserve_source}
-    preserved_entries = preserved_toc_entry_ids(stored, toc_entries)
-    entries_by_id = {
-        entry["entry_id"]: entry
-        for entry in toc_entries
-        if isinstance(entry, dict) and isinstance(entry.get("entry_id"), str)
-    }
-    return chapters, toc_entries, entries_by_id, preserved_chapters, preserved_entries
+class _TranslatedTitle(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    target: str
+
+    @field_validator("id", "target")
+    @classmethod
+    def _nonempty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("title response values must be nonempty")
+        return value
+
+
+class _TitleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    titles: list[_TranslatedTitle]
 
 
 class TitlesNode:
-    """章标题/目录项翻译（schema 2 TOC entry 驱动；幂等）。"""
+    """一次性翻译并持久化完整的全书层级标题体系。"""
 
     node_id = NODE_TITLES
     scope = SCOPE_BOOK
@@ -76,117 +89,62 @@ class TitlesNode:
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
         if store.pending_chapters():
-            return NodeOutcome()  # 还有未完成章 → 不译标题（与旧 run() 条件一致）
-        m = store.load_manifest()
-        (
-            chapters,
-            toc_entry_list,
-            entries_by_id,
-            preserved_chapters,
-            preserved_entries,
-        ) = _toc_state(store, m)
-        for chapter in chapters:
-            if chapter.get("index") in preserved_chapters:
-                chapter.pop("title_translated", None)
-
-        def _flat(s: object) -> str:
-            return " ".join(str(s or "").split())
-
-        for entry_id in preserved_entries:
-            entries_by_id[entry_id].pop("title_translated", None)
-        toc_entries_pending = [
-            e
-            for e in toc_entry_list
-            if isinstance(e, dict)
-            and not e.get("external")
-            and e.get("entry_id") not in preserved_entries
-            and _flat(e.get("title", ""))
-            and not e.get("title_translated")
-        ]
-
-        toc_covered_chapters = []
-        other_chapters = []
-        for c in chapters:
-            if c.get("index") in preserved_chapters:
-                continue
-            entry_id = c.get("toc_entry_id")
-            if entry_id and entry_id in entries_by_id:
-                toc_covered_chapters.append(c)
-            elif _flat(c.get("title", "")):
-                other_chapters.append(c)
-
-        m.pop("title_translated", None)
-
-        llm_chapters = []
-        for c in other_chapters:
-            chapter = store.load_chapter(c["index"])
-            segs = chapter.segments
-            heading_target = ""
-            if (
-                segs
-                and segs[0].kind == KIND_HEADING
-                and _flat(segs[0].source) == _flat(c.get("title", ""))
-            ):
-                heading_target = _flat(segs[0].target)
-            if heading_target:
-                c["title_translated"] = heading_target
-            elif not c.get("title_translated"):
-                llm_chapters.append(c)
-
-        for c in toc_covered_chapters:
-            entry_translated = entries_by_id[c["toc_entry_id"]].get("title_translated")
-            if entry_translated:
-                c["title_translated"] = entry_translated
-
-        store.save_manifest(m)  # 先落盘复用/同步结果，即便后续 LLM 调用失败也不丢失
-
-        if not llm_chapters and not toc_entries_pending:
-            store.log_event("titles_skipped", reason="already_translated")
-            fp = self._fingerprint(store)
-            return NodeOutcome(fingerprint=fp)
-
-        pending_items: list[dict] = [*llm_chapters, *toc_entries_pending]
-        unique_titles = list(dict.fromkeys(_flat(item.get("title", "")) for item in pending_items))
-
+            return NodeOutcome()
+        manifest = store.load_manifest()
+        catalog = build_title_catalog(manifest)
         if request.progress:
-            request.progress(0, 0, "翻译章节标题…")
-        translated_titles: dict[str, str] = {}
-        for title in unique_titles:
-            translated_titles[title] = retry_protocol(
-                lambda title=title: self._translate_title(title, self.src, self.tgt, store),
-                retries=self.config.pipeline.protocol_retry_limit,
+            request.progress(0, 0, "翻译全书标题…")
+        targets = retry_protocol(
+            lambda: self._translate_titles(catalog.items, store),
+            retries=self.config.pipeline.protocol_retry_limit,
+        )
+        manifest["title_translated"] = targets["book"]
+        meta = manifest.get("meta")
+        entries = meta.get("toc_entries", []) if isinstance(meta, dict) else []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = entry.get("entry_id")
+            requested_id = (
+                catalog.entry_aliases.get(entry_id) if isinstance(entry_id, str) else None
             )
-
-        for item in pending_items:
-            key = _flat(item.get("title", ""))
-            item["title_translated"] = translated_titles[key]
-
-        for c in toc_covered_chapters:
-            entry_translated = entries_by_id[c["toc_entry_id"]].get("title_translated")
-            if entry_translated:
-                c["title_translated"] = entry_translated
-
-        store.save_manifest(m)
+            if requested_id is not None:
+                entry["title_translated"] = targets[requested_id]
+        for chapter in manifest.get("chapters", []):
+            if not isinstance(chapter, dict) or type(chapter.get("index")) is not int:
+                continue
+            title_id = catalog.chapter_title_ids.get(chapter["index"])
+            if title_id is not None:
+                chapter["title_translated"] = targets[title_id]
+        store.save_manifest(manifest)
+        skipped_heading_sync = self._overwrite_canonical_title_segments(
+            store,
+            manifest,
+            targets,
+            catalog.chapter_title_ids,
+            catalog.entry_aliases,
+        )
         store.log_event(
             "titles_translated",
             titles=[
-                {"index": i, "source": source, "target": translated_titles[source]}
-                for i, source in enumerate(unique_titles)
+                {"id": item.id, "source": item.source, "target": targets[item.id]}
+                for item in catalog.items
             ],
+            skipped_chapter_heading_sync=sorted(set(skipped_heading_sync)),
         )
-        fp = self._fingerprint(store)
-        return NodeOutcome(fingerprint=fp)
+        return NodeOutcome(fingerprint=self._fingerprint(store))
 
-    def _translate_title(self, title: str, src: str, tgt: str, store) -> str:
-        system = prompts.render("title_translator_system", src=src, tgt=tgt, n=1)
-        title_terms = terms_matching_text(self.glossary.all_terms(), title)
+    def _translate_titles(self, items, store) -> dict[str, str]:
+        records = [item.request_record() for item in items]
+        combined_source = "\n".join(item.source for item in items)
+        title_terms = terms_matching_text(self.glossary.all_terms(), combined_source)
+        system = prompts.render("title_translator_system", src=self.src, tgt=self.tgt)
         user = prompts.render(
             "title_translator_user",
-            src=src,
-            tgt=tgt,
+            src=self.src,
+            tgt=self.tgt,
             glossary=prompts.render_glossary(title_terms),
-            n=1,
-            numbered_titles=prompts.numbered([title]),
+            request_json=json.dumps({"titles": records}, ensure_ascii=False, separators=(",", ":")),
         )
         data = self.client.complete_json(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -194,45 +152,99 @@ class TitlesNode:
             agent="analyst",
             operation="title.translate",
         )
-        out = data.get("titles") if isinstance(data, dict) else data
-        if not isinstance(out, list) or len(out) != 1:
-            store.log_event(
-                "titles_translation_rejected",
-                reason="count_mismatch",
-                expected=1,
-                actual=len(out) if isinstance(out, list) else None,
-            )
-            raise WorkflowProtocolError("title_count_mismatch")
-        translated = sanitize_generated_text(out[0]).strip() if isinstance(out[0], str) else ""
-        if not translated:
-            store.log_event(
-                "titles_translation_rejected",
-                reason="empty_item",
-                expected=1,
-            )
-            raise WorkflowProtocolError("title_empty_item")
+        try:
+            response = _TitleResponse.model_validate(data)
+        except ValidationError as error:
+            self._reject(store, "invalid_schema")
+            raise WorkflowProtocolError("title_response_invalid") from error
+        expected = [item.id for item in items]
+        actual = [item.id for item in response.titles]
+        if len(actual) != len(set(actual)):
+            self._reject(store, "duplicate_id")
+            raise WorkflowProtocolError("title_duplicate_id")
+        if set(actual) != set(expected):
+            self._reject(store, "id_set_mismatch")
+            raise WorkflowProtocolError("title_id_set_mismatch")
+        translated: dict[str, str] = {}
+        for item in response.titles:
+            target = normalize_heading_numbering(
+                sanitize_generated_text(item.target).strip()
+            ).strip()
+            if not target:
+                self._reject(store, "empty_target")
+                raise WorkflowProtocolError("title_empty_target")
+            translated[item.id] = target
         return translated
+
+    @staticmethod
+    def _reject(store, reason: str) -> None:
+        store.log_event("titles_translation_rejected", reason=reason)
+
+    @staticmethod
+    def _overwrite_canonical_title_segments(
+        store,
+        manifest,
+        targets: dict[str, str],
+        chapter_title_ids: dict[int, str],
+        aliases: dict[str, str],
+    ) -> list[int]:
+        skipped: list[int] = []
+        for chapter_meta in manifest.get("chapters", []):
+            if not isinstance(chapter_meta, dict) or type(chapter_meta.get("index")) is not int:
+                continue
+            chapter_index = chapter_meta["index"]
+            title_id = chapter_title_ids.get(chapter_index)
+            source_title = " ".join(str(chapter_meta.get("title") or "").split()).casefold()
+            chapter = store.load_chapter(chapter_index)
+            matches = [
+                segment
+                for segment in chapter.segments
+                if segment.kind == KIND_HEADING
+                and " ".join(segment.source.split()).casefold() == source_title
+            ]
+            changed = False
+            if title_id is None or not source_title or len(matches) != 1:
+                skipped.append(chapter_index)
+            else:
+                segment = matches[0]
+                target = targets[title_id]
+                translation = (
+                    distribute_slot_translation(segment.epub_state, target)
+                    if segment.epub_state is not None
+                    else target
+                )
+                segment.assign_translation(translation)
+                segment.meta[CANONICAL_TITLE_ID_META] = title_id
+                changed = True
+            for segment in chapter.segments:
+                entry_id = segment.meta.get("mirrored_toc_entry_id")
+                canonical_id = aliases.get(entry_id) if isinstance(entry_id, str) else None
+                if canonical_id is None:
+                    continue
+                target = targets[canonical_id]
+                translation = (
+                    distribute_slot_translation(segment.epub_state, target)
+                    if segment.epub_state is not None
+                    else target
+                )
+                segment.assign_translation(translation)
+                segment.meta[CANONICAL_TITLE_ID_META] = canonical_id
+                changed = True
+            if changed:
+                store.save_chapter(chapter)
+        return skipped
 
     def _fingerprint(self, store) -> str:
         manifest = store.load_manifest()
-        chapters, toc_entries, _, preserved_chapters, preserved_entries = _toc_state(
-            store, manifest
-        )
-        translated = [
-            chapter for chapter in chapters if chapter.get("index") not in preserved_chapters
+        catalog = build_title_catalog(manifest)
+        topology = [
+            json.dumps(item.request_record(), ensure_ascii=False, sort_keys=True)
+            for item in catalog.items
         ]
-        titles = [str(chapter.get("title", "")) for chapter in translated if chapter.get("title")]
-        titles.extend(
-            str(entry.get("title", ""))
-            for entry in toc_entries
-            if isinstance(entry, dict)
-            and entry.get("title")
-            and entry.get("entry_id") not in preserved_entries
-        )
         identity = manifest.get("identity") if isinstance(manifest.get("identity"), dict) else {}
         src = identity.get("source_lang") or self.config.source_lang
         tgt = identity.get("target_lang") or self.config.target_lang
-        return titles_input_fingerprint(titles, src, tgt, analyst_model_profile(self.config))
+        return titles_input_fingerprint(topology, src, tgt, analyst_model_profile(self.config))
 
 
 class DeterministicQANode:
@@ -333,24 +345,6 @@ class AssembleNode:
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
-        manifest = store.load_manifest()
-        manifest_changed = False
-        for chapter in manifest.get("chapters", []):
-            if isinstance(chapter, dict) and isinstance(chapter.get("title_translated"), str):
-                cleaned = sanitize_generated_text(chapter["title_translated"])
-                if cleaned != chapter["title_translated"]:
-                    chapter["title_translated"] = cleaned
-                    manifest_changed = True
-        meta = manifest.get("meta")
-        toc_entries = meta.get("toc_entries", []) if isinstance(meta, dict) else []
-        for entry in toc_entries:
-            if isinstance(entry, dict) and isinstance(entry.get("title_translated"), str):
-                cleaned = sanitize_generated_text(entry["title_translated"])
-                if cleaned != entry["title_translated"]:
-                    entry["title_translated"] = cleaned
-                    manifest_changed = True
-        if manifest_changed:
-            store.save_manifest(manifest)
 
         if request.progress:
             request.progress(0, 0, "生成译文文件…")

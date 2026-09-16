@@ -27,15 +27,26 @@ class ChapterObservation(BaseModel):
         return value
 
 
-_SYSTEM_PROMPT = """You classify book chapter SOURCE content for translation handling.
+_SYSTEM_PROMPT = """You classify every supplied character of book SOURCE content for translation.
 Return exactly one JSON object with chapter_id, kind, and a concise nonempty reason.
-kind must be one of reference_only, translatable, uncertain.
-reference_only means the source is exclusively citation/reference/bibliography/list material.
-Substantive explanation, narrative, or a meaningful appendix is translatable. A mixture of
-citation/reference material and substantive explanation is uncertain even when the mixture is
-clear, because it requires translation review. Title, context, and structural hints are advisory
-context only: never preserve from them alone. Judge every supplied SOURCE character, not keywords
-or chapter position."""
+kind must be one of reference_only, translatable, uncertain. Translation is the default;
+reference_only is a strict exception for content that is exclusively citations, bibliography,
+endnote references, or a bare reference list with no reader-facing prose.
+
+Always classify a table of contents, dedication, epigraph, acknowledgements, chapter narrative,
+or reader-facing explanatory appendix as translatable. Short length, list formatting, front/back
+matter position, or publishing/legal vocabulary alone never makes content reference_only. A pure
+bibliography or pure endnote reference list is reference_only. Publishing/legal material mixed
+with credits, explanation, acknowledgements, or other reader-facing text is uncertain. Any mixture
+of reference-only material and substantive or reader-facing content is uncertain.
+
+Examples:
+- "For M., who made this possible." => translatable (dedication).
+- "Acknowledgements ... I thank my editor." => translatable.
+- "Contents / Chapter 1 / Chapter 2" => translatable.
+- "[1] Smith, A. Title. 2020. [2] Doe, B. Title. 2021." => reference_only.
+- "Copyright 2024 ... Thanks to the production team for their support." => uncertain.
+Title, structural context, and semantic hints are advisory only: never preserve from them alone."""
 
 
 class ChapterClassifier(Agent):

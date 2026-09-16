@@ -126,14 +126,14 @@ class TestReport(unittest.TestCase):
                 review_required=False,
                 reason="reference list",
                 source_sha256="source",
-                strategy_version="chapter_semantics_v1",
+                strategy_version="chapter_semantics_v2",
             )
             state.chapters[1].processing = ChapterProcessing(
                 action="translate",
                 review_required=True,
                 reason="mixed content",
                 source_sha256="source",
-                strategy_version="chapter_semantics_v1",
+                strategy_version="chapter_semantics_v2",
             )
             store.save_state(state)
             glossary = GlossaryStore(store.glossary_path)

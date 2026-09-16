@@ -13,7 +13,7 @@ from trans_novel.ingest.models import ChapterProcessing
 
 RUN_STATE_SCHEMA_VERSION = 4
 RUN_INPUT_SCHEMA_VERSION = 2
-TRANSLATION_POLICY_VERSION = 2
+TRANSLATION_POLICY_VERSION = 3
 STATUS_PENDING = "pending"
 STATUS_DONE = "done"
 ChapterStatus = Literal["pending", "done"]
@@ -173,6 +173,7 @@ class RunState(BaseModel):
     run_state_schema: int = RUN_STATE_SCHEMA_VERSION
     identity: RunIdentity = Field(default_factory=RunIdentity)
     title: str = ""
+    title_translated: str | None = None
     fmt: str = ""
     source_path: str = ""
     source_lang: str = ""

@@ -432,8 +432,8 @@ class TestApplicationNoteMigration(unittest.TestCase):
                 elif case == "future_policy":
                     state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION + 1
                     store.save_state(state)
-                    expected_error = ValueError
-                    expected_pattern = "EPUB note migration rejected: future translation policy"
+                    expected_error = IdentityMismatchError
+                    expected_pattern = "翻译策略版本不一致"
                 elif case == "incomplete_current_output":
                     state.progress[state.chapters[0].index].status = "pending"
                     store.save_state(state)
@@ -447,8 +447,8 @@ class TestApplicationNoteMigration(unittest.TestCase):
                     goal = ExecutionGoal(
                         name="run_all", phases=GOAL_RUN_ALL.phases, out_format="txt"
                     )
-                    expected_error = ValueError
-                    expected_pattern = "EPUB note migration rejected: run is not complete"
+                    expected_error = IdentityMismatchError
+                    expected_pattern = "翻译策略版本不一致"
                 before_manifest = Path(store.manifest_path).read_bytes()
                 before_chapters = {
                     item.index: Path(store.chapter_path(item.index)).read_bytes()

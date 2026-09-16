@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -60,7 +61,7 @@ def _classified_chapter(
             review_required=review_required,
             reason="reference list" if action == "preserve" else "prose",
             source_sha256=chapter_source_digest(chapter),
-            strategy_version="chapter_semantics_v1",
+            strategy_version="chapter_semantics_v2",
         )
     )
     return chapter
@@ -399,19 +400,29 @@ class TestSemanticRouting(unittest.TestCase):
 
 
 class TestSemanticTitleRouting(unittest.TestCase):
-    def test_titles_leave_preserved_chapter_and_toc_label_original(self):
+    def test_preserved_body_still_receives_translated_chapter_and_navigation_titles(self):
         class Client:
             def __init__(self):
                 self.calls = 0
 
-            def complete_json(self, *_args, **_kwargs):
+            def complete_json(self, messages, **_kwargs):
                 self.calls += 1
-                return {"titles": ["译名"]}
+                payload = json.loads(
+                    messages[-1]["content"]
+                    .split("【全书有序标题体系（JSON）】", 1)[-1]
+                    .split("\n\n", 1)[0]
+                )
+                return {
+                    "titles": [
+                        {"id": item["id"], "target": f"译-{item['source']}"}
+                        for item in payload["titles"]
+                    ]
+                }
 
         with tempfile.TemporaryDirectory() as directory:
             chapters = [
                 _classified_chapter(
-                    0, "References", "Reference A.", action="preserve", toc_entry_id="p"
+                    0, "Endnotes", "Reference A.", action="preserve", toc_entry_id="p"
                 ),
                 _classified_chapter(
                     1, "Chapter", "Narrative.", action="translate", toc_entry_id="t"
@@ -423,11 +434,11 @@ class TestSemanticTitleRouting(unittest.TestCase):
                 toc_entries=[
                     {
                         "entry_id": "p",
-                        "title": "References",
+                        "title": "Endnotes",
                         "toc_path": "nav",
                         "node_index": 0,
-                        "raw_href": "book.xhtml#references",
-                        "boundary_position": 0,
+                        "depth": 0,
+                        "raw_href": "book.xhtml#endnotes",
                     },
                     {
                         "entry_id": "p-child",
@@ -435,24 +446,16 @@ class TestSemanticTitleRouting(unittest.TestCase):
                         "toc_path": "nav",
                         "node_index": 1,
                         "parent_index": 0,
+                        "depth": 1,
                         "raw_href": "book.xhtml#reference-details",
-                        "boundary_position": 0,
-                    },
-                    {
-                        "entry_id": "p-ncx",
-                        "title": "NCX References",
-                        "toc_path": "toc.ncx",
-                        "node_index": 0,
-                        "raw_href": "book.xhtml#references",
-                        "boundary_position": 0,
                     },
                     {
                         "entry_id": "t",
                         "title": "Chapter",
                         "toc_path": "nav",
                         "node_index": 2,
+                        "depth": 0,
                         "raw_href": "book.xhtml#chapter",
-                        "boundary_position": 1,
                     },
                 ],
             )
@@ -466,7 +469,6 @@ class TestSemanticTitleRouting(unittest.TestCase):
                 tgt="zh",
                 glossary=SimpleNamespace(all_terms=list),
             )
-
             node.execute(
                 NodeRequest(
                     store=store,
@@ -480,11 +482,12 @@ class TestSemanticTitleRouting(unittest.TestCase):
 
             manifest = store.load_manifest()
             entries = {entry["entry_id"]: entry for entry in manifest["meta"]["toc_entries"]}
-            self.assertIsNone(manifest["chapters"][0]["title_translated"])
-            for entry_id in ("p", "p-child", "p-ncx"):
-                self.assertNotIn("title_translated", entries[entry_id])
-            self.assertEqual(manifest["chapters"][1]["title_translated"], "译名")
-            self.assertEqual(entries["t"]["title_translated"], "译名")
+            self.assertEqual(manifest["title_translated"], "译-Book")
+            self.assertEqual(manifest["chapters"][0]["title_translated"], "译-Endnotes")
+            self.assertEqual(entries["p"]["title_translated"], "译-Endnotes")
+            self.assertEqual(entries["p-child"]["title_translated"], "译-Reference Details")
+            self.assertEqual(store.load_chapter(0).segments[0].source, "Reference A.")
+            self.assertTrue(store.load_chapter(0).preserve_source)
             self.assertEqual(client.calls, 1)
 
 

@@ -46,7 +46,7 @@ from trans_novel.epub.slots import (
     normalized_target_text,
     slot_contract_digest,
 )
-from trans_novel.ingest import Segment
+from trans_novel.ingest import Segment, canonical_title_id, segment_preserves_source
 
 _HTML_EXTS = (".xhtml", ".html", ".htm")
 _SourceRef = tuple[etree._Element, tuple[etree._Element, ...], bool]
@@ -69,7 +69,7 @@ def rewrite_toc_lxml(
         _rewrite_ncx_labels(root, indexed, toc_path)
     else:
         rewrite_nav_labels(root, indexed, toc_path, source_lang)
-        rewrite_markup_languages(root, target_lang)
+    rewrite_markup_languages(root, target_lang)
     return serialize_source_tree(tree, data, mode)
 
 
@@ -449,14 +449,14 @@ def _apply_declared_languages(
     source_languages: dict[tuple[int, ...], str | None],
     block_refs: dict[tuple[int, ...], etree._Element],
 ) -> None:
-    if segments and all(segment.preserve_source for segment in segments):
+    if segments and all(segment_preserves_source(segment) for segment in segments):
         return
     rewrite_markup_languages(root, target_lang)
     by_block: dict[tuple[int, ...], set[bool]] = {}
     for segment in segments:
         state = segment.epub_state
         assert state is not None
-        by_block.setdefault(state.block_path, set()).add(segment.preserve_source)
+        by_block.setdefault(state.block_path, set()).add(segment_preserves_source(segment))
     for block_path, decisions in by_block.items():
         if len(decisions) > 1:
             raise ValueError(f"EPUB preserve range is ambiguous within one block: {href}")
@@ -486,7 +486,9 @@ def _theme_scope(
         stack.extend(
             (child, (*path, index)) for index, child in reversed(tuple(enumerate(children)))
         )
-    preserve_resource = bool(segments) and all(segment.preserve_source for segment in segments)
+    preserve_resource = bool(segments) and all(
+        segment_preserves_source(segment) for segment in segments
+    )
     excluded = (
         ()
         if preserve_resource
@@ -495,7 +497,7 @@ def _theme_scope(
             for path in dict.fromkeys(
                 segment.epub_state.block_path
                 for segment in segments
-                if segment.preserve_source and segment.epub_state is not None
+                if segment_preserves_source(segment) and segment.epub_state is not None
             )
         )
     )
@@ -605,7 +607,8 @@ def render_source_resource(
         source_languages.setdefault(
             state.block_path, effective_language(block, source_lang or None)
         )
-        if (bilingual or segment.preserve_source) and state.block_path not in source_blocks:
+        preserve_source = segment_preserves_source(segment)
+        if (bilingual or preserve_source) and state.block_path not in source_blocks:
             source_blocks[state.block_path] = deepcopy(block)
         expected_fingerprint = hashlib.sha256(
             etree.tostring(block, encoding="utf-8", with_tail=False)
@@ -615,6 +618,9 @@ def render_source_resource(
         if segment.source != normalized_source_text(state.slots):
             raise ValueError(f"EPUB segment source derivation mismatch: {href}")
         assigned = all(slot.target_value is not None for slot in state.slots)
+        title_id = canonical_title_id(segment)
+        if title_id is not None and (segment.target is None or not assigned):
+            raise ValueError(f"EPUB canonical title target missing: {href}")
         if segment.target is None:
             if any(slot.target_value is not None for slot in state.slots):
                 raise ValueError(f"EPUB segment target derivation mismatch: {href}")
@@ -627,7 +633,7 @@ def render_source_resource(
                 raise ValueError(f"EPUB slot source mismatch: {href}")
             replacement = (
                 slot.source_value
-                if segment.preserve_source
+                if preserve_source
                 else slot.target_value
                 if slot.target_value is not None
                 else slot.source_value

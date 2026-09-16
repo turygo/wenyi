@@ -41,6 +41,18 @@ class TestChapterClassifier(unittest.TestCase):
         self.assertEqual(request["source"], "Alpha.\n\nOmega.")
         self.assertEqual(request["title_context"], "Misleading title")
         self.assertEqual(request["semantic_hints"], ["xhtml:section:type=bibliography"])
+        system = client.calls[0]["messages"][0]["content"]
+        for phrase in (
+            "table of contents",
+            "dedication",
+            "epigraph",
+            "acknowledgements",
+            "Publishing/legal material mixed",
+            "pure endnote reference list",
+            "Translation is the default",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, system)
 
     def test_retries_invalid_protocol_and_requires_exact_integer_id(self):
         responses = [

@@ -376,7 +376,7 @@ class TestEpubStage2(unittest.TestCase):
 
         self.assertEqual([label.text for label, _ in labels], ["Chapter"])
 
-    def test_ncx_root_language_and_comment_pi_contents_are_immutable(self) -> None:
+    def test_ncx_root_language_targets_and_comment_pi_contents_are_immutable(self) -> None:
         from trans_novel.assemble.epub.rendering import rewrite_toc_lxml as _rewrite_toc_lxml
 
         data = (
@@ -400,7 +400,7 @@ class TestEpubStage2(unittest.TestCase):
             target_lang="zh-Hans",
         )
         root = etree.fromstring(result)
-        self.assertEqual(root.get("{http://www.w3.org/XML/1998/namespace}lang"), "ja")
+        self.assertEqual(root.get("{http://www.w3.org/XML/1998/namespace}lang"), "zh-Hans")
         label = root.xpath("//*[local-name()='text']")[0]
         self.assertEqual(label.text, "New")
         self.assertEqual(label[0].text, "keep")
