@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import os
+import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import suppress
@@ -45,9 +46,14 @@ def fsync_file(path: str) -> None:
 
 
 def is_unsupported_dir_fsync(error: OSError) -> bool:
-    return error.errno in {
+    unsupported = {
         value for value in (errno.EINVAL, errno.ENOTSUP, getattr(errno, "EOPNOTSUPP", -1)) if value
-    } or (os.name == "nt" and error.errno == errno.EACCES)
+    }
+    return (
+        error.errno in unsupported
+        or (os.name == "nt" and error.errno == errno.EACCES)
+        or (sys.platform == "darwin" and error.errno == errno.EPERM)
+    )
 
 
 def persist_failure(store: Any, report: dict[str, Any], cause: BaseException | None = None) -> None:

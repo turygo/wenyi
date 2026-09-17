@@ -555,6 +555,35 @@ class TestEpubBatchPublication(unittest.TestCase):
                     self.assertFalse(report["passed"])
                     self.assertFalse(Path(requests[1].final_path).exists())
 
+    def test_macos_privacy_denied_directory_handle_is_reported_as_unsupported(self) -> None:
+        from trans_novel.assemble.epub import publication
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, store, requests = self._requests(root)
+            platform_os = SimpleNamespace(**vars(publication.os))
+            platform_os.name = "posix"
+            with (
+                patch.object(publication, "os", platform_os),
+                patch.object(publication.sys, "platform", "darwin"),
+                patch.object(
+                    platform_os,
+                    "open",
+                    side_effect=PermissionError(errno.EPERM, "directory handle unavailable"),
+                ),
+            ):
+                publish_epubs(store, source, requests)
+
+            report = store.load_epub_verification()
+            for request in requests:
+                receipt = report["published_outputs"][Path(request.final_path).name]
+                self.assertTrue(receipt["passed"])
+                self.assertTrue(receipt["published"])
+                self.assertIn(
+                    "directory_fsync_unsupported",
+                    {warning["code"] for warning in receipt["warnings"]},
+                )
+
     def test_second_verification_failure_preserves_both_previous_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
