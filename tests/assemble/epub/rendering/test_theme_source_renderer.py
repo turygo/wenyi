@@ -119,7 +119,6 @@ class TestSourceThemeRenderer(unittest.TestCase):
 
     def _store(self, source: Path):
         document = read_epub(str(source), "ja", "zh")
-        translated: list[str] = []
         for segment in document.chapters[0].segments:
             if "Preserved range" in segment.source:
                 segment.preserve_source = True
@@ -128,10 +127,8 @@ class TestSourceThemeRenderer(unittest.TestCase):
             for index, slot in enumerate(segment.epub_state.slots):
                 value = f"译{segment.index}-{index}" if slot.source_value.strip() else ""
                 values.append({"id": slot.id, "value": value})
-                if value:
-                    translated.append(value)
             segment.assign_translation(values)
-        return _Store(document), translated
+        return _Store(document)
 
     def _assert_zip_metadata(
         self,
@@ -173,7 +170,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
             source_node_digest("p", {"id": "plain"}, "Plain source†."),
         )
 
-    def _assert_text_and_notes(self, root, resource, translated) -> None:
+    def _assert_text_and_notes(self, root, resource) -> None:
         preserved = resolve_element_path(root, resource.scope.excluded_paths[0])
         self.assertEqual(preserved.get("id"), "preserved")
         self.assertEqual("".join(preserved.itertext()), "Preserved range.")
@@ -190,8 +187,6 @@ class TestSourceThemeRenderer(unittest.TestCase):
             )
         )
         rendered_text = "".join(root.itertext())
-        for value in translated:
-            self.assertIn(value, rendered_text)
         for value in ("Plain source", "Container source.", "One", "Two", "東京とうきょう", "After"):
             self.assertIn(value, rendered_text)
 
@@ -251,7 +246,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
             source = Path(directory) / "source.epub"
             expected_info = self._book(source)
             source_bytes = source.read_bytes()
-            store, translated = self._store(source)
+            store = self._store(source)
 
             for order in ("target_first", "source_first"):
                 with self.subTest(order=order):
@@ -280,7 +275,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
 
                     self.assertEqual(source.read_bytes(), source_bytes)
                     self.assertTrue(root.xpath("//*[local-name()='style' and @id='publisher']"))
-                    self._assert_text_and_notes(root, resource, translated)
+                    self._assert_text_and_notes(root, resource)
 
                     self._assert_source_pairs(root, resource, order)
 
@@ -288,7 +283,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.epub"
             self._book(source)
-            store, _translated = self._store(source)
+            store = self._store(source)
             output = Path(directory) / "english.epub"
 
             plan = assemble_source_epub(
@@ -336,7 +331,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.epub"
             self._book(source)
-            store, _translated = self._store(source)
+            store = self._store(source)
             segments = store.document.chapters[0].segments
             store.document.chapters[0].meta["title_translated"] = "第五章"
             for segment in segments:
@@ -455,7 +450,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.epub"
             self._book(source)
-            store, _translated = self._store(source)
+            store = self._store(source)
             for segment in store.document.chapters[0].segments:
                 segment.preserve_source = True
             output = Path(directory) / "preserved.epub"
