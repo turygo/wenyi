@@ -293,6 +293,74 @@ class TestPureNoteMigration(unittest.TestCase):
                 self.assertEqual(stream.read(), before_chapter)
             self.assertFalse(os.path.exists(store.path_for("note_migration.json")))
 
+    def test_note_free_schema_upgrade_ignores_unrelated_chapter_grouping(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = os.path.join(root, "book.epub")
+            with open(source, "wb") as stream:
+                stream.write(b"source")
+            persisted = Chapter(
+                index=7,
+                href="text/old.xhtml",
+                segments=[
+                    Segment(
+                        index=11,
+                        source="body",
+                        target="正文",
+                        resource_href="text/old.xhtml",
+                        anchor="tn0_0",
+                    )
+                ],
+            )
+            store = RunStore(os.path.join(root, "run"))
+            manifest = store.stage_document(
+                Document(
+                    title="Book",
+                    source_lang="en",
+                    target_lang="zh",
+                    fmt="epub",
+                    source_path=source,
+                    chapters=[persisted],
+                    meta={"epub_schema": 4, "epub_sha256": "c" * 64},
+                ),
+                RunIdentity(
+                    source_bytes_sha256=source_bytes_hash(source),
+                    source_lang="en",
+                    target_lang="zh",
+                ),
+            )
+            store.save_manifest(manifest)
+            current = Document(
+                title="Book",
+                source_lang="en",
+                target_lang="zh",
+                fmt="epub",
+                source_path=source,
+                chapters=[Chapter(index=0, href="text/new.xhtml", segments=[])],
+                meta={
+                    "epub_schema": 4,
+                    "epub_sha256": "c" * 64,
+                    "epub_notes": {"version": 1, "markers": [], "targets": []},
+                },
+            )
+
+            ensure_epub_note_compatibility(
+                store,
+                current,
+                identity_path=source,
+                source_lang="en",
+                target_lang="zh",
+                allow_migration=True,
+                fingerprint_updates=lambda *_args: self.fail(
+                    "note-free schema upgrade must not compute content fingerprints"
+                ),
+            )
+
+            state = store.load_state()
+            self.assertEqual(state.meta["epub_note_slots_version"], 1)
+            self.assertEqual(state.meta["epub_notes"], current.meta["epub_notes"])
+            self.assertEqual(store.load_chapter(7).segments[0].target, "正文")
+            self.assertFalse(os.path.exists(store.path_for("note_migration.json")))
+
 
 class TestApplicationNoteMigration(unittest.TestCase):
     def test_current_policy_run_all_migrates_once_and_replays_without_client_calls(self):

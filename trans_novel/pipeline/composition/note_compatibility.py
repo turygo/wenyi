@@ -27,6 +27,10 @@ def _migration_needed(doc: Document, manifest: dict) -> bool:
     return meta.get("epub_notes") != doc.meta.get("epub_notes")
 
 
+def _has_note_relationships(value: object) -> bool:
+    return isinstance(value, dict) and bool(value.get("markers") or value.get("targets"))
+
+
 def _preflight_identity(
     store: RunStore, identity_path: str, source_lang: str, target_lang: str
 ) -> None:
@@ -91,6 +95,16 @@ def ensure_epub_note_compatibility(
             raise ValueError(
                 "EPUB note migration rejected: run is not complete output-ready content"
             )
+        if not _has_note_relationships(
+            state.meta.get("epub_notes")
+        ) and not _has_note_relationships(doc.meta.get("epub_notes")):
+            meta = {
+                **state.meta,
+                "epub_notes": doc.meta.get("epub_notes"),
+                "epub_note_slots_version": 1,
+            }
+            commit_note_migration(store, chapters=persisted, meta=meta)
+            return
         migrated = reconcile_note_slots(doc, persisted)
         updates: dict[str, tuple[str, str]] | None = None
         if policy_version == TRANSLATION_POLICY_VERSION:
