@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from trans_novel.agents.base import WorkflowProtocolError
@@ -136,6 +137,33 @@ class TestLayoutAnalysis(unittest.TestCase):
         self.assertEqual("".join(sample["source_markup"] for sample in chunks), "A" * 17_000)
         self.assertTrue(all(len(sample["source_markup"]) <= 8_000 for sample in chunks))
         self.assertIsNone(profile.assignments[0].role)
+
+    def test_oversized_reference_evidence_is_chunked_without_loss(self):
+        outgoing = [f"#note-{index}" for index in range(3_000)]
+        node = _node(
+            0,
+            source_markup="A" * 9_000,
+            extra={"references": {"outgoing": outgoing, "referenced_by": []}},
+        )
+        analyzer = _Analyzer(lambda sample: {"role": "endnote", "level": None})
+
+        profile = analyze_layout(
+            _inventory([node]), analyzer, checkpoint=None, save_checkpoint=lambda value: None
+        )
+
+        chunks = [sample for call in analyzer.calls for sample in call]
+        self.assertEqual(profile.assignments[0].role, "endnote")
+        self.assertEqual("".join(sample["source_markup"] for sample in chunks), "A" * 9_000)
+        self.assertEqual(
+            [href for sample in chunks for href in sample["references"]["outgoing"]],
+            outgoing,
+        )
+        self.assertTrue(
+            all(
+                len(json.dumps(sample, ensure_ascii=False, separators=(",", ":"))) <= 24_000
+                for sample in chunks
+            )
+        )
 
     def test_oversized_repeated_context_fails_instead_of_truncating(self):
         node = _node(

@@ -40,24 +40,100 @@ def _chunk_sample(node: LayoutNode) -> list[dict[str, Any]]:
         None,
     )
     if evidence_key is None or len(sample[evidence_key]) <= _MAX_EVIDENCE_CHARS:
-        if _request_size([sample]) > _MAX_REQUEST_CHARS:
-            raise WorkflowProtocolError("layout_context_limit")
-        return [sample]
-    evidence = sample[evidence_key]
-    base = {key: value for key, value in sample.items() if key != evidence_key}
-    chunks: list[dict[str, Any]] = []
-    total = (len(evidence) + _MAX_EVIDENCE_CHARS - 1) // _MAX_EVIDENCE_CHARS
-    for index in range(total):
-        chunk = {
+        if _request_size([sample]) <= _MAX_REQUEST_CHARS:
+            return [sample]
+        evidence_parts = [sample.get(evidence_key, "")] if evidence_key is not None else [""]
+    else:
+        evidence = sample[evidence_key]
+        evidence_parts = [
+            evidence[index : index + _MAX_EVIDENCE_CHARS]
+            for index in range(0, len(evidence), _MAX_EVIDENCE_CHARS)
+        ]
+
+    base = {key: value for key, value in sample.items() if key not in {evidence_key, "node_id"}}
+    total = len(evidence_parts)
+    chunks = [
+        {
             **base,
             "node_id": f"{node.node_id}#{index}",
-            evidence_key: evidence[index * _MAX_EVIDENCE_CHARS : (index + 1) * _MAX_EVIDENCE_CHARS],
+            **({evidence_key: part} if evidence_key is not None else {}),
             "evidence_chunk": {"index": index, "total": total},
         }
-        if _request_size([chunk]) > _MAX_REQUEST_CHARS:
-            raise WorkflowProtocolError("layout_context_limit")
-        chunks.append(chunk)
-    return chunks
+        for index, part in enumerate(evidence_parts)
+    ]
+    if all(_request_size([chunk]) <= _MAX_REQUEST_CHARS for chunk in chunks):
+        return chunks
+
+    references = base.get("references")
+    if (
+        not isinstance(references, dict)
+        or set(references) != {"outgoing", "referenced_by"}
+        or any(not isinstance(references[key], list) for key in references)
+    ):
+        raise WorkflowProtocolError("layout_context_limit")
+    base["references"] = {"outgoing": [], "referenced_by": []}
+    chunks = [
+        {
+            **base,
+            **({evidence_key: part} if evidence_key is not None else {}),
+            "references": {"outgoing": [], "referenced_by": []},
+        }
+        for part in evidence_parts
+    ]
+    cursor = 0
+    maximum_total = len(chunks) + sum(len(references[key]) for key in references)
+    for relation in ("outgoing", "referenced_by"):
+        for value in references[relation]:
+            placed = False
+            for offset in range(len(chunks)):
+                index = (cursor + offset) % len(chunks)
+                candidate = {
+                    **chunks[index],
+                    "references": {
+                        **chunks[index]["references"],
+                        relation: [*chunks[index]["references"][relation], value],
+                    },
+                }
+                probe = {
+                    **candidate,
+                    "node_id": f"{node.node_id}#{index}",
+                    "evidence_chunk": {"index": index, "total": maximum_total},
+                }
+                if _request_size([probe]) <= _MAX_REQUEST_CHARS:
+                    chunks[index] = candidate
+                    cursor = index
+                    placed = True
+                    break
+            if not placed:
+                candidate = {
+                    **base,
+                    **({evidence_key: ""} if evidence_key is not None else {}),
+                    "references": {
+                        "outgoing": [value] if relation == "outgoing" else [],
+                        "referenced_by": [value] if relation == "referenced_by" else [],
+                    },
+                }
+                probe = {
+                    **candidate,
+                    "node_id": f"{node.node_id}#{len(chunks)}",
+                    "evidence_chunk": {"index": len(chunks), "total": maximum_total},
+                }
+                if _request_size([probe]) > _MAX_REQUEST_CHARS:
+                    raise WorkflowProtocolError("layout_context_limit")
+                chunks.append(candidate)
+                cursor = len(chunks) - 1
+    total = len(chunks)
+    result = [
+        {
+            **chunk,
+            "node_id": f"{node.node_id}#{index}",
+            "evidence_chunk": {"index": index, "total": total},
+        }
+        for index, chunk in enumerate(chunks)
+    ]
+    if any(_request_size([chunk]) > _MAX_REQUEST_CHARS for chunk in result):
+        raise WorkflowProtocolError("layout_context_limit")
+    return result
 
 
 def _checkpoint_state(
