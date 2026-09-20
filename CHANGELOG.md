@@ -4,6 +4,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-21
+
 - Prevented Chinese EPUB translations from inheriting source inline italics whose positions cannot be aligned reliably after whole-paragraph translation, while retaining the original XHTML topology and untranslated source presentation.
 - Allowed note-free legacy EPUB states to receive the current note-slot schema stamp without reconciling unrelated chapter regrouping, preserving paid translations during output-only maintenance.
 - Chunked oversized EPUB reference evidence together with long source markup during layout analysis, so reference-heavy endnote containers can receive a theme without dropping evidence or exceeding the local request limit.
