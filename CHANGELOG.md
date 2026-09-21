@@ -2,12 +2,14 @@
 
 All notable changes to this project are documented here following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.3.2] - 2026-09-22
 
 - Changed the default translator to OpenRouter Gemini 3.8 Flash with low reasoning, retaining the existing analyst, editor, and fast role selections.
 - Enabled the existing 1800-source-character body batching policy for balanced and quality runs. Heading requests remain isolated on the analyst role, and accepted local targets advance context between heading-delimited groups without changing checkpoint or polish boundaries.
 - Included heading-model candidates in translation fingerprints for batch mode, and retained alignment checks, protocol retries, single-segment recovery, and source-preserving fallback.
 - Registered Gemini's controlled-temperature capability for explicit callers; production requests continue to use provider-default temperature and output budgets.
+
+## [Unreleased]
 
 ## [1.3.1] - 2026-09-21
 
