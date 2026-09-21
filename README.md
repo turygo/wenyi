@@ -74,8 +74,8 @@ trans-novel translate book.epub --polish
 trans-novel translate book.epub --source-language ja
 ```
 
-`--quality` 只覆盖本次运行中需要翻译的章节：`economy` 批量翻译且不润色，`balanced` 单段翻译
-且不润色，`quality` 单段翻译并开启检查点批量润色；`--polish` 可单独开启润色。
+`--quality` 只覆盖本次运行中需要翻译的章节：`economy` 与 `balanced` 均批量翻译且不润色，
+`quality` 在批量翻译后开启检查点批量润色；`--polish` 可单独开启润色。
 `--back-matter` 及旧的 `skip/light/full` 处理模式已移除，旧配置中的 `back_matter` 也不再接受。
 待译章节始终执行确定性 QA；随后由 `editor` 按单个 lint 问题自动 Repair，每个问题最多 10 次逻辑调用。
 候选必须通过完整段落复检才会写回；耗尽预算也会保留安全译文并继续生成单语和双语输出。
@@ -175,7 +175,7 @@ Configuration selects models, quality, and output presentation. A config file is
 llm:
   models:
     translator:
-      - openrouter/tencent/hy-mt2-30b-a3b:off
+      - openrouter/google/gemini-3.8-flash:low
     analyst:
       - opencode-go/muse-spark-1.3-contributor:low
     editor:
@@ -194,19 +194,23 @@ output:
   bilingual_styles: builtin:bilingual
 ```
 
-- `translator`：正文翻译，默认使用 OpenRouter 上的 Tencent Hy-MT2 30B。
+- `translator`：正文翻译，默认使用 OpenRouter 上的 Gemini 3.8 Flash，思考级别为 `low`。
 - `analyst`：全章源文语义分类、全局分析、定名和标题翻译。
 - `editor`：中文润色与 lint 问题 Repair。
 - `fast`：语言识别、术语挖掘和术语抽取。
 - 每个角色都必须是非空的 `provider/model-id` 列表；同一角色不能重复候选。
-- `quality`：`economy` 使用批量翻译；`balanced` 每次只翻译一个段落并接收纯译文；
-  `quality` 在同样的单段翻译调用上增加检查点批量润色。
+- `quality`：所有档位均按 1800 源文字符预算组织正文批次；`quality` 额外开启检查点批量润色。
+  标题单独交给 `analyst`，正文批次不跨越标题；单个超预算原文段仍独立处理，不强拆 EPUB 段落。
+  原有前文上下文、段落对齐校验与协议重试保留，不额外读取后文或整章参考。
 
 模型规格可在模型 ID 最右侧追加 `:off`、`:low`、`:medium`、`:high` 或 `:max`；
 Provider/模型 ID 中间的 `/` 只分割第一个斜杠，因此 OpenRouter 的嵌套模型 ID 可直接使用。
 程序启动时会校验整个候选链；不支持的级别直接报错，不会静默升级或降级。
 候选会在当前 Provider 的内部重试耗尽后再切换；404 或结构化 `model_not_found` 直接切换，
 400/401/403、凭据缺失和本地配置错误立即报错。
+
+生产请求沿用供应商默认温度和输出预算，不提供额外 YAML 参数；离线实验中的显式参数不代表生产默认值。
+更换模型或翻译策略后，请使用新的状态目录验收，不要把旧模型断点当作新策略的验证结果。
 
 Agent 路由、重试、超时、切分、上下文窗口和并发数都是内部策略，不接受 YAML 覆盖。
 Provider 使用固定的官方地址和密钥环境变量：
