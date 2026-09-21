@@ -11,6 +11,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Updated the frozen EPUB theme smoke fixture to answer the current JSON title protocol.
+
 ## [1.3.1] - 2026-09-21
 
 - Prevented Chinese EPUB translations from inheriting source inline italics whose positions cannot be aligned reliably after whole-paragraph translation, while retaining the original XHTML topology and untranslated source presentation.

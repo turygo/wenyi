@@ -144,13 +144,21 @@ def _smoke_translation_handler(messages, agent, operation, json_mode):
         source = source.strip()
         return _gold_translation(source) or f"中文标题：{source}"
     if operation == "title.translate":
-        numbered = re.findall(r"^\[(\d+)\] (.*)$", user, re.M)
-        if not numbered or [int(index) for index, _title in numbered] != list(range(len(numbered))):
+        marker = "【全书有序标题体系（JSON）】"
+        request = user.split(marker, 1)[-1].split("\n\n输出 JSON", 1)[0].strip()
+        payload = json.loads(request)
+        titles = payload.get("titles") if isinstance(payload, dict) else None
+        if not isinstance(titles, list) or not titles:
             raise AssertionError("unexpected title fixture request")
         return json.dumps(
             {
                 "titles": [
-                    _gold_translation(title) or f"中文标题：{title}" for _index, title in numbered
+                    {
+                        "id": item["id"],
+                        "target": _gold_translation(item["source"])
+                        or f"中文标题：{item['source']}",
+                    }
+                    for item in titles
                 ]
             },
             ensure_ascii=False,
@@ -338,7 +346,7 @@ def _assert_layout_surface(path: Path, *, bilingual: bool) -> dict[str, Any]:
 
     noteref = _node_by_id(root, "noteref-1")
     backlink = _node_by_id(root, "backlink-1")
-    if noteref.get("href") != "#footnote-1" or "".join(noteref.itertext()).strip() != "1":
+    if noteref.get("href") != "#footnote-1" or "".join(noteref.itertext()).strip() != "注":
         raise AssertionError(f"{path.name} changed the footnote reference")
     if backlink.get("href") != "#noteref-1" or "".join(backlink.itertext()).strip() != "↩":
         raise AssertionError(f"{path.name} changed the footnote backlink")
