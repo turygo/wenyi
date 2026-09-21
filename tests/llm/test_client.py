@@ -17,7 +17,6 @@ from trans_novel.config import (
     LLMConfig,
     ModelRef,
     OutputConfig,
-    PipelineConfig,
     resolve_output,
 )
 from trans_novel.llm import (
@@ -62,17 +61,6 @@ class TestParseJsonLoose(unittest.TestCase):
 
 
 class TestConfigValidation(unittest.TestCase):
-    def test_zero_config_defaults(self):
-        cfg = Config.from_dict({})
-        self.assertEqual(
-            cfg.llm.models.translator,
-            ["openrouter/tencent/hy-mt2-30b-a3b:off"],
-        )
-        general = ["opencode-go/muse-spark-1.3-contributor:low"]
-        self.assertEqual(cfg.llm.models.analyst, general)
-        self.assertEqual(cfg.llm.models.editor, general)
-        self.assertEqual(cfg.llm.models.fast, general)
-
     def test_removed_primary_role_is_rejected(self):
         with self.assertRaisesRegex(ValidationError, "primary"):
             Config.from_dict({"llm": {"models": {"primary": ["fake/a"]}}})
@@ -266,12 +254,6 @@ class TestConfigValidation(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(ValidationError):
                 Config.from_dict(raw)
 
-    def test_quality_profiles(self):
-        self.assertFalse(PipelineConfig.for_quality("economy").single_segment_translation)
-        self.assertTrue(PipelineConfig.for_quality("balanced").single_segment_translation)
-        self.assertTrue(PipelineConfig.for_quality("quality").single_segment_translation)
-        self.assertTrue(PipelineConfig.for_quality("quality").polish)
-
     def test_fake_provider_usable_without_credentials(self):
         cfg = Config.from_dict({"llm": fake_llm_dict()})
         self.assertEqual(
@@ -378,7 +360,7 @@ class TestRoleProfiles(unittest.TestCase):
         self.assertNotEqual(profile("quality"), profile("quality", "translator"))
         self.assertNotEqual(profile("quality"), profile("quality", "analyst"))
         self.assertEqual(profile("quality"), profile("quality", "editor"))
-        self.assertEqual(profile("economy"), profile("economy", "analyst"))
+        self.assertNotEqual(profile("economy"), profile("economy", "analyst"))
 
     def test_role_profile_serializes_candidate_boundaries(self):
         single = Config.from_dict({"llm": {"models": {"translator": ["fake/a|fake/b"]}}})

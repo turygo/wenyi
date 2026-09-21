@@ -37,7 +37,7 @@ PRODUCTION_AGENT_IDS: tuple[str, ...] = (
 
 QualityPreset = Literal["economy", "balanced", "quality"]
 
-_DEFAULT_TRANSLATOR_MODEL = "openrouter/tencent/hy-mt2-30b-a3b:off"
+_DEFAULT_TRANSLATOR_MODEL = "openrouter/google/gemini-3.8-flash:low"
 _DEFAULT_GENERAL_MODEL = "opencode-go/muse-spark-1.3-contributor:low"
 _DEPRECATED_ROOT_KEYS = frozenset(
     {"language", "segment", "pipeline", "honorific", "punctuation", "paths"}
@@ -224,11 +224,11 @@ class PipelineConfig(BaseModel):
             },
             "balanced": {
                 "polish": False,
-                "single_segment_translation": True,
+                "single_segment_translation": False,
             },
             "quality": {
                 "polish": True,
-                "single_segment_translation": True,
+                "single_segment_translation": False,
             },
         }
         return cls.model_validate({**common, **profiles[quality]})

@@ -406,7 +406,7 @@ class TestBenchmarkIntegrationResumeContinuation(unittest.TestCase):
                 if operation == 'title.translate':
                     return routing_handler(messages, agent, operation, json_mode)
                 if agent == 'translator':
-                    return '译' * 300
+                    return json.dumps({'translations': []}) if json_mode else '正文译文'
                 return '分析译文'
             resumed = FakeClient(handler=fallback_handler)
             Application(config, client=resumed).run(str(source))
@@ -417,6 +417,8 @@ class TestBenchmarkIntegrationResumeContinuation(unittest.TestCase):
             resumed_requests = sum(call['operation'] in TRANSLATOR_OPERATIONS for call in resumed.calls)
             self.assertEqual(resumed_event['translate_call_count'], resumed_requests)
             self.assertEqual(resumed_event['translate_call_count'], 4)
+            store = RunStore(events_path.parent)
+            self.assertEqual(store.load_chapter(0).text_segments[-1].target, '正文译文')
 
     def test_translator_model_change_invalidates_translation_only(self):
         with tempfile.TemporaryDirectory() as directory:

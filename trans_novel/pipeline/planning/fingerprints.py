@@ -20,11 +20,8 @@ def translator_model_profile(config) -> str:
 
 
 def translation_model_profile(config) -> str:
-    """正文翻译模型候选；单段模式还消费标题分析模型。"""
-    roles = (
-        ("translator", "analyst") if config.pipeline.single_segment_translation else ("translator",)
-    )
-    return _role_profile(config, *roles)
+    """正文与独立标题翻译消费的模型候选。"""
+    return _role_profile(config, "translator", "analyst")
 
 
 def analyst_model_profile(config) -> str:

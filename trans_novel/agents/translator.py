@@ -1,7 +1,7 @@
 """翻译 Agent。
 
-balanced/quality 每次调用只发送一个待译段，并接收纯译文，从调用边界保证源段与译文
-一一对应。economy 保留批量翻译；批量协议失败时仍逐段兜底。
+正文按检查点内的连续段落批量翻译，标题单独翻译；批量协议失败时仍逐段兜底。
+内部单段模式保留独立请求与严格校验。
 
 模型路由按功能 Agent 选择：正文走 translator（operation=translate.batch 或
 translate.single）；operation 只作用量/调试归因，不参与路由。
@@ -209,7 +209,7 @@ class Translator(Agent):
 
         request_count = 0
         retries = self.config.pipeline.protocol_retry_limit
-        if self.config.pipeline.single_segment_translation:
+        if self.config.pipeline.single_segment_translation or kind == KIND_HEADING:
             for index in translated_indices:
                 target, count = self._translate_one_with_protocol_retry(
                     sources[index],

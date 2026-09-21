@@ -97,7 +97,10 @@ def init_config(
         console.print(str(error))
         raise typer.Exit(1) from None
     console.print(f"[bold green]已生成配置文件：{target}[/]")
-    console.print("下一步：设置 OPENCODE_API_KEY，然后运行 trans-novel translate <小说文件>。")
+    console.print(
+        "下一步：设置 OPENROUTER_API_KEY 和 OPENCODE_API_KEY，"
+        "然后运行 trans-novel translate <小说文件>。"
+    )
 
 
 def _translate_impl(

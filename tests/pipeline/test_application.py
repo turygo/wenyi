@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 import zipfile
@@ -51,7 +52,7 @@ _MINIMAL_PIPELINE_OPERATIONS = {
     "chapter.classify",
     "prescan.term_mine",
     "prescan.name_terms",
-    "translate.single",
+    "translate.batch",
     "title.translate",
 }
 
@@ -85,7 +86,6 @@ class TestMinimalPipeline(unittest.TestCase):
             )
             operations = {call["operation"] for call in client.calls}
             self.assertNotIn("polish.batch", operations)
-            self.assertTrue({"translate.batch"}.isdisjoint(operations))
             self.assertEqual(operations, _MINIMAL_PIPELINE_OPERATIONS)
             state = result["store"].load_state()
             for node_id in (
@@ -519,10 +519,9 @@ class TestTranslationContextRecovery(unittest.TestCase):
         targets = [f"这是第{i}段的译文。" for i in range(9)]
 
         def handler(messages, agent, operation, json_mode):
-            if operation == "translate.single":
-                user = messages[-1]["content"].rstrip()
-                index = next(i for i, source in enumerate(sources) if user.endswith(source))
-                return targets[index]
+            if operation == "translate.batch":
+                values = re.findall(r"^\[\d+\] (.*)$", messages[-1]["content"], re.M)
+                return json.dumps({"translations": [targets[sources.index(v)] for v in values]})
             return routing_handler(messages, agent, operation, json_mode)
 
         def document():
@@ -561,15 +560,14 @@ class TestTranslationContextRecovery(unittest.TestCase):
             baseline = [
                 call["messages"]
                 for call in baseline_client.calls
-                if call["operation"] == "translate.single"
+                if call["operation"] == "translate.batch"
             ]
             recovered = [
                 call["messages"]
                 for call in interrupted_client.calls + resumed_client.calls
-                if call["operation"] == "translate.single"
+                if call["operation"] == "translate.batch"
             ]
             self.assertEqual(recovered, baseline)
-            self.assertEqual(len(recovered), len(sources))
             self.assertIn(targets[0], recovered[1][-1]["content"])
             self.assertNotIn(targets[0], recovered[-1][-1]["content"])
             self.assertEqual(

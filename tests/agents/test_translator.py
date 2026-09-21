@@ -302,6 +302,7 @@ class TestTranslatorSingleSegmentContract(unittest.TestCase):
         config = Config.from_dict({"llm": fake_llm_dict(), "quality": "balanced"})
         config.source_lang = "en"
         config.pipeline.protocol_retry_limit = 1
+        config.pipeline.single_segment_translation = True
         return config
 
     def test_each_source_has_its_own_plain_text_call(self):
@@ -430,7 +431,7 @@ class TestTranslateNodeHeadingPrompt(unittest.TestCase):
         users = []
 
         def handler(messages, agent, operation, json_mode):
-            self.assertFalse(json_mode)
+            self.assertEqual(json_mode, operation != "translate.heading")
             self.assertEqual(agent, "analyst" if operation == "translate.heading" else "translator")
             users.append((operation, messages[-1]["content"]))
             user = messages[-1]["content"]
@@ -445,7 +446,7 @@ class TestTranslateNodeHeadingPrompt(unittest.TestCase):
             else:
                 self.assertIn("STYLE_MARKER", user)
                 self.assertIn("CONTEXT_MARKER", user)
-                return "正文译文"
+                return json.dumps({"translations": ["正文译文"]})
 
         client = FakeClient(handler=handler)
         node = self._node(client)
@@ -474,7 +475,7 @@ class TestTranslateNodeHeadingPrompt(unittest.TestCase):
         self.assertEqual(translated[1], 3)
         self.assertEqual(
             [operation for operation, _ in users],
-            ["translate.heading", "translate.heading", "translate.single"],
+            ["translate.heading", "translate.heading", "translate.batch"],
         )
 
     def test_heading_keeps_strict_length_rejection_and_retries(self):
@@ -506,6 +507,7 @@ class TestTranslateNodeHeadingPrompt(unittest.TestCase):
 
         client = FakeClient(handler=handler)
         node = self._node(client)
+        node.config.pipeline.single_segment_translation = True
         segments = [Segment(index=0, source="A paragraph.", kind=KIND_TEXT)]
         translated = translate_batch(
             node.translator,
@@ -517,6 +519,7 @@ class TestTranslateNodeHeadingPrompt(unittest.TestCase):
             start_index=0,
             chapter_title="Chapter",
             n_recent=6,
+            single_segment_translation=True,
         )
         self.assertEqual(translated[0], ["分析译文"])
         self.assertEqual(translated[1], 3)
@@ -535,6 +538,7 @@ class TestTranslateNodeHeadingPrompt(unittest.TestCase):
 
         client = FakeClient(handler=handler)
         translator = Translator(client, self._node(client).config)
+        translator.config.pipeline.single_segment_translation = True
 
         with self.assertRaises(AlignmentError):
             translator.translate_batch(

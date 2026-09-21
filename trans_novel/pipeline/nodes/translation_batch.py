@@ -54,7 +54,7 @@ def translate_batch(
     start_index: int,
     chapter_title: str,
     n_recent: int,
-    single_segment_translation: bool = True,
+    single_segment_translation: bool = False,
 ) -> tuple[list[object], int]:
     """Translate one ordinary batch, preserving per-heading prompt semantics."""
     for segment in batch:
@@ -64,43 +64,39 @@ def translate_batch(
             raise ValueError(f"EPUB source slot coverage mismatch: {segment.resource_href}")
     local_context = replace(context, recent_targets=list(context.recent_targets))
     try:
-        if single_segment_translation:
-            translated: list[str] = []
-            request_count = 0
-            for offset, segment in enumerate(batch, start_index):
-                result = translator.translate_batch(
-                    [segment.source],
-                    agent="analyst" if segment.kind == KIND_HEADING else "translator",
-                    operation=(
-                        "translate.heading" if segment.kind == KIND_HEADING else "translate.single"
-                    ),
-                    fallback_agent=None if segment.kind == KIND_HEADING else "analyst",
-                    glossary_terms=terms,
-                    style=style if segment.kind != KIND_HEADING else "",
-                    context=local_context.render(n_recent) if segment.kind != KIND_HEADING else "",
-                    source_context=(
-                        source_context_before(chapter_segments, offset)
-                        if segment.kind != KIND_HEADING
-                        else ""
-                    ),
-                    chapter_title=chapter_title if segment.kind != KIND_HEADING else "",
-                    kind=KIND_HEADING if segment.kind == KIND_HEADING else None,
-                )
-                translated.extend(result.translations)
-                local_context.add_targets(list(result.translations))
-                request_count += result.request_count
-        else:
+        translated: list[str] = []
+        request_count = 0
+        offset = 0
+        while offset < len(batch):
+            heading = batch[offset].kind == KIND_HEADING
+            end = offset + 1
+            if not heading and not single_segment_translation:
+                while end < len(batch) and batch[end].kind != KIND_HEADING:
+                    end += 1
             result = translator.translate_batch(
-                [s.source for s in batch],
-                agent="translator",
+                [segment.source for segment in batch[offset:end]],
+                agent="analyst" if heading else "translator",
+                operation=(
+                    "translate.heading"
+                    if heading
+                    else "translate.single"
+                    if single_segment_translation
+                    else "translate.batch"
+                ),
+                fallback_agent="analyst" if single_segment_translation and not heading else None,
                 glossary_terms=terms,
-                style=style,
-                context=local_context.render(n_recent),
-                source_context=source_context_before(chapter_segments, start_index),
-                chapter_title=chapter_title,
+                style="" if heading else style,
+                context="" if heading else local_context.render(n_recent),
+                source_context=(
+                    "" if heading else source_context_before(chapter_segments, start_index + offset)
+                ),
+                chapter_title="" if heading else chapter_title,
+                kind=KIND_HEADING if heading else None,
             )
-            translated = list(result.translations)
-            request_count = result.request_count
+            translated.extend(result.translations)
+            local_context.add_targets(list(result.translations))
+            request_count += result.request_count
+            offset = end
         return align_epub_translations(batch, translated), request_count
     except LLM_FALLBACK_ERRORS:
         return safe_batch_fallback(batch)

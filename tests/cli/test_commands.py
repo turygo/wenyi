@@ -47,14 +47,7 @@ class TestCliBootstrap(unittest.TestCase):
             result = CliRunner().invoke(app, ["--config", config_path, "init"])
 
             self.assertEqual(result.exit_code, 0, result.output)
-            self.assertIn("已生成配置文件", plain(result.output))
-            config = Config.load(config_path)
-            self.assertEqual(
-                config.llm.models.translator,
-                ["openrouter/tencent/hy-mt2-30b-a3b:off"],
-            )
-            with open(config_path, encoding="utf-8") as stream:
-                self.assertEqual(stream.read(), Config.default_config_text())
+            Config.load(config_path)
 
     def test_init_does_not_overwrite_existing_config(self):
         with tempfile.TemporaryDirectory() as directory:

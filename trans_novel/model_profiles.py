@@ -99,6 +99,12 @@ _MODEL_CAPABILITIES: dict[tuple[str, str], ModelCapabilities] = {
         supports_temperature=True,
         responses_api=True,
     ),
+    ("openrouter", "google/gemini-3.8-flash"): ModelCapabilities(
+        request_dialect=DIALECT_OPENROUTER,
+        reasoning_efforts=frozenset({"low", "medium", "high"}),
+        catalogued=True,
+        supports_temperature=True,
+    ),
     ("openrouter", "tencent/hy-mt2-30b-a3b"): ModelCapabilities(
         request_dialect=DIALECT_GENERIC,
         catalogued=True,

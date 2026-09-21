@@ -30,10 +30,11 @@ def _segments(*sources):
     return [Segment(index=index, source=source) for index, source in enumerate(sources)]
 
 
-def _translator(handler, *, quality="balanced"):
+def _translator(handler, *, quality="balanced", single=False):
     config = Config.from_dict({"llm": fake_llm_dict(), "quality": quality})
     config.source_lang = "en"
     config.pipeline.protocol_retry_limit = 1
+    config.pipeline.single_segment_translation = single
     return Translator(FakeClient(handler=handler), config)
 
 
@@ -52,11 +53,52 @@ class TestSourceWindow(unittest.TestCase):
         )
         self.assertEqual(source_context_before(_segments("NEW_CHAPTER"), 0), "")
 
+    def test_default_batches_stop_at_headings_and_keep_source_order(self):
+        for quality in ("balanced", "quality"):
+            with self.subTest(quality=quality):
+
+                def handler(messages, agent, operation, json_mode):
+                    user = messages[-1]["content"]
+                    if operation == "translate.heading":
+                        self.assertFalse(json_mode)
+                        self.assertEqual(agent, "analyst")
+                        self.assertNotIn("STYLE_MARKER", user)
+                        return "中间标题"
+                    self.assertTrue(json_mode)
+                    if "[0] ALPHA_SOURCE" in user:
+                        self.assertNotIn("GAMMA_SOURCE", user)
+                        return json.dumps({"translations": ["译甲", "译乙"]})
+                    self.assertIn("中间标题", user)
+                    self.assertIn("译乙", user)
+                    return json.dumps({"translations": ["译丙", "译丁"]})
+
+                translator = _translator(handler, quality=quality)
+                segments = _segments(
+                    "ALPHA_SOURCE", "BETA_SOURCE", "Middle Heading", "GAMMA_SOURCE", "DELTA_SOURCE"
+                )
+                segments[2].kind = KIND_HEADING
+                context = RollingContext(recent_targets=["COMMITTED_TARGET"])
+                targets, count = translate_batch(
+                    translator,
+                    segments,
+                    [],
+                    context,
+                    "STYLE_MARKER",
+                    chapter_segments=segments,
+                    start_index=0,
+                    chapter_title="Chapter",
+                    n_recent=2,
+                    single_segment_translation=translator.config.pipeline.single_segment_translation,
+                )
+                self.assertEqual(targets, ["译甲", "译乙", "中间标题", "译丙", "译丁"])
+                self.assertEqual(count, 3)
+                self.assertEqual(context.recent_targets, ["COMMITTED_TARGET"])
+
 
 class TestBatchHistory(unittest.TestCase):
     def test_each_request_uses_latest_local_target_and_preceding_source_only(self):
         responses = iter(["译甲", "译乙"])
-        translator = _translator(lambda *args: next(responses))
+        translator = _translator(lambda *args: next(responses), single=True)
         segments = _segments("PRECEDING_SOURCE", "CURRENT_ALPHA", "CURRENT_BETA", "FUTURE_SOURCE")
         context = RollingContext(recent_targets=["STALE_TARGET", "RECENT_TARGET"])
         targets, count = translate_batch(
@@ -69,6 +111,7 @@ class TestBatchHistory(unittest.TestCase):
             start_index=1,
             chapter_title="ORIGINAL_CHAPTER",
             n_recent=1,
+            single_segment_translation=True,
         )
         self.assertEqual((targets, count), (["译甲", "译乙"], 2))
         first, second = [call["messages"][-1]["content"] for call in translator.client.calls]
@@ -87,7 +130,11 @@ class TestBatchHistory(unittest.TestCase):
 
     def test_heading_is_isolated_but_accepted_target_enters_following_history(self):
         translator = _translator(
-            lambda m, a, o, j: "标题译文" if o == "translate.heading" else "正文译文"
+            lambda m, a, o, j: (
+                "标题译文"
+                if o == "translate.heading"
+                else json.dumps({"translations": ["正文译文"]})
+            )
         )
         segments = _segments("Original Heading", "Body paragraph")
         segments[0].kind = KIND_HEADING
@@ -111,7 +158,7 @@ class TestBatchHistory(unittest.TestCase):
 
     def test_later_protocol_failure_discards_partial_batch_history(self):
         responses = iter(["成功译文", "", "", "", ""])
-        translator = _translator(lambda *args: next(responses))
+        translator = _translator(lambda *args: next(responses), single=True)
         context = RollingContext(recent_targets=["COMMITTED_TARGET"])
         segments = _segments("Alpha", "Beta")
         targets, count = translate_batch(
@@ -124,6 +171,7 @@ class TestBatchHistory(unittest.TestCase):
             start_index=0,
             chapter_title="Chapter",
             n_recent=2,
+            single_segment_translation=True,
         )
         self.assertEqual((targets, count), (["Alpha", "Beta"], 0))
         self.assertEqual(context.recent_targets, ["COMMITTED_TARGET"])
