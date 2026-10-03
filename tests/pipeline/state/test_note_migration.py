@@ -18,17 +18,15 @@ from trans_novel.epub.slots import (
     normalized_target_text,
     slot_contract_digest,
 )
-from trans_novel.ingest import Chapter, Document, Segment, chapter_source_digest
+from trans_novel.ingest import Chapter, Document, Segment
 from trans_novel.ingest.epub.note_migration import reconcile_note_slots
 from trans_novel.ingest.epub.reader import read_epub
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline import Application
-from trans_novel.pipeline.composition import AgentBundle, RunContext
 from trans_novel.pipeline.composition.note_compatibility import (
     ensure_epub_note_compatibility,
 )
 from trans_novel.pipeline.contracts import GOAL_RUN_ALL, GOAL_TRANSLATE, ExecutionGoal
-from trans_novel.pipeline.planning.note_fingerprints import _canonical_note_fingerprints
 from trans_novel.pipeline.state import (
     IdentityMismatchError,
     RunIdentity,
@@ -363,7 +361,7 @@ class TestPureNoteMigration(unittest.TestCase):
 
 
 class TestApplicationNoteMigration(unittest.TestCase):
-    def test_current_policy_run_all_migrates_once_and_replays_without_client_calls(self):
+    def test_current_policy_note_metadata_refresh_preserves_rich_without_model_calls(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "book.epub"
             _write_note_epub(source)
@@ -375,98 +373,22 @@ class TestApplicationNoteMigration(unittest.TestCase):
                 str(source), out_path=str(Path(root) / "initial.epub")
             )
             store = result["store"]
-            self.assertEqual(config.source_lang, "auto")
-            saved_source_lang = store.load_state().identity.source_lang
-            self.assertNotIn(saved_source_lang, {"", "auto"})
-            current = read_epub(str(source), saved_source_lang, "zh")
-            before = [store.load_chapter(item.index) for item in store.load_state().chapters]
-            legacy = [chapter.model_copy(deep=True) for chapter in before]
-            relation = current.meta["epub_notes"]["markers"][0]
-            segment = next(
-                item
-                for item in legacy[0].segments
-                if item.resource_href == relation["resource_href"]
-                and tuple(relation["path"][: len(item.epub_state.block_path)])
-                == item.epub_state.block_path
+            state = store.load_state()
+            before = [store.load_chapter(item.index).to_dict() for item in state.chapters]
+            state.meta.pop("epub_note_slots_version")
+            store.save_state(state)
+            offline = FakeClient(
+                handler=lambda *_args: self.fail("metadata refresh called a model")
             )
-            state = segment.epub_state
-            relative_anchor = tuple(relation["path"][len(state.block_path) :])
-            old_slots = [
-                state.slots[0].model_copy(update={"id": "legacy:s1"}),
-                EpubTextSlot(
-                    id="legacy:s2",
-                    element_path=(*relative_anchor, 0),
-                    field="text",
-                    source_value=relation["label"],
-                    target_value="我",
-                ),
-                *[
-                    slot.model_copy(update={"id": f"legacy:s{index}"})
-                    for index, slot in enumerate(state.slots[1:], 3)
-                ],
-            ]
-            segment.epub_state = state.model_copy(
-                update={
-                    "slots": old_slots,
-                    "slot_contract_sha256": slot_contract_digest(old_slots),
-                }
-            )
-            segment.source = normalized_source_text(old_slots)
-            segment.target = normalized_target_text(old_slots)
-            if legacy[0].processing is not None:
-                legacy[0].processing = legacy[0].processing.model_copy(
-                    update={"source_sha256": chapter_source_digest(legacy[0])}
-                )
-            context = RunContext(
-                store=store,
-                config=config,
-                doc=current,
-                agent_builder=lambda src, tgt: AgentBundle(first, config, src=src, tgt=tgt),
-                output=config.output.model_copy(deep=True),
-            )
-            try:
-                legacy_fingerprints = _canonical_note_fingerprints(config, store, context, legacy)
-                current_fingerprints = _canonical_note_fingerprints(config, store, context, before)
-            finally:
-                context.close()
-            manifest = store.load_state()
-            for key, old_fingerprint in legacy_fingerprints.items():
-                new_fingerprint = current_fingerprints.get(key)
-                if old_fingerprint == new_fingerprint:
-                    continue
-                self.assertEqual(manifest.nodes[key].input_fingerprint, new_fingerprint)
-                manifest.nodes[key].input_fingerprint = old_fingerprint
-            manifest.meta.pop("epub_note_slots_version")
-            manifest.chapters[0].processing = legacy[0].processing
-            for chapter in legacy:
-                store.save_chapter(chapter)
-            store.save_state(manifest)
-            paid = [segment.target for segment in legacy[0].segments]
-
             for attempt in range(2):
-                offline = FakeClient(
-                    handler=lambda *_args: self.fail(
-                        "note migration and compatible replay must stay offline"
-                    )
+                Application(config, client=offline).assemble(
+                    store, str(source), out_path=str(Path(root) / f"refreshed-{attempt}.epub")
                 )
-                replay = Application(config, client=offline).run_all(
-                    str(source), out_path=str(Path(root) / f"replay-{attempt}.epub")
-                )
-                store = replay["store"]
-                self.assertEqual(offline.calls, [])
+                self.assertEqual(store.load_state().meta["epub_note_slots_version"], 1)
                 self.assertEqual(
-                    [segment.target for segment in store.load_chapter(legacy[0].index).segments],
-                    paid,
+                    [store.load_chapter(item.index).to_dict() for item in state.chapters], before
                 )
-            self.assertEqual(store.load_manifest()["meta"]["epub_note_slots_version"], 1)
-            self.assertIn(
-                "我",
-                "".join(
-                    slot.target_value or ""
-                    for segment in store.load_chapter(legacy[0].index).segments
-                    for slot in segment.epub_state.slots
-                ),
-            )
+            self.assertEqual(offline.calls, [])
 
     def test_invalid_entry_conditions_do_not_write_or_call_clients(self):
         cases = (

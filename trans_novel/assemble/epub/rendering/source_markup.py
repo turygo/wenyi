@@ -21,11 +21,11 @@ from trans_novel.assemble.epub.rendering.bilingual import (
     ruby_base_count,
     segment_needs_source,
 )
+from trans_novel.assemble.epub.rendering.richtext import render_rich_block, rich_block_segments
 from trans_novel.assemble.epub.rendering.source_dom import (
     bilingual_source_copy,
     effective_language,
     indexed_toc_entries,
-    normalize_translated_italics,
     parse_source_markup,
     resolve_element_path,
     rewrite_markup_languages,
@@ -395,6 +395,7 @@ def add_bilingual_sources(
     source_blocks: dict[tuple[int, ...], etree._Element] | None = None,
     block_refs: dict[tuple[int, ...], etree._Element] | None = None,
     source_refs: list[_SourceRef] | None = None,
+    rich_paths: Collection[tuple[int, ...]] = (),
 ) -> int:
     grouped = _group_bilingual_segments(segments)
     added = 0
@@ -418,7 +419,7 @@ def add_bilingual_sources(
             isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1].lower() == "br"
             for child in (original if original is not None else block)
         )
-        if direct_br:
+        if direct_br and block_path not in rich_paths:
             added += _add_direct_sources(
                 root,
                 block,
@@ -432,7 +433,7 @@ def add_bilingual_sources(
             added += _add_plain_sources(
                 block,
                 original,
-                block_segments,
+                block_segments[:1] if block_path in rich_paths else block_segments,
                 order=order,
                 source_lang=source_lang,
                 source_refs=source_refs,
@@ -562,6 +563,25 @@ def _theme_nodes(
     return note_nodes, layout_nodes
 
 
+def _checked_source_block(root, segment, href, actual_digest):
+    state = segment.epub_state
+    if state is None:
+        raise ValueError(f"EPUB segment missing slot state: {href}")
+    if state.resource_href != href or state.resource_sha256 != actual_digest:
+        raise ValueError(f"EPUB segment resource contract mismatch: {href}")
+    if state.slot_contract_sha256 != slot_contract_digest(state.slots):
+        raise ValueError(f"EPUB slot contract digest mismatch: {href}")
+    block = resolve_element_path(root, state.block_path)
+    fingerprint = hashlib.sha256(
+        etree.tostring(block, encoding="utf-8", with_tail=False)
+    ).hexdigest()
+    if fingerprint != state.block_fingerprint:
+        raise ValueError(f"EPUB block fingerprint mismatch: {href}")
+    if segment.source != normalized_source_text(state.slots):
+        raise ValueError(f"EPUB segment source derivation mismatch: {href}")
+    return state, block
+
+
 def render_source_resource(
     data: bytes,
     href: str,
@@ -583,7 +603,7 @@ def render_source_resource(
         raise ValueError(f"EPUB resource digest mismatch: {href}")
     tree, mode = parse_source_markup(data, expected_mode)
     root = tree.getroot()
-    segments = normalize_translated_italics(root, segments, target_lang)
+    rich_groups = rich_block_segments(segments)
     note_nodes, layout_nodes = _theme_nodes(
         root,
         note_source_paths,
@@ -597,14 +617,7 @@ def render_source_resource(
     source_languages: dict[tuple[int, ...], str | None] = {}
     source_refs: list[_SourceRef] = []
     for segment in segments:
-        state = segment.epub_state
-        if state is None:
-            raise ValueError(f"EPUB segment missing slot state: {href}")
-        if state.resource_href != href or state.resource_sha256 != actual_digest:
-            raise ValueError(f"EPUB segment resource contract mismatch: {href}")
-        if state.slot_contract_sha256 != slot_contract_digest(state.slots):
-            raise ValueError(f"EPUB slot contract digest mismatch: {href}")
-        block = resolve_element_path(root, state.block_path)
+        state, block = _checked_source_block(root, segment, href, actual_digest)
         block_refs.setdefault(state.block_path, block)
         source_languages.setdefault(
             state.block_path, effective_language(block, source_lang or None)
@@ -612,21 +625,15 @@ def render_source_resource(
         preserve_source = segment_preserves_source(segment)
         if (bilingual or preserve_source) and state.block_path not in source_blocks:
             source_blocks[state.block_path] = deepcopy(block)
-        expected_fingerprint = hashlib.sha256(
-            etree.tostring(block, encoding="utf-8", with_tail=False)
-        ).hexdigest()
-        if expected_fingerprint != state.block_fingerprint:
-            raise ValueError(f"EPUB block fingerprint mismatch: {href}")
-        if segment.source != normalized_source_text(state.slots):
-            raise ValueError(f"EPUB segment source derivation mismatch: {href}")
-        assigned = all(slot.target_value is not None for slot in state.slots)
+        rich = state.block_path in rich_groups
+        assigned = rich or all(slot.target_value is not None for slot in state.slots)
         title_id = canonical_title_id(segment)
         if title_id is not None and (segment.target is None or not assigned):
             raise ValueError(f"EPUB canonical title target missing: {href}")
         if segment.target is None:
             if any(slot.target_value is not None for slot in state.slots):
                 raise ValueError(f"EPUB segment target derivation mismatch: {href}")
-        elif not assigned or segment.target != normalized_target_text(state.slots):
+        elif not assigned or (not rich and segment.target != normalized_target_text(state.slots)):
             raise ValueError(f"EPUB segment target derivation mismatch: {href}")
         for slot in state.slots:
             owner = resolve_element_path(block, slot.element_path)
@@ -640,12 +647,20 @@ def render_source_resource(
                 if slot.target_value is not None
                 else slot.source_value
             )
-            writes.append((owner, slot.field, replacement))
+            if not rich:
+                writes.append((owner, slot.field, replacement))
     for owner, field, replacement in writes:
         if field == "text":
             owner.text = replacement
         else:
             owner.tail = replacement
+    replacements: dict[etree._Element, etree._Element] = {}
+    for path, items in rich_groups.items():
+        replacements.update(render_rich_block(block_refs[path], items))
+    note_nodes = tuple((path, replacements.get(node, node)) for path, node in note_nodes)
+    layout_nodes = tuple(
+        (path, replacements.get(node, node), digest) for path, node, digest in layout_nodes
+    )
     _apply_declared_languages(
         root,
         segments,
@@ -664,6 +679,7 @@ def render_source_resource(
             source_blocks=source_blocks,
             block_refs=block_refs,
             source_refs=source_refs if scope_sink is not None else None,
+            rich_paths=rich_groups,
         )
     if scope_sink is not None:
         scope_sink[href] = _theme_scope(

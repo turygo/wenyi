@@ -7,9 +7,10 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from tests.fixtures.fake_llm import fake_llm_dict
+from tests.fixtures.fake_llm import fake_llm_dict, routing_handler
+from tests.fixtures.richtext import synthetic_rich_target
+from trans_novel.agents.richtext_annotator import RichTextAnnotator
 from trans_novel.config import Config
-from trans_novel.epub.slots import distribute_slot_translation, target_slot_transport
 from trans_novel.ingest import CANONICAL_TITLE_ID_META
 from trans_novel.ingest.epub.reader import read_epub
 from trans_novel.llm import FakeClient
@@ -235,7 +236,7 @@ class TestMirroredToc(unittest.TestCase):
                 for segment in chapter.segments:
                     if "mirrored_toc_entry_id" in segment.meta:
                         segment.assign_translation(
-                            distribute_slot_translation(segment.epub_state, "ordinary translation")
+                            synthetic_rich_target(segment.epub_state, "ordinary translation")
                         )
                 store.save_chapter(chapter)
                 store.set_chapter_status(chapter.index, "done")
@@ -272,6 +273,12 @@ class TestMirroredToc(unittest.TestCase):
                 src="en",
                 tgt="zh",
                 glossary=SimpleNamespace(all_terms=list),
+                annotator=RichTextAnnotator(
+                    FakeClient(handler=routing_handler),
+                    Config.from_dict({"llm": fake_llm_dict()}),
+                    src="en",
+                    tgt="zh",
+                ),
             ).execute(
                 NodeRequest(
                     store=store,
@@ -307,12 +314,7 @@ class TestMirroredToc(unittest.TestCase):
                         ["O/toc.ncx:1", "O/toc.ncx:2", "O/toc.ncx:3"],
                     )
                     self.assertEqual(
-                        [
-                            "".join(
-                                item["value"] for item in target_slot_transport(segment.epub_state)
-                            )
-                            for segment in segments
-                        ],
+                        [segment.rich_target.text for segment in segments],
                         titles,
                     )
 

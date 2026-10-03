@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from trans_novel.epub.slots import distribute_slot_translation, target_slot_text
+from trans_novel.epub.richtext import InlineRun, RichTarget
+from trans_novel.epub.richtext_edits import apply_rich_edits, replace_rich_terms
 from trans_novel.glossary.audit import (
     CJK_SPACE_GAP_RE,
     apply_unifications,
@@ -15,6 +16,7 @@ from trans_novel.glossary.audit import (
 )
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest import segment_preserves_source
+from trans_novel.postprocess.text_edits import TextEdit, apply_text_edits
 
 
 def target_corpus(store) -> str:
@@ -37,10 +39,13 @@ def rewrite_targets(store, glossary: GlossaryStore, replace_map: dict[str, str])
     def apply(text: str, executed: list[dict[str, str]]) -> str:
         if not text:
             return text
+        current = RichTarget(runs=[InlineRun(text=text)])
         for variant in variants_sorted:
-            if variant in text:
-                text = text.replace(variant, replace_map[variant])
+            before = current.text
+            current, _conflicts = replace_rich_terms(current, {variant: replace_map[variant]})
+            if current.text != before:
                 executed.append({"variant": variant, "canonical": replace_map[variant]})
+        text = current.text
         return text
 
     manifest = store.load_manifest()
@@ -55,14 +60,38 @@ def rewrite_targets(store, glossary: GlossaryStore, replace_map: dict[str, str])
             if segment.target is None:
                 continue
             executed: list[dict[str, str]] = []
-            if segment.epub_state is not None:
-                old = target_slot_text(segment.epub_state.slots)
-                new = apply(old, executed)
-                if new == old:
+            old = segment.target
+            if segment.rich_target is not None:
+                candidate = segment.rich_target
+                for variant in variants_sorted:
+                    before = candidate.text
+                    candidate, conflicts = replace_rich_terms(
+                        candidate,
+                        {variant: replace_map[variant]},
+                        source=segment.epub_state.rich_source,
+                    )
+                    if conflicts:
+                        store.log_event(
+                            "glossary_rewrite_skipped",
+                            chapter=chapter["index"],
+                            index=index,
+                            conflicts=conflicts,
+                        )
+                    if candidate.text != before:
+                        executed.append({"variant": variant, "canonical": replace_map[variant]})
+                if candidate.text == old:
                     continue
-                segment.assign_translation(distribute_slot_translation(segment.epub_state, new))
+                segment.assign_translation(candidate)
+            elif segment.epub_state is not None:
+                if any(variant in old for variant in variants_sorted):
+                    store.log_event(
+                        "glossary_rewrite_skipped",
+                        chapter=chapter["index"],
+                        index=index,
+                        conflicts=["EPUB target needs trusted rich annotation"],
+                    )
+                continue
             else:
-                old = segment.target
                 new = apply(old, executed)
                 if new == old:
                     continue
@@ -114,111 +143,120 @@ def rewrite_targets(store, glossary: GlossaryStore, replace_map: dict[str, str])
     return changed
 
 
+def _assign_local_edits(segment, edits: list[TextEdit]) -> list[str]:
+    """保留安全命中，返回未执行编辑的明确原因。"""
+    if segment.rich_target is None:
+        if segment.epub_state is not None:
+            return ["EPUB target needs trusted rich annotation"]
+        target = RichTarget(runs=[InlineRun(text=segment.target or "")])
+        safe = []
+        conflicts = []
+        for edit in edits:
+            try:
+                apply_rich_edits(target, [edit])
+            except ValueError as exc:
+                conflicts.append(f"{edit.start}:{edit.end}: {exc}")
+            else:
+                safe.append(edit)
+        segment.assign_translation(apply_text_edits(segment.target or "", safe))
+        return conflicts
+    safe: list[TextEdit] = []
+    conflicts: list[str] = []
+    for edit in edits:
+        try:
+            apply_rich_edits(segment.rich_target, [edit], source=segment.epub_state.rich_source)
+        except ValueError as exc:
+            conflicts.append(f"{edit.start}:{edit.end}: {exc}")
+        else:
+            safe.append(edit)
+    if safe:
+        segment.assign_translation(
+            apply_rich_edits(segment.rich_target, safe, source=segment.epub_state.rich_source)
+        )
+    return conflicts
+
+
+def _latin_edits(text: str, pattern: re.Pattern[str], replacement: str) -> list[TextEdit]:
+    """仅替换中文上下文附近的完整拉丁术语。"""
+    return [
+        TextEdit(match.start(), match.end(), replacement)
+        for match in pattern.finditer(text)
+        if has_cjk(text[max(0, match.start() - 12) : match.start()])
+        or has_cjk(text[match.end() : match.end() + 12])
+    ]
+
+
 def fix_latin_residue(store, glossary: GlossaryStore) -> list[dict[str, Any]]:
-    """确定性修复锁定术语的拉丁 source 残留。"""
+    """确定性修复锁定术语残留，局部保留格式并记录跨格式冲突。"""
     terms = [term for term in glossary.all_terms() if term.locked and is_latin_source(term.source)]
-    if not terms:
-        return []
-    compiled = [(term, re.compile(r"\b" + re.escape(term.source) + r"\b")) for term in terms]
-    applied: list[dict[str, Any]] = []
+    compiled = [
+        (term, re.compile(r"(?<![A-Za-z0-9_])" + re.escape(term.source) + r"(?![A-Za-z0-9_])"))
+        for term in terms
+    ]
     touched_sources: set[str] = set()
-    manifest = store.load_manifest()
-    for chapter in manifest["chapters"]:
+    for chapter in store.load_manifest()["chapters"] if terms else []:
         loaded = store.load_chapter(chapter["index"])
         if loaded.preserve_source:
             continue
-        dirty = False
         entries: list[dict[str, Any]] = []
         for index, segment in enumerate(loaded.segments):
+            if segment_preserves_source(segment):
+                continue
             for term, pattern in compiled:
-                if segment.epub_state is not None:
-                    full_target = target_slot_text(segment.epub_state.slots)
-                    if not has_cjk(full_target) or term.target in full_target:
-                        continue
-                    matches = list(pattern.finditer(full_target))
-                    if not matches:
-                        continue
-                    pieces: list[str] = []
-                    last = 0
-                    replaced_any = False
-                    for match in matches:
-                        left = full_target[max(0, match.start() - 12) : match.start()]
-                        right = full_target[match.end() : match.end() + 12]
-                        if not (has_cjk(left) or has_cjk(right)):
-                            continue
-                        pieces.extend((full_target[last : match.start()], term.target))
-                        last = match.end()
-                        replaced_any = True
-                    if not replaced_any:
-                        continue
-                    pieces.append(full_target[last:])
-                    new = CJK_SPACE_GAP_RE.sub("", "".join(pieces))
-                    old = segment.target
-                    segment.assign_translation(distribute_slot_translation(segment.epub_state, new))
-                    dirty = True
-                    touched_sources.add(term.source)
-                    entries.append(
-                        {
-                            "chapter": chapter["index"],
-                            "index": index,
-                            "before": old,
-                            "after": segment.target,
-                            "term_source": term.source,
-                            "term_target": term.target,
-                        }
+                old = segment.target
+                if not old or not has_cjk(old) or term.target in old:
+                    continue
+                edits = _latin_edits(old, pattern, term.target)
+                if not edits:
+                    continue
+                conflicts = _assign_local_edits(segment, edits)
+                if conflicts:
+                    store.log_event(
+                        "glossary_latin_residue_skipped",
+                        chapter=chapter["index"],
+                        index=index,
+                        term_source=term.source,
+                        conflicts=conflicts,
                     )
+                if segment.target == old:
                     continue
-                text = segment.target
-                if not text or not has_cjk(text) or term.target in text:
-                    continue
-                matches = list(pattern.finditer(text))
-                if not matches:
-                    continue
-                pieces = []
-                last = 0
-                replaced = False
-                for match in matches:
-                    left = text[max(0, match.start() - 12) : match.start()]
-                    right = text[match.end() : match.end() + 12]
-                    if not (has_cjk(left) or has_cjk(right)):
-                        continue
-                    pieces.append(text[last : match.start()])
-                    pieces.append(term.target)
-                    last = match.end()
-                    replaced = True
-                if not replaced:
-                    continue
-                pieces.append(text[last:])
-                new = CJK_SPACE_GAP_RE.sub("", "".join(pieces))
-                old = text
-                segment.assign_translation(new)
-                dirty = True
+                spaces = [
+                    TextEdit(match.start(), match.end(), "")
+                    for match in CJK_SPACE_GAP_RE.finditer(segment.target or "")
+                ]
+                conflicts = _assign_local_edits(segment, spaces) if spaces else []
+                if conflicts:
+                    store.log_event(
+                        "glossary_whitespace_skipped",
+                        chapter=chapter["index"],
+                        index=index,
+                        conflicts=conflicts,
+                    )
                 touched_sources.add(term.source)
                 entries.append(
                     {
                         "chapter": chapter["index"],
                         "index": index,
                         "before": old,
-                        "after": new,
+                        "after": segment.target,
                         "term_source": term.source,
                         "term_target": term.target,
                     }
                 )
-        if dirty:
+        if entries:
             store.save_chapter(loaded)
             for entry in entries:
                 store.log_event("glossary_latin_residue_fixed", **entry)
-    for term in terms:
-        if term.source in touched_sources:
-            applied.append(
-                {
-                    "source": term.source,
-                    "canonical": term.target,
-                    "variants": [term.source],
-                    "reason": "锁定术语拉丁残留替换",
-                }
-            )
-    return applied
+    return [
+        {
+            "source": term.source,
+            "canonical": term.target,
+            "variants": [term.source],
+            "reason": "锁定术语拉丁残留替换",
+        }
+        for term in terms
+        if term.source in touched_sources
+    ]
 
 
 def audit_glossary(store, glossary: GlossaryStore, auditor) -> list[dict[str, Any]]:

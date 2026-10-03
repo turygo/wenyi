@@ -35,9 +35,37 @@ def _numbered_values(text: str) -> list[str]:
     return re.findall(r"^\[\d+\]\s*(.*)$", text, re.M)
 
 
+def _rich_annotation_response(user: str) -> str:
+    request = json.loads(user)
+    return json.dumps(
+        {
+            "annotated": [
+                {
+                    "id": item["id"],
+                    "runs": [
+                        {
+                            "text": item["target"],
+                            "marks": [
+                                mark["id"]
+                                for mark in item["source"]["marks"]
+                                if mark["kind"] != "decoration"
+                            ],
+                        },
+                        *[{"atom": atom["id"]} for atom in item["source"]["atoms"]],
+                    ],
+                }
+                for item in request["segments"]
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
 def routing_handler(messages, agent, operation, json_mode):
     system = messages[0]["content"]
     user = messages[-1]["content"]
+    if operation == "richtext.annotate":
+        return _rich_annotation_response(user)
     if operation == "chapter.classify":
         request = json.loads(user)
         return json.dumps(

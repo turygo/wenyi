@@ -10,7 +10,7 @@ from typing import Literal
 from trans_novel.assemble.epub.rendering.theme.contracts import ThemeBundle, ThemeError
 
 _POLICY_VERSION = "epub-theme-v2"
-_NOTE_PRESENTATION_POLICY_VERSION = "epub-note-marker-v1"
+_NOTE_PRESENTATION_POLICY_VERSION = "epub-note-marker-v2"
 _OUTPUT_POLICY_VERSION = 2
 _MAX_ASSET_BYTES = 256 * 1024
 _BUILTINS = {

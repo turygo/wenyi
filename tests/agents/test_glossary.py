@@ -12,6 +12,7 @@ from trans_novel.agents.analyzer import Analyzer
 from trans_novel.agents.glossary_auditor import GlossaryAuditor
 from trans_novel.agents.glossary_extractor import GlossaryExtractor
 from trans_novel.config import Config
+from trans_novel.epub.richtext import InlineMark, InlineRun, RichSource, RichTarget
 from trans_novel.epub.slots import EpubSegmentState, EpubTextSlot
 from trans_novel.glossary.audit import find_candidates
 from trans_novel.glossary.store import TYPE_PERSON, GlossaryStore, GlossaryTerm
@@ -27,7 +28,9 @@ from trans_novel.pipeline.quality import (
 from trans_novel.pipeline.state import RollingContext, RunStore
 
 
-def _epub_segment(index: int, source_parts: list[str], target_parts: list[str]) -> Segment:
+def _epub_segment(
+    index: int, source_parts: list[str], target_parts: list[str], *, contexts=None
+) -> Segment:
     slots = [
         EpubTextSlot(
             id=f"slot-{index}-{slot_index}",
@@ -40,6 +43,18 @@ def _epub_segment(index: int, source_parts: list[str], target_parts: list[str]) 
             zip(source_parts, target_parts, strict=True)
         )
     ]
+    contexts = contexts or [()] * len(source_parts)
+    mark_ids = {mark for context in contexts for mark in context}
+    rich_source = RichSource(
+        marks=[
+            InlineMark(id=mark, path=(i,), tag="span", source_text="source")
+            for i, mark in enumerate(sorted(mark_ids))
+        ],
+        runs=[
+            InlineRun(text=part, marks=marks, slot_id=slot.id)
+            for part, marks, slot in zip(source_parts, contexts, slots, strict=True)
+        ],
+    )
     return Segment(
         index=index,
         source="".join(source_parts),
@@ -53,6 +68,13 @@ def _epub_segment(index: int, source_parts: list[str], target_parts: list[str]) 
             parse_mode="xml",
             slots=slots,
             slot_contract_sha256="contract",
+            rich_source=rich_source,
+        ),
+        rich_target=RichTarget(
+            runs=[
+                InlineRun(text=part, marks=marks)
+                for part, marks in zip(target_parts, contexts, strict=True)
+            ]
         ),
     )
 
@@ -246,7 +268,7 @@ class TestExtractor(unittest.TestCase):
 
 
 class TestEpubGlossaryRewrites(unittest.TestCase):
-    def test_variant_rewrite_updates_each_slot_and_derived_target(self):
+    def test_variant_rewrite_updates_rich_target_without_reallocating_source_slots(self):
         with tempfile.TemporaryDirectory() as directory:
             store = RunStore(os.path.join(directory, "run"))
             store.save_manifest({"fmt": "text", "chapters": [{"index": 0}]})
@@ -260,7 +282,7 @@ class TestEpubGlossaryRewrites(unittest.TestCase):
             self.assertEqual(saved.target, "新称")
             self.assertEqual(
                 [slot.target_value for slot in saved.epub_state.slots],
-                ["新", "称"],
+                ["旧", "称"],
             )
 
     def test_variant_rewrite_matches_term_split_across_slots(self):
@@ -278,11 +300,25 @@ class TestEpubGlossaryRewrites(unittest.TestCase):
             self.assertEqual(saved.target, "好词")
             self.assertEqual(
                 [slot.target_value for slot in saved.epub_state.slots],
-                ["好", "词"],
+                ["坏", "词"],
             )
             glossary.close()
 
-    def test_latin_residue_rewrite_updates_only_matching_slot(self):
+    def test_variant_crossing_distinct_contexts_is_skipped_and_logged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RunStore(os.path.join(directory, "run"))
+            store.save_manifest({"fmt": "text", "chapters": [{"index": 0}]})
+            segment = _epub_segment(0, ["甲", "乙"], ["坏", "词"], contexts=[("m",), ()])
+            store.save_chapter(Chapter(index=0, segments=[segment]))
+            glossary = GlossaryStore(store.glossary_path)
+            self.addCleanup(glossary.close)
+            self.assertEqual(rewrite_targets(store, glossary, {"坏词": "好词"}), 0)
+            self.assertEqual(store.load_chapter(0).segments[0].target, "坏词")
+            with open(store.event_log_path, encoding="utf-8") as stream:
+                events = [json.loads(line) for line in stream]
+            self.assertTrue(any(event["event"] == "glossary_rewrite_skipped" for event in events))
+
+    def test_latin_residue_rewrite_updates_target_without_reallocating_slots(self):
         with tempfile.TemporaryDirectory() as directory:
             store = RunStore(os.path.join(directory, "run"))
             store.save_manifest({"fmt": "text", "chapters": [{"index": 0}]})
@@ -310,7 +346,7 @@ class TestEpubGlossaryRewrites(unittest.TestCase):
             self.assertEqual(saved.target, "他说他说三星是巨头。")
             self.assertEqual(
                 [slot.target_value for slot in saved.epub_state.slots],
-                ["他", "说他说三星是巨头。"],
+                ["他说 ", "他说 Samsung 是巨头。"],
             )
             glossary.close()
 

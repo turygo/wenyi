@@ -19,6 +19,7 @@ from trans_novel.llm.usage_persistence import UsagePersistence
 from trans_novel.pipeline.application_notes import ensure_document_notes, ensure_service_notes
 from trans_novel.pipeline.composition import AgentBundle, RunContext, build_node_factory
 from trans_novel.pipeline.composition.output import load_effective_output, save_effective_output
+from trans_novel.pipeline.composition.reannotation import ensure_current_policy, reannotate_existing
 from trans_novel.pipeline.contracts import (
     GOAL_PREPARE,
     GOAL_RUN_ALL,
@@ -58,12 +59,10 @@ from trans_novel.pipeline.state import (
     NODE_TRANSLATE,
     SCOPE_BOOK,
     SCOPE_CHAPTER,
-    IdentityMismatchError,
     RunStore,
     normalize_lang_code,
     slugify,
 )
-from trans_novel.pipeline.state.models import TRANSLATION_POLICY_VERSION
 
 # 注册的全部内置节点。
 _NODE_SPECS = (
@@ -242,16 +241,6 @@ def _setup_rendering(config: Config, shared: RunContext, input_path: str, progre
     )
 
 
-def _ensure_current_policy(store: RunStore) -> None:
-    if (
-        store.exists()
-        and store.load_state().identity.translation_policy_version != TRANSLATION_POLICY_VERSION
-    ):
-        raise IdentityMismatchError(
-            "翻译策略版本不一致；请创建新的状态目录重新翻译，原有结果保持不变。"
-        )
-
-
 def _run_service_goal(
     application,
     store: RunStore,
@@ -261,7 +250,7 @@ def _run_service_goal(
     output=None,
     progress: ProgressFn | None = None,
 ) -> RunResult:
-    _ensure_current_policy(store)
+    ensure_current_policy(store)
     ensure_service_notes(application, store, goal, input_path, output)
     if "layout" in goal.phases and len(goal.phases) > 1:
         layout_goal = ExecutionGoal(
@@ -417,7 +406,7 @@ class Application:
     ) -> tuple[RunResult, RunStore]:
         run_dir = os.path.join(self.config.state_dir, slugify(doc.title))
         store = RunStore(run_dir)
-        _ensure_current_policy(store)
+        ensure_current_policy(store)
         original_goal = goal
         shared = RunContext(
             store=store,
@@ -692,6 +681,12 @@ class Application:
             progress=progress,
         )
         return result.artifact("assemble", "outputs", [])
+
+    def reannotate(
+        self, store: RunStore, input_path: str, *, state_copy: str, progress=None
+    ) -> RunStore:
+        """在独立副本中标注既有译文格式，原状态和文字保持不变。"""
+        return reannotate_existing(self, store, input_path, state_copy, progress=progress)
 
     def glossary_audit(self, store: RunStore) -> list[dict]:
         with store.lock():

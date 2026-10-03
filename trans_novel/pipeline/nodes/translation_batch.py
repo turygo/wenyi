@@ -4,34 +4,67 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from trans_novel.epub.slots import (
-    distribute_slot_translation,
-    normalized_source_text,
-    source_passthrough_transport,
+from trans_novel.epub.richtext_edits import normalize_rich_target
+from trans_novel.epub.slots import normalized_source_text, source_passthrough_transport
+from trans_novel.ingest.models import (
+    KIND_HEADING,
+    InlineRun,
+    RichTarget,
+    Segment,
+    validate_rich_target,
 )
-from trans_novel.ingest.models import KIND_HEADING, Segment
 from trans_novel.llm.errors import LLM_FALLBACK_ERRORS
 from trans_novel.pipeline.nodes.common import source_context_before
 from trans_novel.pipeline.nodes.glossary import extract_and_store, store_extracted_terms
 from trans_novel.pipeline.state import RollingContext
-from trans_novel.postprocess.punct import normalize_heading_numbering
+from trans_novel.postprocess.punct import normalize_heading_numbering, normalize_zh
 
 
-def align_epub_translations(segments, translations: list[str]) -> list[object]:
-    """Distribute complete translations across EPUB slots deterministically."""
+def align_epub_translations(segments, translations: list[str], *, annotator=None) -> list[object]:
+    """按语义标注中文范围，保留未修改的既有译文契约。"""
+    return _align_epub_translations(segments, translations, annotator=annotator)[0]
+
+
+def _align_epub_translations(segments, translations: list[str], *, annotator=None):
     result: list[object] = list(translations)
+    pending = []
+    sources = []
+    targets = []
     for index, (segment, translation) in enumerate(zip(segments, translations, strict=True)):
         if segment.epub_state is None:
             continue
         complete = (
             normalize_heading_numbering(translation) if segment.kind == "heading" else translation
         )
-        result[index] = (
-            source_passthrough_transport(segment.epub_state)
-            if complete == segment.source
-            else distribute_slot_translation(segment.epub_state, complete)
-        )
-    return result
+        if segment.rich_target is not None and complete == segment.rich_target.text:
+            result[index] = segment.rich_target.model_copy(deep=True)
+            continue
+        if complete == segment.source:
+            result[index] = source_passthrough_transport(segment.epub_state)
+            continue
+        source = segment.epub_state.rich_source
+        if source is None:
+            raise ValueError("EPUB translation requires a rich source inventory")
+        if not source.marks and not source.atoms:
+            result[index] = RichTarget(runs=[InlineRun(text=complete)])
+            continue
+        if annotator is None:
+            raise ValueError("formatted EPUB translation requires a rich text annotator")
+        pending.append(index)
+        sources.append(source)
+        targets.append(complete)
+    count = 0
+    if pending:
+        annotated = annotator.annotate_batch(sources, targets)
+        if len(annotated.targets) != len(pending):
+            raise ValueError("rich annotation batch count mismatch")
+        for index, source, expected, target in zip(
+            pending, sources, targets, annotated.targets, strict=True
+        ):
+            validate_rich_target(source, target, expected_text=expected)
+            result[index] = target
+        count = annotated.request_count
+    return result, count
 
 
 def safe_batch_fallback(batch) -> tuple[list[object], int]:
@@ -55,6 +88,8 @@ def translate_batch(
     chapter_title: str,
     n_recent: int,
     single_segment_translation: bool = False,
+    annotator=None,
+    punctuation_normalize: bool = False,
 ) -> tuple[list[object], int]:
     """Translate one ordinary batch, preserving per-heading prompt semantics."""
     for segment in batch:
@@ -74,7 +109,7 @@ def translate_batch(
                 while end < len(batch) and batch[end].kind != KIND_HEADING:
                     end += 1
             result = translator.translate_batch(
-                [segment.source for segment in batch[offset:end]],
+                [segment.translation_source for segment in batch[offset:end]],
                 agent="analyst" if heading else "translator",
                 operation=(
                     "translate.heading"
@@ -97,9 +132,24 @@ def translate_batch(
             local_context.add_targets(list(result.translations))
             request_count += result.request_count
             offset = end
-        return align_epub_translations(batch, translated), request_count
     except LLM_FALLBACK_ERRORS:
         return safe_batch_fallback(batch)
+    if punctuation_normalize:
+        translated = [
+            normalize_zh(target)
+            if segment.epub_state is None and target != segment.source
+            else target
+            for segment, target in zip(batch, translated, strict=True)
+        ]
+    aligned, annotation_count = _align_epub_translations(batch, translated, annotator=annotator)
+    if punctuation_normalize:
+        aligned = [
+            normalize_rich_target(target, source=segment.epub_state.rich_source)
+            if isinstance(target, RichTarget)
+            else target
+            for segment, target in zip(batch, aligned, strict=True)
+        ]
+    return aligned, request_count + annotation_count
 
 
 def extract_batch_glossary(

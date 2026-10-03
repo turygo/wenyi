@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from trans_novel.assemble.epub.rendering.generated import build_epub_from_chapters
 from trans_novel.assemble.epub.rendering.source_archive import assemble_epub
 from trans_novel.assemble.text import assemble_text
-from trans_novel.epub.slots import distribute_slot_translation
+from trans_novel.epub.richtext import RichTarget
 from trans_novel.ingest import segment_preserves_source
 
 if TYPE_CHECKING:
@@ -75,10 +75,22 @@ def preflight_epub(
             if segment_preserves_source(segment) or not segment.source.strip():
                 continue
             marker = f"预检译文 {chapter.index}-{segment.index}"
+            source = segment.epub_state.rich_source if segment.epub_state is not None else None
+            if source is None:
+                segment.assign_translation(marker)
+                continue
             segment.assign_translation(
-                distribute_slot_translation(segment.epub_state, marker)
-                if segment.epub_state is not None
-                else marker
+                RichTarget(
+                    runs=[
+                        run.model_copy(
+                            update={
+                                "slot_id": None,
+                                "text": marker if run.text.strip() else run.text,
+                            }
+                        )
+                        for run in source.runs
+                    ]
+                )
             )
     manifest = {
         "fmt": doc.fmt,

@@ -54,7 +54,7 @@ def ensure_service_epub_note_compatibility(
         store=store,
         config=config,
         doc=doc,
-        agent_builder=lambda src, tgt: AgentBundle(client, config, src=src, tgt=tgt),
+        agent_builder=lambda src, tgt: AgentBundle(client=client, config=config, src=src, tgt=tgt),
         output=output if output is not None else config.output.model_copy(deep=True),
         output_format=goal.out_format,
         output_relevant=True,

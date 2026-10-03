@@ -8,6 +8,14 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Replaced source-length EPUB slot redistribution with independent semantic Chinese runs, preserving correctly aligned bold, italic, links, note objects and page anchors. Complete blocks remain translation units across BR tags; deterministic punctuation and terminology edits now use target-local ranges and protect literals.
+- Added analyst-only reannotation of existing paid EPUB text into a resumable independent state copy, with strict character conservation, source coverage and identity validation, bounded requests and durable usage accounting. Translation policy 4 rejects implicit trust of legacy formatting.
+- Settled trusted page anchors at the nearest Chinese sentence end with forward ties and unchanged emphasis ranges. Explicit migration audits and rebases successful content fingerprints so normal resume retains the accepted paid text.
+- Rebuilt and independently verified translated inline markup while preserving original archive structure, source bilingual copies, immutable comments, IDs and link graphs. Chinese output omits recognized initial-letter decorations while retaining semantic emphasis.
+- Avoided duplicate internal links when an empty identity record precedes the same annotated link text; the actual link owns the original ID once and reference graph checks remain strict.
+
+- Kept original EPUB note backlink labels while rendering forward references as `注`, and made safely paired note fragments target the whole translated note paragraph rather than its backlink anchor. The presentation digest changes so existing translations rebuild without model calls.
+
 ## [1.3.2] - 2026-09-22
 
 - Changed the default translator to OpenRouter Gemini 3.8 Flash with low reasoning, retaining the existing analyst, editor, and fast role selections.

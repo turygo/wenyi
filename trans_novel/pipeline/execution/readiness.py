@@ -6,6 +6,7 @@ run_all 与 tools assemble 的每条正式产出路径都必须先过这里。�
 
 from __future__ import annotations
 
+from trans_novel.ingest.models import segment_preserves_source, validate_rich_target
 from trans_novel.pipeline.contracts import ReadinessError
 from trans_novel.pipeline.state import (
     BEST_EFFORT_NODES,
@@ -61,6 +62,20 @@ def assemble_readiness_problems(store: RunStore, *, require_output_nodes: bool =
         for seg in chapter.text_segments:
             if not (seg.target and seg.target.strip()):
                 problems.append(f"第{idx.index}章存在未翻译段落")
+                break
+            source = seg.epub_state.rich_source if seg.epub_state is not None else None
+            if seg.epub_state is None or segment_preserves_source(seg) or seg.target == seg.source:
+                continue
+            if source is None:
+                problems.append(f"第{idx.index}章缺少可信源格式清单")
+                break
+            if seg.rich_target is None:
+                problems.append(f"第{idx.index}章存在未建立格式标注的译文")
+                break
+            try:
+                validate_rich_target(source, seg.rich_target, expected_text=seg.target)
+            except ValueError:
+                problems.append(f"第{idx.index}章存在无效译文格式标注")
                 break
 
     # 核心必需链（prepare/analyze/translate）只接受 succeeded；

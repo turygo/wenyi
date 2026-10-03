@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 
+from trans_novel.epub.richtext import validate_rich_target
 from trans_novel.epub.slots import (
     EpubTextSlot,
     normalized_source_text,
@@ -102,6 +103,13 @@ def _validate_state(segment: Segment, locator: str) -> None:
         raise _reject(f"stale slot contract at {locator}")
     if segment.source != normalized_source_text(state.slots):
         raise _reject(f"stale segment source at {locator}")
+    if segment.rich_target is not None:
+        if state.rich_source is None or state.rich_source.text != "".join(
+            slot.source_value for slot in state.slots
+        ):
+            raise _reject(f"trusted rich target source changed at {locator}")
+        validate_rich_target(state.rich_source, segment.rich_target, expected_text=segment.target)
+        return
     assigned = [slot.target_value is not None for slot in state.slots]
     if any(assigned) and not all(assigned):
         raise _reject(f"partially assigned slot run at {locator}")
@@ -137,6 +145,17 @@ def _relocate_segment(
         raise _reject(f"stale source block at {locator}")
     fresh_state, old_state = current.epub_state, old.epub_state
     assert fresh_state is not None and old_state is not None
+    if old.rich_target is not None:
+        old_fields = [
+            (slot.element_path, slot.field, slot.source_value) for slot in old_state.slots
+        ]
+        fresh_fields = [
+            (slot.element_path, slot.field, slot.source_value) for slot in fresh_state.slots
+        ]
+        if old_fields != fresh_fields:
+            raise _reject(f"trusted rich target requires explicit reannotation at {locator}")
+        return old.model_copy(deep=True)
+
     old_by_location = {(slot.element_path, slot.field): slot for slot in old_state.slots}
     fresh_locations = [(slot.element_path, slot.field) for slot in fresh_state.slots]
     if any(location not in old_by_location for location in fresh_locations):

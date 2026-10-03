@@ -85,11 +85,10 @@ def _validate_plan_shape(plan: ThemePlan, *, bilingual_note_context: bool) -> No
         if resource.note_changes and plan.source_sha256 is None:
             raise _invalid(resource.resource_href)
         if resource.note_changes:
-            if plan.bilingual and not bilingual_note_context:
-                raise _invalid(resource.resource_href)
-            if not plan.bilingual and any(
+            relocated = any(
                 mapping.source_path != mapping.target_path for mapping in resource.scope.note_paths
-            ):
+            )
+            if (plan.bilingual or relocated) and not bilingual_note_context:
                 raise _invalid(resource.resource_href)
 
 
@@ -420,7 +419,7 @@ def _source_note_context(
     return roots, cast(NoteRelations, relations)
 
 
-def _prove_bilingual_note_mappings(
+def _prove_note_mappings(
     projected_path: str,
     source_path: Path | None,
     store: Any | None,
@@ -434,7 +433,12 @@ def _prove_bilingual_note_mappings(
         for resource in plan.resources
         if resource.note_changes
     }
-    if not plan.bilingual or not mappings:
+    relocated = any(
+        mapping.source_path != mapping.target_path
+        for items in mappings.values()
+        for mapping in items
+    )
+    if not mappings or (not plan.bilingual and not relocated):
         return
     if source_path is None or store is None:
         raise _invalid()
@@ -459,7 +463,7 @@ def _prove_bilingual_note_mappings(
             store,
             resources,
             chapters,
-            bilingual=True,
+            bilingual=plan.bilingual,
             target_lang=target_lang,
             bilingual_order=bilingual_order,
             failures=failures,
@@ -527,7 +531,7 @@ def theme_projection(
                 note_relations=note_relations,
             )
         assert temporary is not None
-        _prove_bilingual_note_mappings(
+        _prove_note_mappings(
             temporary,
             Path(source_path) if source_path is not None else None,
             store,

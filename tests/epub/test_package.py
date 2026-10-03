@@ -9,10 +9,10 @@ from types import SimpleNamespace
 from lxml import etree
 
 from tests.fixtures.books import write_phase9_epub, write_sample_epub
+from tests.fixtures.richtext import synthetic_rich_target
 from trans_novel.assemble import preflight_epub
 from trans_novel.assemble.epub.rendering.source_archive import assemble_epub
 from trans_novel.assemble.epub.verification import validate_epub, verify_epub
-from trans_novel.epub.slots import distribute_slot_translation
 from trans_novel.ingest.epub.reader import read_epub
 
 
@@ -48,7 +48,7 @@ class TestEpubPackage(unittest.TestCase):
                 for chapter in doc.chapters:
                     for segment in chapter.segments:
                         segment.assign_translation(
-                            distribute_slot_translation(segment.epub_state, "测试译文")
+                            synthetic_rich_target(segment.epub_state, "测试译文")
                         )
                 manifest = {
                     "fmt": doc.fmt,

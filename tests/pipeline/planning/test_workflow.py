@@ -291,7 +291,12 @@ class TestPlanner(unittest.TestCase):
                 config, store, WorkflowPolicy(), context, goal
             ).assemble_fingerprint()
             expected = fingerprints.assemble_input_fingerprint(
-                "T0\nT1",
+                "\n".join(
+                    fingerprints.assembly_target_fingerprint_part(
+                        store.load_chapter(ci).text_segments
+                    )
+                    for ci in (0, 1)
+                ),
                 mono=True,
                 bilingual=True,
                 out_format="epub",

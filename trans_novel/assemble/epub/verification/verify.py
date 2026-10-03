@@ -512,9 +512,7 @@ def verify_epub(
             else {}
         )
         state_backed_note_proof = (
-            store
-            if bilingual and source is not None and mode in {"monolingual", "bilingual"}
-            else None
+            store if source is not None and mode in {"monolingual", "bilingual"} else None
         )
         with theme_projection(
             output,
@@ -532,7 +530,7 @@ def verify_epub(
                 bilingual=bilingual,
                 target_lang=target_lang,
                 bilingual_order=bilingual_order,
-                note_mappings=note_mappings if bilingual else None,
+                note_mappings=note_mappings,
             )
     except ThemeError as error:
         return _theme_failure_report(output, source, mode, error)

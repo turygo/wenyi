@@ -63,20 +63,29 @@ def _value(inputs, key: str) -> str | None:
         return None
 
 
-def _canonical_note_fingerprints(config, store, context, chapters: list[Chapter]) -> dict[str, str]:
+def _canonical_note_fingerprints(
+    config, store, context, chapters: list[Chapter], *, include_layout: bool = True
+) -> dict[str, str]:
     policy = WorkflowPolicy.from_config(config)
     inputs = build_prescan_inputs(
         config, _ChapterView(store, chapters), policy, context, GOAL_RUN_ALL
     )
     state = store.load_state()
     values: dict[str, str] = {}
+    excluded = {"report", "assemble"} if include_layout else {"report", "assemble", "layout"}
     for key, node in state.nodes.items():
-        if node.status != NODE_SUCCEEDED or key.partition(":")[0] in {"report", "assemble"}:
+        if node.status != NODE_SUCCEEDED or key.partition(":")[0] in excluded:
             continue
         value = _value(inputs, key)
         if value is not None:
             values[key] = value
     return values
+
+
+def content_fingerprints(config, store, context) -> dict[str, str]:
+    """返回已成功内容节点在当前配置和源证据下的规范指纹。"""
+    chapters = [store.load_chapter(chapter.index) for chapter in store.load_state().chapters]
+    return _canonical_note_fingerprints(config, store, context, chapters, include_layout=False)
 
 
 def note_fingerprint_updates(
@@ -101,4 +110,4 @@ def note_fingerprint_updates(
     return updates
 
 
-__all__ = ["note_fingerprint_updates"]
+__all__ = ["content_fingerprints", "note_fingerprint_updates"]

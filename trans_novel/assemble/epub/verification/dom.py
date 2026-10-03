@@ -14,6 +14,7 @@ from bs4.element import Tag
 from lxml import etree
 
 from trans_novel.assemble.epub.verification import archive_model, structure
+from trans_novel.assemble.epub.verification.bilingual_blocks import whole_source_mode
 from trans_novel.epub.package import HTML_MEDIA, read_package
 
 MAX_MEMBER_BYTES = archive_model.MAX_MEMBER_BYTES
@@ -60,7 +61,7 @@ def leaf_line_texts(element: Tag) -> list[str]:
     return [line for line in lines if line]
 
 
-def dom_segments(path: Path) -> dict[str, list[tuple[str, str]]]:
+def dom_segments(path: Path, *, split_br: bool = True) -> dict[str, list[tuple[str, str]]]:
     """Extract ordered leaf structural blocks directly from EPUB resources."""
     result: dict[str, list[tuple[str, str]]] = defaultdict(list)
     try:
@@ -87,7 +88,8 @@ def dom_segments(path: Path) -> dict[str, list[tuple[str, str]]]:
                     if has_descendant:
                         continue
                     kind = "heading" if element.name in HEADING_TAGS else "text"
-                    for line in leaf_line_texts(element):
+                    lines = leaf_line_texts(element) if split_br else [text]
+                    for line in lines:
                         result[item["path"]].append((kind, line))
     except (OSError, zipfile.BadZipFile):
         return {}
@@ -175,15 +177,24 @@ def source_subset(
     checked: dict[str, int],
 ) -> None:
     source_segments = dom_segments(source_path)
+    whole_segments = dom_segments(source_path, split_br=False)
     for resource, soup in soups.items():
         nodes = soup.select(".tn-source")
         if not nodes:
             continue
-        blocks = source_segments.get(resource)
-        if blocks is None:
-            blocks = next(
-                (value for key, value in source_segments.items() if key.endswith(resource)), []
+        try:
+            whole = whole_source_mode(source_path, resource, nodes)
+        except (ValueError, KeyError, etree.LxmlError, zipfile.BadZipFile):
+            failures.append(
+                archive_model.item(
+                    "bilingual_source", "source_node_subtree_mismatch", resource, "invalid"
+                )
             )
+            whole = False
+        inventory = whole_segments if whole else source_segments
+        blocks = inventory.get(resource)
+        if blocks is None:
+            blocks = next((value for key, value in inventory.items() if key.endswith(resource)), [])
         allowed = Counter(
             hashlib.sha256(norm_text(text).encode("utf-8")).hexdigest()
             for kind, text in blocks
@@ -219,10 +230,23 @@ def exact_bilingual_proof(
 ) -> None:
     source_segments = dom_segments(source_path)
     mono_segments = dom_segments(mono_path)
+    source_whole = dom_segments(source_path, split_br=False)
+    mono_whole = dom_segments(mono_path, split_br=False)
     resources = sorted(set(source_segments) | set(mono_segments) | set(bilingual_soups))
     for resource in resources:
-        source_blocks = source_segments.get(resource, [])
-        mono_blocks = mono_segments.get(resource, [])
+        soup = bilingual_soups.get(resource)
+        actual_nodes = soup.select(".tn-source") if soup is not None else []
+        try:
+            whole = whole_source_mode(source_path, resource, actual_nodes)
+        except (ValueError, KeyError, etree.LxmlError, zipfile.BadZipFile):
+            failures.append(
+                archive_model.item(
+                    "bilingual_source", "source_node_subtree_mismatch", resource, "invalid"
+                )
+            )
+            whole = False
+        source_blocks = (source_whole if whole else source_segments).get(resource, [])
+        mono_blocks = (mono_whole if whole else mono_segments).get(resource, [])
         if len(source_blocks) != len(mono_blocks):
             failures.append(
                 archive_model.item(

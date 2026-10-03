@@ -8,6 +8,7 @@ from trans_novel.agents.glossary_extractor import GlossaryExtractor
 from trans_novel.agents.layout_analyzer import LayoutAnalyzer
 from trans_novel.agents.namer import CastNamer
 from trans_novel.agents.polisher import Polisher
+from trans_novel.agents.richtext_annotator import RichTextAnnotator
 from trans_novel.agents.term_miner import TermMiner
 from trans_novel.agents.translator import Translator
 from trans_novel.config import Config
@@ -27,6 +28,7 @@ class AgentBundle:
         self.layout_analyzer = LayoutAnalyzer(client, config, src=src, tgt=tgt)
         self.translator = Translator(client, config, src=src, tgt=tgt)
         self.polisher = Polisher(client, config, src=src, tgt=tgt)
+        self.annotator = RichTextAnnotator(client, config, src=src, tgt=tgt)
         self.extractor = GlossaryExtractor(client, config, src=src, tgt=tgt)
         self.miner = TermMiner(client, config, src=src, tgt=tgt)
         self.namer = CastNamer(client, config, src=src, tgt=tgt)

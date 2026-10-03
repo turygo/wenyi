@@ -12,7 +12,7 @@ from trans_novel.pipeline.state import IdentityMismatchError
 
 tools_app = typer.Typer(
     add_completion=False,
-    help="高级/调试工具：glossary（术语表）/ assemble（回填）/ qa / report",
+    help="高级/调试工具：glossary（术语表）/ assemble（回填）/ reannotate（格式迁移）/ qa / report",
 )
 console = cli_common.console
 
@@ -130,6 +130,28 @@ def assemble(
         cli_common.print_theme_warnings(store.load_epub_verification())
     for path in paths:
         console.print(f"已生成译文：[bold]{path}[/]")
+
+
+@tools_app.command()
+def reannotate(
+    input: str = typer.Argument(..., help="原始 EPUB 文件"),
+    state_copy: str = typer.Option(..., "--state-copy", help="独立状态副本目录；同来源可续跑"),
+):
+    """使用 analyst 为既有中文重新标注格式，不重新翻译。"""
+    from trans_novel.pipeline import Application
+
+    config = cli_common.load_config()
+    store = cli_common.runstore_for(config, input)
+    if not store.exists():
+        console.print("[red]没有可迁移的既有译文。[/]")
+        raise typer.Exit(1)
+    migrated = Application(config).reannotate(
+        store,
+        input,
+        state_copy=state_copy,
+        progress=lambda _done, _total, message: console.print(message),
+    )
+    console.print(f"格式标注已保存：[bold]{migrated.run_dir}[/]")
 
 
 @tools_app.command()

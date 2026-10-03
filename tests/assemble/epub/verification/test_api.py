@@ -256,17 +256,17 @@ class TestEpubStage2(unittest.TestCase):
                 (
                     "OEBPS/text/chapter-1.xhtml",
                     lambda data: data.replace(b'id="intro"', b'id="changed"'),
-                    "unauthorized_dom_change",
+                    "rich_target_mismatch",
                 ),
                 (
                     "OEBPS/text/chapter-1.xhtml",
                     lambda data: data.replace(b'<p id="intro">', b'<div id="intro">'),
-                    "unauthorized_dom_change",
+                    "rich_target_mismatch",
                 ),
                 (
                     "OEBPS/text/chapter-1.xhtml",
                     lambda data: data.replace("润".encode(), "错误".encode(), 1),
-                    "slot_value_mismatch",
+                    "rich_target_mismatch",
                 ),
                 (
                     "OEBPS/nav.xhtml",

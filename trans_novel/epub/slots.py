@@ -9,6 +9,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from trans_novel.epub.richtext import RichSource
+
 _WS_RE = re.compile(r"[ \t\r\n\f\v]+")
 
 
@@ -36,6 +38,7 @@ class EpubSegmentState(BaseModel):
     parse_mode: Literal["xml", "recovered"]
     slots: list[EpubTextSlot] = Field(default_factory=list)
     slot_contract_sha256: str
+    rich_source: RichSource | None = None
 
     @model_validator(mode="after")
     def _validate_slots(self) -> EpubSegmentState:
@@ -123,33 +126,16 @@ def target_slot_transport(state: EpubSegmentState | None) -> list[dict[str, str]
 def distribute_slot_translation(
     state: EpubSegmentState | None, translation: str
 ) -> list[dict[str, str]]:
-    """Distribute complete translation losslessly by source-content weight."""
-    if state is None:
-        raise ValueError("slot distribution requires an EPUB segment")
-    if not isinstance(translation, str):
-        raise ValueError("slot distribution requires a string translation")
-
-    values = [""] * len(state.slots)
-    active = [index for index, slot in enumerate(state.slots) if slot.source_value.strip()]
-    if not active:
-        if translation:
-            raise ValueError(f"translation has no writable EPUB slot for {state.resource_href}")
-    else:
-        weights = [len(state.slots[index].source_value.strip()) for index in active]
-        total = sum(weights)
-        previous = 0
-        enough_for_nonempty = len(translation) >= len(active)
-        for position, index in enumerate(active[:-1], 1):
-            cut = round(len(translation) * sum(weights[:position]) / total)
-            if enough_for_nonempty:
-                cut = max(previous + 1, min(cut, len(translation) - (len(active) - position)))
-            else:
-                cut = max(previous, min(cut, len(translation)))
-            values[index] = translation[previous:cut]
-            previous = cut
-        values[active[-1]] = translation[previous:]
+    """兼容无内联结构的旧调用；格式化源必须提供独立语义标注。"""
+    if state is None or not isinstance(translation, str):
+        raise ValueError("slot assignment requires an EPUB state and string translation")
+    active = [slot for slot in state.slots if slot.source_value.strip()]
+    if len(active) != 1 or (
+        state.rich_source and (state.rich_source.marks or state.rich_source.atoms)
+    ):
+        raise ValueError("formatted EPUB translation requires semantic rich-text annotation")
     return [
-        {"id": slot.id, "value": value} for slot, value in zip(state.slots, values, strict=True)
+        {"id": slot.id, "value": translation if slot is active[0] else ""} for slot in state.slots
     ]
 
 
@@ -198,16 +184,18 @@ def translation_text(state: EpubSegmentState | None, translation: object) -> str
 def normalize_slot_transport(
     state: EpubSegmentState | None, translation: object
 ) -> list[dict[str, str]]:
-    """Normalize the complete target before deterministic slot distribution."""
+    """兼容显式槽位赋值，只按译文中的局部编辑更新已有边界。"""
     if state is None:
         raise ValueError("slot transport requires an EPUB segment")
     parsed = validate_slot_transport(state, translation)
     if [value for _slot_id, value in parsed] == [slot.source_value for slot in state.slots]:
         return [{"id": slot_id, "value": value} for slot_id, value in parsed]
-    from trans_novel.postprocess.punct import normalize_zh
+    from trans_novel.postprocess.punct import normalize_zh_parts
 
-    complete = normalize_zh("".join(value for _slot_id, value in parsed))
-    return distribute_slot_translation(state, complete)
+    values = normalize_zh_parts([value for _, value in parsed])
+    return [
+        {"id": slot_id, "value": value} for (slot_id, _), value in zip(parsed, values, strict=True)
+    ]
 
 
 __all__ = [

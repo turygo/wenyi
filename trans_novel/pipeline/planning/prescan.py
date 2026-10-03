@@ -6,10 +6,12 @@ import json
 
 from trans_novel.config import Config
 from trans_novel.ingest import Chapter, Document
+from trans_novel.ingest.models import KIND_HEADING
 from trans_novel.pipeline.planning.fingerprints import (
     analyst_model_profile,
     analyze_input_fingerprint,
     assemble_input_fingerprint,
+    assembly_target_fingerprint_part,
     deterministic_qa_input_fingerprint,
     fast_model_profile,
     glossary_semantic_fingerprint_part,
@@ -61,9 +63,11 @@ def _build_text_inputs(store, state):
     def source(ci):
         return "\n".join(s.source for s in store.load_chapter(ci).text_segments)
 
-    def done_targets(*, include_preserved: bool = False):
+    def done_targets(*, include_preserved: bool = False, include_rich: bool = False):
         return "\n".join(
-            "\n".join(s.target or "" for s in store.load_chapter(c.index).text_segments)
+            assembly_target_fingerprint_part(store.load_chapter(c.index).text_segments)
+            if include_rich
+            else "\n".join(s.target or "" for s in store.load_chapter(c.index).text_segments)
             for c in state.chapters
             if store.load_progress(c.index).status == "done"
             and (include_preserved or c.processing is None or c.processing.action != "preserve")
@@ -71,10 +75,19 @@ def _build_text_inputs(store, state):
 
     def titles():
         catalog = build_title_catalog(state.model_dump(mode="json"))
-        return [
+        topology = [
             json.dumps(item.request_record(), ensure_ascii=False, sort_keys=True)
             for item in catalog.items
         ]
+        topology.append(
+            translation_structure_fingerprint_part(
+                segment
+                for chapter in state.chapters
+                for segment in store.load_chapter(chapter.index).segments
+                if segment.kind == KIND_HEADING or "mirrored_toc_entry_id" in segment.meta
+            )
+        )
+        return topology
 
     return source, done_targets, titles
 
@@ -120,7 +133,7 @@ def _output_fingerprint_inputs(context, output, goal, done_targets) -> dict:
         ),
         "layout_profile_valid": bool(context is not None and context.layout_profile is not None),
         "assemble_fingerprint": lambda: assemble_input_fingerprint(
-            done_targets(include_preserved=True),
+            done_targets(include_preserved=True, include_rich=True),
             mono=output.mono,
             bilingual=output.bilingual.enabled,
             out_format=goal.out_format,
@@ -195,13 +208,22 @@ def build_prescan_inputs(
             processing=chapter.processing,
         )
 
-    polish_fp = lambda ci: polish_input_fingerprint(  # noqa: E731
-        source(ci),
-        src,
-        context.style_brief(),
-        punctuation_normalize=cfg.punctuation_normalize,
-        model=polish_model_profile(cfg),
-    )
+    def polish_fp(ci):
+        segments = store.load_chapter(ci).text_segments
+        annotate = any(
+            segment.epub_state is not None
+            and segment.epub_state.rich_source is not None
+            and (segment.epub_state.rich_source.marks or segment.epub_state.rich_source.atoms)
+            for segment in segments
+        )
+        return polish_input_fingerprint(
+            source(ci) + "\n" + translation_structure_fingerprint_part(segments),
+            src,
+            context.style_brief(),
+            punctuation_normalize=cfg.punctuation_normalize,
+            model=polish_model_profile(cfg, annotate=annotate),
+        )
+
     titles_fp = lambda: titles_input_fingerprint(titles(), src, tgt, analyst_model_profile(cfg))  # noqa: E731
     qa_fp = lambda: deterministic_qa_input_fingerprint(  # noqa: E731
         done_targets(),

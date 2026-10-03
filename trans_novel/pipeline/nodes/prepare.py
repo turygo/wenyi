@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from trans_novel.agents.base import WorkflowProtocolError, retry_protocol
+from trans_novel.assemble.epub.richtext_styles import enrich_rich_sources
 from trans_novel.config import Config
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest import Document
@@ -110,6 +111,8 @@ class PrepareNode:
             source_lang=source,
             target_lang=target,
         )
+        if doc.fmt == "epub":
+            enrich_rich_sources(request.input_path, doc.chapters)
         manifest = store.stage_document(doc, identity)
         fp = prepare_input_fingerprint(identity.source_bytes_sha256, source, target)
         return NodeOutcome(fingerprint=fp, artifacts={"manifest": manifest})

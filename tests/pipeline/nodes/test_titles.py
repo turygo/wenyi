@@ -16,12 +16,14 @@ from tests.fixtures.books import (
 from tests.fixtures.fake_llm import fake_llm_dict, routing_handler
 from trans_novel.assemble import assemble
 from trans_novel.config import Config
-from trans_novel.epub.slots import EpubSegmentState, EpubTextSlot, target_slot_transport
+from trans_novel.epub.slots import EpubSegmentState, EpubTextSlot
 from trans_novel.glossary.store import GlossaryStore
 from trans_novel.ingest.models import (
     CANONICAL_TITLE_ID_META,
     Chapter,
     ChapterProcessing,
+    InlineRun,
+    RichSource,
     Segment,
 )
 from trans_novel.llm import FakeClient
@@ -172,6 +174,12 @@ class _HeadingStore:
                     ),
                 ],
                 slot_contract_sha256="contract",
+                rich_source=RichSource(
+                    runs=[
+                        InlineRun(text="Appen", slot_id="first"),
+                        InlineRun(text="dix", slot_id="second"),
+                    ]
+                ),
             ),
         )
         self.chapters = {
@@ -372,9 +380,13 @@ class TestTitleTranslation(unittest.TestCase):
         self.assertEqual(preserved.target, "译-Appendix")
         self.assertEqual(preserved.meta[CANONICAL_TITLE_ID_META], "chapter:1")
         self.assertEqual(
-            "".join(item["value"] for item in target_slot_transport(preserved.epub_state)),
+            preserved.rich_target.text,
             "译-Appendix",
         )
+        self.assertEqual(
+            [slot.source_value for slot in preserved.epub_state.slots], ["Appen", "dix"]
+        )
+        self.assertEqual([slot.target_value for slot in preserved.epub_state.slots], ["旧", "附录"])
         duplicate = store.load_chapter(2)
         self.assertEqual(
             [segment.target for segment in duplicate.segments],

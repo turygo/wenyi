@@ -12,6 +12,7 @@ from trans_novel.epub.markup import is_backlink, is_noteref
 from trans_novel.epub.navigation import nav_toc_roots_lxml
 from trans_novel.epub.slots import EpubSegmentState, EpubTextSlot, slot_contract_digest
 from trans_novel.ingest.epub.package import looks_like_internal_title
+from trans_novel.ingest.epub.richtext import extract_rich_sources
 from trans_novel.ingest.models import KIND_HEADING, KIND_TEXT, Segment
 
 _BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "td", "th", "dt", "dd"}
@@ -303,25 +304,6 @@ def lxml_targets(
     ]
 
 
-def _runs_for_slots(block: etree._Element, slots: list[EpubTextSlot]) -> list[list[EpubTextSlot]]:
-    runs: list[list[EpubTextSlot]] = [[]]
-    direct_children = element_children(block)
-    for slot in slots:
-        if not slot.element_path:
-            run_index = 0
-        else:
-            child_index = slot.element_path[0]
-            run_index = sum(
-                1
-                for child in direct_children[: child_index + 1]
-                if child.tag.rsplit("}", 1)[-1].lower() == "br"
-            )
-        while len(runs) <= run_index:
-            runs.append([])
-        runs[run_index].append(slot)
-    return runs
-
-
 def _segments_for_blocks(
     root: etree._Element,
     blocks: list[etree._Element],
@@ -351,7 +333,7 @@ def _segments_for_blocks(
         if not slots:
             continue
         kind = KIND_HEADING if block.tag.rsplit("}", 1)[-1].lower() in _HEADING_TAGS else KIND_TEXT
-        for run_index, run_slots in enumerate(_runs_for_slots(block, slots)):
+        for run_index, run_slots in enumerate([slots]):
             if not run_slots or not any(slot.source_value.strip() for slot in run_slots):
                 continue
             run_anchor = anchor if run_index == 0 else f"{anchor}_br{run_index}"
@@ -381,6 +363,17 @@ def _segments_for_blocks(
                     meta={"semantic_hints": _semantic_hints(block)},
                 )
             )
+    grouped: dict[tuple[int, ...], list[Segment]] = {}
+    for segment in segments:
+        grouped.setdefault(segment.epub_state.block_path, []).append(segment)
+    for path, block_segments in grouped.items():
+        block = root
+        for child_index in path:
+            block = element_children(block)[child_index]
+        states = [segment.epub_state for segment in block_segments]
+        sources = extract_rich_sources(root, block, states, protected_paths=protected_paths)
+        for state, source in zip(states, sources, strict=True):
+            state.rich_source = source
     return segments
 
 
@@ -406,22 +399,7 @@ def _fragment_anchors(root: etree._Element, segments: list[Segment]) -> dict[str
     def containing_segment(node: etree._Element) -> str | None:
         for segment, block, _block_index in block_positions:
             if node is block or any(node is child for child in block.iterdescendants()):
-                top = node
-                while top.getparent() is not block and top.getparent() is not None:
-                    top = top.getparent()
-                direct = element_children(block)
-                run_index = (
-                    0
-                    if top is block
-                    else sum(
-                        1
-                        for child in direct[: direct.index(top)]
-                        if child.tag.rsplit("}", 1)[-1].lower() == "br"
-                    )
-                    if top in direct
-                    else 0
-                )
-                return segment.anchor if run_index == 0 else f"{segment.anchor}_br{run_index}"
+                return segment.anchor
         return None
 
     fragment_anchors: dict[str, str | None] = {}

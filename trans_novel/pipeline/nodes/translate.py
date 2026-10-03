@@ -59,8 +59,10 @@ class TranslateNode:
         frozen_book=None,
         frozen_preparation=None,
         batch_commit_hook: BatchCommitHook | None = None,
+        annotator=None,
     ):
         self.translator = translator
+        self.annotator = annotator
         self.extractor = extractor
         self.polisher = polisher
         self.glossary = glossary
@@ -283,6 +285,9 @@ class TranslateNode:
             chapter_title=chapter.title,
             n_recent=self.config.pipeline.rolling_context_segments,
             single_segment_translation=self.config.pipeline.single_segment_translation,
+            annotator=self.annotator,
+            punctuation_normalize=self.config.punctuation_normalize
+            and not self.config.pipeline.polish,
         )
         raw_targets = []
         for segment, transport in zip(batch, raw_transports, strict=True):

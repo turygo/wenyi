@@ -10,10 +10,10 @@ from lxml import etree
 
 from tests.fixtures.books import write_sample_epub
 from tests.fixtures.fake_llm import fake_llm_dict, routing_handler
+from tests.fixtures.richtext import synthetic_rich_target
 from trans_novel.assemble.epub.rendering import assemble_source_epub
 from trans_novel.assemble.epub.verification.validation import validate_epub
 from trans_novel.config import Config
-from trans_novel.epub.slots import distribute_slot_translation
 from trans_novel.ingest.epub.reader import read_epub
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline import Application
@@ -83,7 +83,7 @@ class TestEpubFootnotes(unittest.TestCase):
         doc = read_epub(str(self.source), "en", "zh")
         segment = doc.chapters[0].segments[0]
         self.assertEqual(segment.source, "Lead power units tail end 3 foreign")
-        segment.assign_translation(distribute_slot_translation(segment.epub_state, "Translation"))
+        segment.assign_translation(synthetic_rich_target(segment.epub_state, "Translation"))
         manifest = {
             "meta": doc.meta,
             "source_lang": "en",
@@ -245,9 +245,7 @@ class TestEpubFootnotes(unittest.TestCase):
         store = app.prepare(str(self.source))
         chapter = store.load_chapter(0)
         segment = chapter.segments[0]
-        segment.assign_translation(
-            distribute_slot_translation(segment.epub_state, "Saved translation")
-        )
+        segment.assign_translation(synthetic_rich_target(segment.epub_state, "Saved translation"))
         store.save_chapter(chapter)
         resumed = app.prepare(str(self.source))
         self.assertEqual(resumed.load_chapter(0).segments[0].target, "Saved translation")

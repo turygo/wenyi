@@ -159,11 +159,12 @@ class TestThemeNotes(unittest.TestCase):
             self.assertEqual(("".join(reference.itertext()), reference.tail), ("注", "."))
             ordinary = tree.xpath("(//*[local-name()='p'])[1]/*[local-name()='a'][1]")[0]
             self.assertEqual("".join(ordinary.itertext()), "†")
-            self.assertEqual("".join(backlink.itertext()), "注")
+            self.assertEqual("".join(backlink.itertext()), "*")
             self.assertEqual((reference.get("href"), backlink.get("href")), ("#note", "#body"))
             self.assertEqual(reference.get("role"), "doc-noteref")
             self.assertEqual(backlink.get("role"), "doc-backlink")
             self.assertEqual(note.get("role"), "doc-footnote")
+            self.assertEqual("".join(note.itertext()), "Footnote*")
             self.assertIn("background-color:#946126", css)
             self.assertIn("font-size:1em", css)
             self.assertIn("text-align:center", css)
@@ -180,6 +181,76 @@ class TestThemeNotes(unittest.TestCase):
                     "†",
                 )
             self._assert_forged_note_plans_rejected(path, plan, source)
+
+    def test_numbered_note_popup_target_contains_translated_body(self) -> None:
+        chapter = _chapter(
+            '<p id="body">正文<a id="ref" href="#note" role="doc-noteref">1</a></p>'
+            '<p class="zfoot"><sup><a id="note" href="#ref" '
+            'role="doc-backlink">1</a></sup> 注释正文。</p>'
+        )
+        profile = _profile(chapter)
+        scope = ResourceThemeScope(
+            layout_bindings=tuple(
+                LayoutBinding(assignment.path, (assignment.path,), assignment.source_sha256)
+                for assignment in profile.assignments
+            ),
+            note_paths=tuple(
+                NotePathMapping(path, path) for path in ((1, 0, 0), (1, 1, 0, 0), (1, 1))
+            ),
+        )
+        relations = {
+            "version": 1,
+            "markers": [
+                {
+                    "resource_href": "OEBPS/text/ch.xhtml",
+                    "path": [1, 0, 0],
+                    "kind": "noteref",
+                    "label": "1",
+                    "target_resource": "OEBPS/text/ch.xhtml",
+                    "target_path": [1, 1, 0, 0],
+                },
+                {
+                    "resource_href": "OEBPS/text/ch.xhtml",
+                    "path": [1, 1, 0, 0],
+                    "kind": "backlink",
+                    "label": "1",
+                    "target_resource": "OEBPS/text/ch.xhtml",
+                    "target_path": [1, 0],
+                },
+            ],
+            "targets": [
+                {"resource_href": "OEBPS/text/ch.xhtml", "path": [1, 1], "kind": "footnote"}
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.epub"
+            output = Path(directory) / "output.epub"
+            _write_epub(source, chapter)
+            shutil.copyfile(source, output)
+            plan = ThemeService(
+                resolve_theme("builtin:chinese-reading", None), layout=profile
+            ).render(
+                str(output),
+                {"OEBPS/text/ch.xhtml": scope},
+                bilingual=False,
+                note_relations=relations,
+                source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                target_lang="zh-Hans",
+            )
+            assert plan is not None
+            with zipfile.ZipFile(output) as archive:
+                root = etree.fromstring(archive.read("OEBPS/text/ch.xhtml"))
+            reference = root.xpath("//*[@id='ref']")[0]
+            target = root.xpath("//*[@id='note']")[0]
+            self.assertEqual("".join(reference.itertext()), "注")
+            self.assertEqual(target.tag.rsplit("}", 1)[-1], "p")
+            self.assertEqual("".join(target.itertext()), "1 注释正文。")
+            self.assertEqual(target.xpath(".//*[local-name()='a']")[0].get("id"), None)
+            with theme_projection(output, plan, source_path=source) as projected:
+                with zipfile.ZipFile(projected) as archive:
+                    original = etree.fromstring(archive.read("OEBPS/text/ch.xhtml"))
+                self.assertIsNone(original.xpath("(//*[local-name()='p'])[2]")[0].get("id"))
+                self.assertEqual(original.xpath("//*[@id='note']")[0].tag.rsplit("}", 1)[-1], "a")
 
 
 if __name__ == "__main__":

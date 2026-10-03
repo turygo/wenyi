@@ -9,8 +9,9 @@ from lxml import etree
 
 from tests.fixtures.books import write_phase9_epub
 from trans_novel.assemble.epub.rendering import assemble_source_epub
+from trans_novel.epub.richtext import InlineRun, RichTarget
+from trans_novel.epub.richtext_edits import normalize_rich_target
 from trans_novel.epub.slots import (
-    distribute_slot_translation,
     normalize_slot_transport,
     validate_slot_transport,
 )
@@ -160,41 +161,15 @@ class TestEpubStage1(unittest.TestCase):
                 slot.target_value,
             )
 
-    def test_chinese_translation_does_not_inherit_inline_italics(self):
-        source = (
-            b"<html xmlns='http://www.w3.org/1999/xhtml'><body>"
-            b"<p>On board the <i>Mustin</i>, radar was active.</p></body></html>"
-        )
-        path = self._book(source)
-        document = read_epub(path, "en", "zh")
-        segment = document.chapters[0].segments[0]
-        translation = "在马斯廷号驱逐舰上，雷达正在运转。"
-        segment.assign_translation(distribute_slot_translation(segment.epub_state, translation))
-        output = path + ".italics.epub"
-        self.addCleanup(os.unlink, output)
-
-        assemble_source_epub(_Store(document), path, output, target_lang="zh-Hans")
-
-        with zipfile.ZipFile(output) as archive:
-            root = etree.fromstring(archive.read("O/c.xhtml"))
-        paragraph = root.find(".//{http://www.w3.org/1999/xhtml}p")
-        self.assertIsNotNone(paragraph)
-        assert paragraph is not None
-        italic = paragraph.find("{http://www.w3.org/1999/xhtml}i")
-        self.assertIsNotNone(italic)
-        assert italic is not None
-        self.assertEqual("".join(paragraph.itertext()), translation)
-        self.assertFalse(italic.text)
-
     def test_whitespace_tail_inside_inline_pagebreak_run_is_persisted(self):
         path = self._book(
             b"<html xmlns='http://www.w3.org/1999/xhtml'><body>"
             b"<p>One<em>two</em> <span>Next</span><br/>After</p></body></html>"
         )
         document = read_epub(path, "en", "zh")
-        first, second = document.chapters[0].segments
-        self.assertEqual(first.source, "Onetwo Next")
-        self.assertEqual(second.source, "After")
+        self.assertEqual(len(document.chapters[0].segments), 1)
+        first = document.chapters[0].segments[0]
+        self.assertEqual(first.source, "Onetwo NextAfter")
         self.assertEqual(
             [(slot.element_path, slot.field, slot.source_value) for slot in first.epub_state.slots],
             [
@@ -202,6 +177,7 @@ class TestEpubStage1(unittest.TestCase):
                 ((0,), "text", "two"),
                 ((0,), "tail", " "),
                 ((1,), "text", "Next"),
+                ((2,), "tail", "After"),
             ],
         )
 
@@ -248,26 +224,13 @@ class TestEpubStage1(unittest.TestCase):
         self.assertEqual(flattened, normalize_zh("“甲,乙..."))
         self.assertEqual(normalize_zh_parts(["“甲,", "乙..."]), ["“甲，", "乙……"])
 
-    def test_split_ellipsis_and_dash_runs_remain_nonempty_per_slot(self):
-        for values, expected in (([".", ".."], ["…", "…"]), (["-", "-"], ["—", "—"])):
+    def test_split_punctuation_is_normalized_without_nonempty_slot_constraint(self):
+        for values, expected in (([".", ".."], "……"), (["-", "-"], "——")):
             with self.subTest(values=values):
-                path = self._book(
-                    b"<html xmlns='http://www.w3.org/1999/xhtml'><body><p>Alpha<em>Beta</em></p></body></html>"
-                )
-                segment = read_epub(path, "en", "zh").chapters[0].segments[0]
-                transport = [
-                    {"id": slot.id, "value": value}
-                    for slot, value in zip(segment.epub_state.slots, values, strict=True)
-                ]
-                normalized = normalize_slot_transport(segment.epub_state, transport)
-                segment.assign_translation(normalized)
-                self.assertEqual(
-                    [item["id"] for item in normalized],
-                    [slot.id for slot in segment.epub_state.slots],
-                )
-                self.assertEqual([item["value"] for item in normalized], expected)
-                self.assertEqual("".join(item["value"] for item in normalized), "".join(expected))
-                self.assertEqual(segment.target, "".join(expected))
+                target = RichTarget(runs=[InlineRun(text=value) for value in values])
+                normalized = normalize_rich_target(target)
+                self.assertEqual(normalized.text, expected)
+                self.assertEqual(normalize_rich_target(normalized), normalized)
 
     def test_invalid_slot_assignment_does_not_collapse_or_mutate(self):
         path = self._book(
@@ -310,16 +273,12 @@ class TestEpubStage1(unittest.TestCase):
         )
         document = read_epub(path, "en", "zh")
         segments = document.chapters[0].segments
-        for index, segment in enumerate(segments):
-            segment.assign_translation(
-                [
-                    {
-                        "id": slot.id,
-                        "value": f"译{index}" if slot.source_value.strip() else "",
-                    }
-                    for slot in segment.epub_state.slots
-                ],
-            )
+        self.assertEqual(len(segments), 1)
+        segment = segments[0]
+        atom = segment.epub_state.rich_source.atoms[0]
+        segment.assign_translation(
+            RichTarget(runs=[InlineRun(text="译0"), InlineRun(atom=atom.id), InlineRun(text="译1")])
+        )
         output = path + ".br.epub"
         self.addCleanup(os.unlink, output)
         assemble_source_epub(_Store(document), path, output, target_lang="zh")

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from trans_novel.epub.slots import normalize_slot_transport, target_slot_transport
+from trans_novel.epub.richtext_edits import normalize_rich_target
 from trans_novel.glossary.store import GlossaryStore, terms_matching_text
 from trans_novel.ingest.models import Segment
 from trans_novel.ingest.segmenter import batch_segments
@@ -52,7 +52,7 @@ def source_context_before(segments: list[Segment], index: int) -> str:
     """只取当前段之前的两段源文，每段最多保留末尾 1200 字符。"""
     paragraphs = []
     for offset in range(max(0, index - 2), index):
-        source = segments[offset].source
+        source = segments[offset].translation_source
         if len(source) > 1200:
             source = "[Earlier source truncated]\n" + source[-1200:]
         paragraphs.append(f"[Source paragraph {offset}]\n{source}")
@@ -93,10 +93,12 @@ def normalize_batch(batch, raw_targets, *, punctuation_normalize):
             if target != segment.source:
                 segment.assign_translation(normalize_zh(target))
         else:
+            if segment.target == segment.source:
+                continue
+            if segment.rich_target is None:
+                raise ValueError("EPUB punctuation normalization requires a rich target")
             segment.assign_translation(
-                normalize_slot_transport(
-                    segment.epub_state, target_slot_transport(segment.epub_state)
-                )
+                normalize_rich_target(segment.rich_target, source=segment.epub_state.rich_source)
             )
     return [s.target or "" for s in batch], True
 

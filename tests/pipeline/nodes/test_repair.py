@@ -8,13 +8,16 @@ from tests.fixtures.fake_llm import fake_llm_dict
 from trans_novel.assemble.report import build_report
 from trans_novel.config import Config
 from trans_novel.epub.slots import EpubSegmentState, EpubTextSlot
-from trans_novel.ingest.models import Chapter, Document, Segment
+from trans_novel.ingest.models import Chapter, Document, InlineRun, RichSource, RichTarget, Segment
 from trans_novel.llm.errors import AllModelsFailedError, ProviderError
 from trans_novel.llm.retrying import classify_retry
 from trans_novel.pipeline.contracts import NodeRequest
 from trans_novel.pipeline.nodes.finish import AssembleNode
 from trans_novel.pipeline.nodes.repair import RepairNode
-from trans_novel.pipeline.planning import assemble_input_fingerprint
+from trans_novel.pipeline.planning import (
+    assemble_input_fingerprint,
+    assembly_target_fingerprint_part,
+)
 from trans_novel.pipeline.quality import LintIssue
 from trans_novel.pipeline.state import (
     NODE_DETERMINISTIC_QA,
@@ -74,7 +77,9 @@ class TestRepairContracts(unittest.TestCase):
                     EpubTextSlot(id="slot", field="text", source_value=source, target_value=target)
                 ],
                 slot_contract_sha256="contract",
+                rich_source=RichSource(runs=[InlineRun(text=source, slot_id="slot")]),
             )
+            segment.assign_translation(RichTarget(runs=[InlineRun(text=target)]))
         doc = Document(
             title="Repair Book",
             fmt="epub" if epub else "text",
@@ -250,7 +255,7 @@ class TestRepairContracts(unittest.TestCase):
         segment = Segment(index=0, source="Hello", target="已提交")
         self.assertEqual(RepairNode._target(segment), "已提交")
 
-    def test_target_reads_committed_epub_slot_targets(self):
+    def test_target_reads_committed_rich_target_despite_stale_legacy_fields(self):
         segment = Segment(index=0, source="Hello world", target="stale")
         segment.epub_state = EpubSegmentState(
             resource_href="chapter.xhtml",
@@ -273,15 +278,20 @@ class TestRepairContracts(unittest.TestCase):
                 ),
             ],
             slot_contract_sha256="contract",
+            rich_source=RichSource(runs=[InlineRun(text="Hello world")]),
         )
+        segment.rich_target = RichTarget(runs=[InlineRun(text="你好 "), InlineRun(text="世界")])
         self.assertEqual(RepairNode._target(segment), "你好 世界")
 
-    def test_repaired_epub_target_and_slot_remain_consistent(self):
+    def test_repaired_epub_target_keeps_numbers_and_source_slot_evidence(self):
         store = self._store("He has 24", "他有", epub=True)
         self._run(store, _RepairTranslator(["他有24"]))
         segment = store.load_chapter(0).segments[0]
         self.assertEqual(segment.target, "他有24")
-        self.assertEqual(segment.epub_state.slots[0].target_value, "他有24")
+        self.assertEqual(segment.rich_target.text, "他有24")
+        self.assertEqual(segment.epub_state.slots[0].source_value, "He has 24")
+        self.assertEqual(segment.epub_state.slots[0].target_value, "他有")
+        self.assertEqual(self._record(store).status, "resolved")
 
     def test_report_requires_no_user_action_and_distinguishes_exhaustion(self):
         store = self._store("He has 24 apples.", "他有苹果。")
@@ -310,7 +320,7 @@ class TestRepairContracts(unittest.TestCase):
         self.assertEqual(
             outcome.fingerprint,
             assemble_input_fingerprint(
-                "他有苹果。",
+                assembly_target_fingerprint_part(store.load_chapter(0).text_segments),
                 mono=True,
                 bilingual=True,
                 out_format="txt",

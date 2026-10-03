@@ -34,9 +34,11 @@ def editor_model_profile(config) -> str:
     return _role_profile(config, "editor")
 
 
-def polish_model_profile(config) -> str:
+def polish_model_profile(config, *, annotate: bool = False) -> str:
     """润色模型候选。"""
-    return _role_profile(config, "editor")
+    return (
+        _role_profile(config, "editor", "analyst") if annotate else _role_profile(config, "editor")
+    )
 
 
 def fast_model_profile(config) -> str:
@@ -88,7 +90,7 @@ def glossary_semantic_fingerprint_part(terms) -> str:
 
 
 def translation_structure_fingerprint_part(segments) -> str:
-    """Serialize EPUB slot geometry consumed after plain-text translation."""
+    """把源格式语义库存纳入翻译、润色和标题的稳定输入。"""
     return json.dumps(
         [
             {
@@ -96,10 +98,39 @@ def translation_structure_fingerprint_part(segments) -> str:
                 "slot_contract": getattr(
                     getattr(segment, "epub_state", None), "slot_contract_sha256", None
                 ),
+                "format_policy": 1,
+                "rich_source": (
+                    segment.epub_state.rich_source.model_dump(mode="json")
+                    if getattr(getattr(segment, "epub_state", None), "rich_source", None)
+                    is not None
+                    else None
+                ),
             }
             for segment in segments
         ],
         ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def assembly_target_fingerprint_part(segments) -> str:
+    """文字相同而格式或原始引用库存变化时，也必须重新生成输出。"""
+    return json.dumps(
+        [
+            {
+                "index": segment.index,
+                "target": segment.target,
+                "rich_target": (
+                    segment.rich_target.model_dump(mode="json")
+                    if segment.rich_target is not None
+                    else None
+                ),
+                "source_contract": translation_structure_fingerprint_part([segment]),
+            }
+            for segment in segments
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
         separators=(",", ":"),
     )
 
@@ -182,7 +213,11 @@ def titles_input_fingerprint(
     titles: list[str], src_lang: str, tgt_lang: str, model: str = ""
 ) -> str:
     return input_fingerprint(
-        titles, normalize_lang_code(src_lang), normalize_lang_code(tgt_lang), model
+        TRANSLATION_POLICY_VERSION,
+        titles,
+        normalize_lang_code(src_lang),
+        normalize_lang_code(tgt_lang),
+        model,
     )
 
 

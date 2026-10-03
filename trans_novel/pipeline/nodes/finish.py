@@ -15,24 +15,29 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from trans_novel.agents import prompts
 from trans_novel.agents.base import WorkflowProtocolError, retry_protocol
 from trans_novel.assemble import assemble_outputs, bilingual_out_path
+from trans_novel.assemble.epub.richtext_pages import settle_page_anchors
 from trans_novel.assemble.report import build_report
 from trans_novel.config import Config, OutputConfig
-from trans_novel.epub.slots import distribute_slot_translation
+from trans_novel.epub.richtext_edits import omit_decorations
 from trans_novel.glossary.store import GlossaryStore, terms_matching_text
 from trans_novel.ingest.models import (
     CANONICAL_TITLE_ID_META,
     KIND_HEADING,
     sanitize_generated_text,
+    segment_preserves_source,
 )
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
+from trans_novel.pipeline.nodes.translation_batch import align_epub_translations
 from trans_novel.pipeline.planning import (
     analyst_model_profile,
     assemble_input_fingerprint,
+    assembly_target_fingerprint_part,
     build_title_catalog,
     deterministic_qa_input_fingerprint,
     glossary_semantic_fingerprint_part,
     report_input_fingerprint,
     titles_input_fingerprint,
+    translation_structure_fingerprint_part,
 )
 from trans_novel.pipeline.quality import lint_targets
 from trans_novel.pipeline.state import (
@@ -79,12 +84,14 @@ class TitlesNode:
         src: str,
         tgt: str,
         glossary: GlossaryStore,
+        annotator=None,
     ):
         self.client = client
         self.config = config
         self.src = src
         self.tgt = tgt
         self.glossary = glossary
+        self.annotator = annotator
 
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
@@ -123,6 +130,7 @@ class TitlesNode:
             targets,
             catalog.chapter_title_ids,
             catalog.entry_aliases,
+            annotator=self.annotator,
         )
         store.log_event(
             "titles_translated",
@@ -187,6 +195,8 @@ class TitlesNode:
         targets: dict[str, str],
         chapter_title_ids: dict[int, str],
         aliases: dict[str, str],
+        *,
+        annotator=None,
     ) -> list[int]:
         skipped: list[int] = []
         for chapter_meta in manifest.get("chapters", []):
@@ -202,35 +212,28 @@ class TitlesNode:
                 if segment.kind == KIND_HEADING
                 and " ".join(segment.source.split()).casefold() == source_title
             ]
-            changed = False
+            assignments = {}
             if title_id is None or not source_title or len(matches) != 1:
                 skipped.append(chapter_index)
             else:
                 segment = matches[0]
-                target = targets[title_id]
-                translation = (
-                    distribute_slot_translation(segment.epub_state, target)
-                    if segment.epub_state is not None
-                    else target
-                )
-                segment.assign_translation(translation)
-                segment.meta[CANONICAL_TITLE_ID_META] = title_id
-                changed = True
+                assignments[segment.index] = (segment, title_id)
             for segment in chapter.segments:
                 entry_id = segment.meta.get("mirrored_toc_entry_id")
                 canonical_id = aliases.get(entry_id) if isinstance(entry_id, str) else None
                 if canonical_id is None:
                     continue
-                target = targets[canonical_id]
-                translation = (
-                    distribute_slot_translation(segment.epub_state, target)
-                    if segment.epub_state is not None
-                    else target
-                )
+                assignments[segment.index] = (segment, canonical_id)
+            assigned = list(assignments.values())
+            translations = align_epub_translations(
+                [segment for segment, _ in assigned],
+                [targets[canonical_id] for _, canonical_id in assigned],
+                annotator=annotator,
+            )
+            for (segment, canonical_id), translation in zip(assigned, translations, strict=True):
                 segment.assign_translation(translation)
                 segment.meta[CANONICAL_TITLE_ID_META] = canonical_id
-                changed = True
-            if changed:
+            if assigned:
                 store.save_chapter(chapter)
         return skipped
 
@@ -241,6 +244,14 @@ class TitlesNode:
             json.dumps(item.request_record(), ensure_ascii=False, sort_keys=True)
             for item in catalog.items
         ]
+        topology.append(
+            translation_structure_fingerprint_part(
+                segment
+                for chapter in manifest.get("chapters", [])
+                for segment in store.load_chapter(chapter["index"]).segments
+                if segment.kind == KIND_HEADING or "mirrored_toc_entry_id" in segment.meta
+            )
+        )
         identity = manifest.get("identity") if isinstance(manifest.get("identity"), dict) else {}
         src = identity.get("source_lang") or self.config.source_lang
         tgt = identity.get("target_lang") or self.config.target_lang
@@ -346,6 +357,27 @@ class AssembleNode:
     def execute(self, request: NodeRequest) -> NodeOutcome:
         store = request.store
 
+        chapters = [store.load_chapter(item.index) for item in store.load_state().chapters]
+        decorations_removed = 0
+        for chapter in chapters:
+            if chapter.preserve_source:
+                continue
+            for segment in chapter.segments:
+                if segment.rich_target is None or segment_preserves_source(segment):
+                    continue
+                cleaned = omit_decorations(segment.rich_target, segment.epub_state.rich_source)
+                if cleaned != segment.rich_target:
+                    segment.assign_translation(cleaned)
+                    decorations_removed += 1
+        moved = settle_page_anchors(request.input_path, chapters)
+        if moved or decorations_removed:
+            for chapter in chapters:
+                store.save_chapter(chapter)
+            store.log_event(
+                "richtext_output_settled",
+                page_anchors_moved=moved,
+                decoration_segments=decorations_removed,
+            )
         if request.progress:
             request.progress(0, 0, "生成译文文件…")
         do_mono = self.output.mono
@@ -387,7 +419,7 @@ class AssembleNode:
             if store.load_progress(c.index).status != STATUS_DONE:
                 continue
             parts.append(
-                "\n".join(s.target or "" for s in store.load_chapter(c.index).text_segments)
+                assembly_target_fingerprint_part(store.load_chapter(c.index).text_segments)
             )
         return "\n".join(parts)
 

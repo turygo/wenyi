@@ -19,10 +19,10 @@ from tests.fixtures.books import (
     write_sample_epub,
 )
 from tests.fixtures.fake_llm import fake_llm_dict, routing_handler
+from tests.fixtures.richtext import synthetic_rich_target
 from trans_novel.assemble import assemble
 from trans_novel.assemble.epub.verification import validate_epub_triplet
 from trans_novel.config import Config
-from trans_novel.epub.slots import distribute_slot_translation
 from trans_novel.ingest import canonical_title_id
 from trans_novel.ingest.models import Chapter
 from trans_novel.llm import FakeClient
@@ -140,7 +140,7 @@ def _override_toc_titles(store, translate) -> None:
             if target is None:
                 continue
             segment.assign_translation(
-                distribute_slot_translation(segment.epub_state, target)
+                synthetic_rich_target(segment.epub_state, target)
                 if segment.epub_state is not None
                 else target
             )
@@ -407,7 +407,7 @@ class TestHeadingNumberInWriter(unittest.TestCase):
             ch = store.load_chapter(0)
             complete = normalize_heading_numbering("第5章 迫击炮")
             ch.segments[0].assign_translation(
-                distribute_slot_translation(ch.segments[0].epub_state, complete),
+                synthetic_rich_target(ch.segments[0].epub_state, complete),
             )
             store.save_chapter(ch)
             m = store.load_manifest()

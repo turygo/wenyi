@@ -12,11 +12,13 @@ from typing import Any
 from lxml import etree
 
 from trans_novel.assemble.epub.rendering import dedupe_segment_mappings, segment_needs_source
+from trans_novel.assemble.epub.rendering.richtext import rich_block_segments
 from trans_novel.assemble.epub.rendering.source_dom import normalize_translated_italics
 from trans_novel.assemble.epub.rendering.theme import NotePathMapping
 from trans_novel.assemble.epub.verification import archive_model, dom, preservation
 from trans_novel.assemble.epub.verification import bilingual as bilingual_module
 from trans_novel.assemble.epub.verification import navigation as nav_module
+from trans_novel.assemble.epub.verification.richtext import prove_and_restore_rich_blocks
 from trans_novel.epub.markup import resource_parser
 from trans_novel.epub.package import HTML_MEDIA, NCX_MEDIA, read_package
 from trans_novel.epub.slots import normalized_source_text, slot_contract_digest
@@ -191,7 +193,11 @@ def _check_segments(root_source, resource, segments, bilingual, slot_map, direct
         title_id = canonical_title_id(segment)
         preserve_source = segment_preserves_source(segment)
         if title_id is not None and (
-            segment.target is None or any(slot.target_value is None for slot in state.slots)
+            segment.target is None
+            or (
+                segment.rich_target is None
+                and any(slot.target_value is None for slot in state.slots)
+            )
         ):
             failures.append(
                 archive_model.item("state", "canonical_title_target_missing", resource, "target")
@@ -247,77 +253,78 @@ def _check_output_slots(root_output, resource, slot_map, direct_cleared, failure
             differences["text_slots"] += 1
 
 
-def _validate_resource(
-    source_zip,
-    output_zip,
-    resource,
-    segments,
-    resources,
-    toc_entries,
-    bilingual,
-    source_lang,
-    target_lang,
-    bilingual_order,
-    failures,
-    warnings,
-    checked,
-    differences,
-    note_mappings: tuple[NotePathMapping, ...],
-):
-    data = _resource_data(source_zip, output_zip, resource, resources, failures)
-    if data is None:
-        return
-    parsed = _parse_resource(resource, *data, failures, warnings, checked)
-    if parsed is None:
-        return
-    source_tree, output_tree, _, _ = parsed
-    root_source, root_output = source_tree.getroot(), output_tree.getroot()
-    segments = normalize_translated_italics(root_source, segments, target_lang)
-    mapped_nodes: list[tuple[NotePathMapping, etree._Element]] = []
-    for mapping in note_mappings:
+def _mapped_note_nodes(root_source, root_output, mappings, rich_groups, resource, failures):
+    mapped_nodes = []
+    for mapping in mappings:
         mapped = dom.resolve_path_lxml(root_output, mapping.target_path)
         if mapped is None:
             failures.append(archive_model.item("resources", "theme_verify", resource, "invalid"))
-        else:
-            mapped_nodes.append((mapping, mapped))
-    is_ncx_resource = any(
-        isinstance(node.tag, str) and archive_model.local_name(node.tag).lower() == "navmap"
-        for node in root_source.iter()
-    )
-    preservation.check_root_language(
-        root_source,
-        root_output,
-        resource,
-        target_lang,
-        is_ncx_resource,
-        segments,
-        failures,
-        differences,
-    )
-    slot_map: dict[tuple[tuple[int, ...], str], Any] = {}
-    toc_label_paths: set[tuple[int, ...]] = set()
-    direct_cleared: set[tuple[tuple[int, ...], str]] = set()
-    _check_segments(root_source, resource, segments, bilingual, slot_map, direct_cleared, failures)
-    if bilingual and any(
-        isinstance(node.tag, str) and archive_model.local_name(node.tag).lower() in {"html", "body"}
-        for node in root_source.iter()
-    ):
-        differences["bilingual_nodes"] += bilingual_module.bilingual_proof(
-            root_source,
-            root_output,
-            segments,
-            source_lang=source_lang,
-            order=bilingual_order,
-            resource=resource,
-            failures=failures,
-        )
-        for mapping, mapped in mapped_nodes:
-            if dom.element_path_lxml(root_output, mapped) != mapping.source_path:
+            continue
+        if any(mapping.source_path[: len(path)] == path for path in rich_groups):
+            original = dom.resolve_path_lxml(root_source, mapping.source_path)
+            if (
+                original is None
+                or original.tag != mapped.tag
+                or dict(original.attrib) != dict(mapped.attrib)
+            ):
                 failures.append(
                     archive_model.item("resources", "theme_verify", resource, "invalid")
                 )
-    elif note_mappings:
-        failures.append(archive_model.item("resources", "theme_verify", resource, "invalid"))
+        mapped_nodes.append((mapping, mapped))
+    return mapped_nodes
+
+
+def _prove_rebuilt_blocks(
+    root_source,
+    root_output,
+    rich_groups,
+    segments,
+    slot_map,
+    *,
+    bilingual,
+    source_lang,
+    order,
+    resource,
+    failures,
+    differences,
+):
+    try:
+        differences["bilingual_nodes"] += prove_and_restore_rich_blocks(
+            root_source,
+            root_output,
+            rich_groups,
+            bilingual=bilingual,
+            source_lang=source_lang,
+            order=order,
+        )
+    except (ValueError, TypeError, AttributeError, IndexError):
+        failures.append(archive_model.item("dom", "rich_target_mismatch", resource, "target"))
+        return None
+    rich_locations = {
+        (tuple(segment.epub_state.block_path) + tuple(slot.element_path), slot.field)
+        for items in rich_groups.values()
+        for segment in items
+        for slot in segment.epub_state.slots
+    }
+    for location in rich_locations:
+        slot_map.pop(location, None)
+    differences["text_slots"] += len(rich_locations)
+    return [segment for segment in segments if segment.epub_state.block_path not in rich_groups]
+
+
+def _compare_authorized_dom(
+    root_source,
+    root_output,
+    resource,
+    segments,
+    source_lang,
+    toc_entries,
+    slot_map,
+    toc_label_paths,
+    direct_cleared,
+    failures,
+    differences,
+):
     language_paths = preservation.preserved_language_paths(
         root_source, root_output, resource, segments, source_lang, failures
     )
@@ -348,6 +355,110 @@ def _validate_resource(
     ):
         failures.append(archive_model.item("dom", "unauthorized_dom_change", resource, "immutable"))
     _check_output_slots(root_output, resource, slot_map, direct_cleared, failures, differences)
+
+
+def _validate_resource(
+    source_zip,
+    output_zip,
+    resource,
+    segments,
+    resources,
+    toc_entries,
+    bilingual,
+    source_lang,
+    target_lang,
+    bilingual_order,
+    failures,
+    warnings,
+    checked,
+    differences,
+    note_mappings: tuple[NotePathMapping, ...],
+):
+    data = _resource_data(source_zip, output_zip, resource, resources, failures)
+    if data is None:
+        return
+    parsed = _parse_resource(resource, *data, failures, warnings, checked)
+    if parsed is None:
+        return
+    source_tree, output_tree, _, _ = parsed
+    root_source, root_output = source_tree.getroot(), output_tree.getroot()
+    segments = normalize_translated_italics(root_source, segments, target_lang)
+    try:
+        rich_groups = rich_block_segments(segments)
+    except ValueError:
+        failures.append(archive_model.item("state", "rich_target_missing", resource, "target"))
+        return
+    mapped_nodes = _mapped_note_nodes(
+        root_source, root_output, note_mappings, rich_groups, resource, failures
+    )
+    is_ncx_resource = any(
+        isinstance(node.tag, str) and archive_model.local_name(node.tag).lower() == "navmap"
+        for node in root_source.iter()
+    )
+    preservation.check_root_language(
+        root_source,
+        root_output,
+        resource,
+        target_lang,
+        is_ncx_resource,
+        segments,
+        failures,
+        differences,
+    )
+    slot_map: dict[tuple[tuple[int, ...], str], Any] = {}
+    toc_label_paths: set[tuple[int, ...]] = set()
+    direct_cleared: set[tuple[tuple[int, ...], str]] = set()
+    _check_segments(root_source, resource, segments, bilingual, slot_map, direct_cleared, failures)
+    legacy_segments = _prove_rebuilt_blocks(
+        root_source,
+        root_output,
+        rich_groups,
+        segments,
+        slot_map,
+        bilingual=bilingual,
+        source_lang=source_lang,
+        order=bilingual_order,
+        resource=resource,
+        failures=failures,
+        differences=differences,
+    )
+    if legacy_segments is None:
+        return
+    if bilingual and any(
+        isinstance(node.tag, str) and archive_model.local_name(node.tag).lower() in {"html", "body"}
+        for node in root_source.iter()
+    ):
+        differences["bilingual_nodes"] += bilingual_module.bilingual_proof(
+            root_source,
+            root_output,
+            legacy_segments,
+            source_lang=source_lang,
+            order=bilingual_order,
+            resource=resource,
+            failures=failures,
+        )
+        for mapping, mapped in mapped_nodes:
+            if any(mapping.source_path[: len(path)] == path for path in rich_groups):
+                continue
+            if dom.element_path_lxml(root_output, mapped) != mapping.source_path:
+                failures.append(
+                    archive_model.item("resources", "theme_verify", resource, "invalid")
+                )
+    elif note_mappings and not rich_groups:
+        failures.append(archive_model.item("resources", "theme_verify", resource, "invalid"))
+    _compare_authorized_dom(
+        root_source,
+        root_output,
+        resource,
+        segments,
+        source_lang,
+        toc_entries,
+        slot_map,
+        toc_label_paths,
+        direct_cleared,
+        failures,
+        differences,
+    )
 
 
 def _validate_resources(

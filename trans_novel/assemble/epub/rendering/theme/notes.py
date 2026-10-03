@@ -243,9 +243,31 @@ def _changes_from_mapping(
         attributes = _attribute_changes(target, target_path, kind)
         if attributes is None:
             continue
+        if not is_marker and kind in {"footnote", "endnote"} and target.get("id") is None:
+            backlinks = [
+                marker
+                for marker in relations["markers"]
+                if marker["kind"] == "backlink"
+                and marker["resource_href"] == resource
+                and _inside_path(tuple(marker["path"]), source_path)
+            ]
+            if len(backlinks) == 1 and any(
+                marker["kind"] == "noteref"
+                and marker["target_resource"] == resource
+                and tuple(marker["target_path"]) == tuple(backlinks[0]["path"])
+                for marker in relations["markers"]
+            ):
+                backlink_path = mapping[tuple(backlinks[0]["path"])]
+                backlink = resolve_element_path(working_root, backlink_path)
+                identifier = backlink.get("id")
+                if identifier and backlink.get("name") is None:
+                    attributes += (
+                        NoteAttributeChange(backlink_path, "id", identifier, None),
+                        NoteAttributeChange(target_path, "id", None, identifier),
+                    )
         text = (
             _text_changes(working_root, target, cast(str, item["label"]), resource)
-            if is_marker
+            if kind == "noteref"
             else ()
         )
         if text or attributes:

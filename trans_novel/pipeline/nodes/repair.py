@@ -8,16 +8,15 @@ import re
 from typing import Any
 
 from trans_novel.agents.base import WorkflowProtocolError
-from trans_novel.epub.slots import (
-    distribute_slot_translation,
-    target_slot_transport,
-    translation_text,
-)
+from trans_novel.epub.richtext_edits import normalize_rich_target
+from trans_novel.ingest.models import RichTarget
 from trans_novel.llm.errors import LLM_FALLBACK_ERRORS
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
 from trans_novel.pipeline.nodes.common import chapter_term_snapshot
+from trans_novel.pipeline.nodes.translation_batch import align_epub_translations
 from trans_novel.pipeline.quality import LintIssue, lint_targets
 from trans_novel.pipeline.state import NODE_REPAIR, SCOPE_BOOK, RepairIssue, stable_digest
+from trans_novel.postprocess.punct import normalize_zh
 
 _MAX_ATTEMPTS = 10
 
@@ -32,12 +31,49 @@ def issue_key(
     ).hexdigest()
 
 
+def _prepare_candidate(
+    ci,
+    segment,
+    candidate,
+    locked,
+    src_lang,
+    baseline_keys,
+    record_key,
+    *,
+    annotator,
+    normalize_punctuation,
+):
+    """先检查候选文字，再建立格式并检查局部标点修改后的最终文字。"""
+    candidate_text = candidate.strip() if isinstance(candidate, str) else ""
+    if normalize_punctuation and segment.epub_state is None:
+        candidate_text = normalize_zh(candidate_text)
+
+    def acceptable(text):
+        keys = {
+            issue_key(ci, segment.index, item.type, item.detail)
+            for item in lint_targets(
+                [segment.source], [text], locked_terms=locked, src_lang=src_lang
+            )
+        }
+        return bool(text) and record_key not in keys and not keys - baseline_keys
+
+    if not acceptable(candidate_text):
+        return None
+    transport = align_epub_translations([segment], [candidate_text], annotator=annotator)[0]
+    if normalize_punctuation and isinstance(transport, RichTarget):
+        transport = normalize_rich_target(transport, source=segment.epub_state.rich_source)
+        if not acceptable(transport.text):
+            return None
+    return transport
+
+
 class RepairNode:
     node_id = NODE_REPAIR
     scope = SCOPE_BOOK
 
-    def __init__(self, *, translator, glossary, style_brief: str = "", config=None):
+    def __init__(self, *, translator, glossary, style_brief: str = "", config=None, annotator=None):
         self.translator = translator
+        self.annotator = annotator
         self.glossary = glossary
         self.style_brief = style_brief
         self.config = config
@@ -262,6 +298,15 @@ class RepairNode:
             record.status = "accepted_after_exhaustion"
             self._save_record(store, ci, record)
             return True
+        rich_source = segment.epub_state.rich_source if segment.epub_state is not None else None
+        if segment.epub_state is not None and rich_source is None:
+            raise ValueError("EPUB repair requires a rich source inventory")
+        if (
+            rich_source is not None
+            and (rich_source.marks or rich_source.atoms)
+            and self.annotator is None
+        ):
+            raise ValueError("formatted EPUB repair requires a rich text annotator")
         record.attempts += 1
         record.status = "repairing"
         record.committed_target_fingerprint = stable_digest(current_target)
@@ -283,21 +328,27 @@ class RepairNode:
             self._reject(record, store, ci, f"{type(exc).__name__}: {exc}")
             return False
         try:
-            candidate_text = candidate.strip() if isinstance(candidate, str) else ""
-            if segment.epub_state is not None:
-                transport = distribute_slot_translation(segment.epub_state, candidate_text)
-                committed_text = translation_text(segment.epub_state, transport)
-            else:
-                transport = candidate_text
-                committed_text = candidate_text
-            candidate_keys = {
-                issue_key(ci, segment.index, x.type, x.detail)
-                for x in self._segment_issues_text(segment, committed_text, locked, src_lang)
-            }
-            if not candidate_text or record.key in candidate_keys or candidate_keys - baseline_keys:
+            transport = _prepare_candidate(
+                ci,
+                segment,
+                candidate,
+                locked,
+                src_lang,
+                baseline_keys,
+                record.key,
+                annotator=self.annotator,
+                normalize_punctuation=bool(getattr(config, "punctuation_normalize", False)),
+            )
+            if transport is None:
                 self._reject(record, store, ci, "candidate_rejected")
                 return True
             segment.assign_translation(transport)
+        except WorkflowProtocolError as exc:
+            self._reject(record, store, ci, f"{type(exc).__name__}: {exc}")
+            return True
+        except LLM_FALLBACK_ERRORS as exc:
+            self._reject(record, store, ci, f"{type(exc).__name__}: {exc}")
+            return False
         except ValueError:
             self._reject(record, store, ci, "candidate_invalid")
             return True
@@ -328,24 +379,13 @@ class RepairNode:
 
     @staticmethod
     def _target(segment) -> str:
-        if segment.epub_state is None:
-            return segment.target or ""
-        return translation_text(segment.epub_state, target_slot_transport(segment.epub_state))
+        return segment.rich_target.text if segment.rich_target is not None else segment.target or ""
 
     @staticmethod
     def _segment_issues(segment, locked, src_lang):
         return lint_targets(
             [segment.source],
             [RepairNode._target(segment)],
-            locked_terms=locked,
-            src_lang=src_lang,
-        )
-
-    @staticmethod
-    def _segment_issues_text(segment, target, locked, src_lang):
-        return lint_targets(
-            [segment.source],
-            [target],
             locked_terms=locked,
             src_lang=src_lang,
         )

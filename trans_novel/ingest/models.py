@@ -1,8 +1,7 @@
 """核心数据结构：Document → Chapter → Segment。
 
-Segment 是最小可对齐 / 可回填的翻译单元（通常一个段落或一个标题）。
-EPUB Segment 额外保留原 XHTML 文本槽位，译文由代码按原文槽位长度比例分配，
-据此回填内联结构，不要求模型处理槽位标记。
+Segment 是完整的翻译单元（通常一个段落或一个标题）。
+EPUB 槽位仅保存源证据；译文拥有独立的文字、格式及原子对象引用。
 
 用 pydantic v2 BaseModel 做校验与序列化；to_dict()/from_dict() 包装保留，
 供 runstore 断点续跑与既有调用方使用。
@@ -16,6 +15,23 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from trans_novel.epub.richtext import (
+    InlineAtom as InlineAtom,
+)
+from trans_novel.epub.richtext import (
+    InlineMark as InlineMark,
+)
+from trans_novel.epub.richtext import (
+    InlineRun,
+    RichTarget,
+    validate_rich_target,
+)
+from trans_novel.epub.richtext import (
+    RichSource as RichSource,
+)
+from trans_novel.epub.richtext import (
+    rich_source_digest as rich_source_digest,
+)
 from trans_novel.epub.slots import (
     EpubSegmentState,
     normalized_target_text,
@@ -69,14 +85,34 @@ class Segment(BaseModel):
     resource_href: str | None = None  # EPUB：Segment 所属的物理 XHTML 路径
     cont: bool = False  # 超长段被拆分后的续段：回填时并回上一段，不另起段落
     epub_state: EpubSegmentState | None = None
+    rich_target: RichTarget | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
     preserve_source: bool = False
+
+    @property
+    def translation_source(self) -> str:
+        """提供完整段落上下文，断行保留为换行而不切成独立请求。"""
+        source = self.epub_state.rich_source if self.epub_state is not None else None
+        if source is None or not any(atom.kind == "linebreak" for atom in source.atoms):
+            return self.source
+        breaks = {atom.id for atom in source.atoms if atom.kind == "linebreak"}
+        return "".join("\n" if run.atom in breaks else run.text for run in source.runs).strip()
 
     @model_validator(mode="after")
     def _sanitize_targets(self) -> Segment:
         self.target = sanitize_generated_text(self.target) if self.target is not None else None
         state = self.epub_state
         if state is None:
+            if self.rich_target is not None:
+                raise ValueError("rich target requires EPUB source evidence")
+            return self
+        if self.rich_target is not None:
+            if state.rich_source is None:
+                raise ValueError("rich target requires a source inventory")
+            for run in self.rich_target.runs:
+                run.text = sanitize_generated_text(run.text)
+            validate_rich_target(state.rich_source, self.rich_target, expected_text=self.target)
+            self.target = self.rich_target.text
             return self
         state.slots = [
             slot.model_copy(
@@ -95,10 +131,20 @@ class Segment(BaseModel):
         return self
 
     def assign_translation(
-        self, translation: str | list[dict[str, str]] | list[tuple[str, str]]
+        self, translation: str | RichTarget | list[dict[str, str]] | list[tuple[str, str]]
     ) -> None:
         """Validate then atomically assign the segment translation."""
         state = self.epub_state
+        if isinstance(translation, RichTarget):
+            if state is None or state.rich_source is None:
+                raise ValueError("rich assignment requires an EPUB source inventory")
+            cleaned = translation.model_copy(deep=True)
+            for run in cleaned.runs:
+                run.text = sanitize_generated_text(run.text)
+            validate_rich_target(state.rich_source, cleaned)
+            self.rich_target = cleaned
+            self.target = cleaned.text
+            return
         if state is None:
             if not isinstance(translation, str):
                 raise ValueError("non-EPUB segment translation must be a string")
@@ -111,8 +157,26 @@ class Segment(BaseModel):
         ]
         state.slots = new_slots
         self.target = normalized_target_text(new_slots)
+        if [value for _, value in parsed] == [slot.source_value for slot in state.slots]:
+            self.rich_target = None
+            return
+        if state.rich_source is not None:
+            values = {slot.id: slot.target_value or "" for slot in new_slots}
+            runs = [
+                InlineRun(
+                    text=values[run.slot_id] if run.slot_id is not None else run.text,
+                    marks=run.marks,
+                    atom=run.atom,
+                )
+                for run in state.rich_source.runs
+            ]
+            rich = RichTarget(runs=runs)
+            validate_rich_target(state.rich_source, rich)
+            self.rich_target = rich
+            self.target = rich.text
 
     def reset_translation(self) -> None:
+        self.rich_target = None
         state = self.epub_state
         if state is None:
             self.target = None

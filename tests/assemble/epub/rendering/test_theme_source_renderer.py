@@ -8,6 +8,7 @@ from pathlib import Path
 
 from lxml import etree
 
+from tests.fixtures.richtext import synthetic_rich_target
 from trans_novel.assemble.epub.rendering.source_archive import assemble_source_epub
 from trans_novel.assemble.epub.rendering.source_dom import resolve_element_path
 from trans_novel.assemble.epub.rendering.source_markup import render_source_resource
@@ -15,7 +16,6 @@ from trans_novel.assemble.epub.rendering.theme import ThemeBundle
 from trans_novel.assemble.epub.rendering.theme.projection import build_projection
 from trans_novel.assemble.epub.rendering.theme.service import ThemeService
 from trans_novel.epub.layout import LayoutAssignment, LayoutProfile, source_node_digest
-from trans_novel.epub.slots import distribute_slot_translation
 from trans_novel.ingest import CANONICAL_TITLE_ID_META
 from trans_novel.ingest.epub.reader import read_epub
 
@@ -177,7 +177,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
         reference = root.xpath("//*[@id='ref']")[0]
         backlink = root.xpath("//*[@data-tn-note-kind='backlink']")[0]
         self.assertEqual("".join(reference.itertext()), "注")
-        self.assertEqual("".join(backlink.itertext()), "注")
+        self.assertEqual("".join(backlink.itertext()), "*")
         self.assertTrue(
             any(
                 "†" in "".join(source_node.itertext())
@@ -214,8 +214,8 @@ class TestSourceThemeRenderer(unittest.TestCase):
         )
         self.assertTrue(plain.map_descendants)
         self.assertTrue(container.map_descendants)
-        self.assertFalse(ruby.map_descendants)
-        self.assertGreaterEqual(len(ruby.target_paths), 2)
+        self.assertTrue(ruby.map_descendants)
+        self.assertEqual(len(ruby.target_paths), 1)
         order_index = {
             node: index
             for index, node in enumerate(node for node in root.iter() if isinstance(node.tag, str))
@@ -338,10 +338,10 @@ class TestSourceThemeRenderer(unittest.TestCase):
                 segment.preserve_source = True
             heading = next(segment for segment in segments if "Plain source" in segment.source)
             heading.kind = "heading"
-            heading.assign_translation(distribute_slot_translation(heading.epub_state, "第五章"))
+            heading.assign_translation(synthetic_rich_target(heading.epub_state, "第五章"))
             heading.meta[CANONICAL_TITLE_ID_META] = "chapter:0"
             mirror = next(segment for segment in segments if "Container source" in segment.source)
-            mirror.assign_translation(distribute_slot_translation(mirror.epub_state, "第五章"))
+            mirror.assign_translation(synthetic_rich_target(mirror.epub_state, "第五章"))
             mirror.meta["mirrored_toc_entry_id"] = "toc:0"
             mirror.meta[CANONICAL_TITLE_ID_META] = "chapter:0"
             output = Path(directory) / "canonical.epub"
@@ -360,7 +360,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
             self.assertEqual(root.get("lang"), "zh-Hans")
             plain = root.xpath("//*[@id='plain']")[0]
             noteref = root.xpath("//*[@id='ref']")[0]
-            self.assertEqual("".join(plain.itertext()), "第五†章")
+            self.assertEqual("".join(plain.itertext()), "第五章†")
             self.assertEqual(noteref.get("role"), "doc-noteref")
             self.assertEqual("".join(noteref.itertext()), "†")
             self.assertEqual("".join(root.xpath("//*[@id='container']")[0].itertext()), "第五章")
@@ -398,7 +398,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
                 mode="monolingual",
             )
             self.assertIn(
-                "slot_value_mismatch",
+                "rich_target_mismatch",
                 {item["code"] for item in report["failures"]},
             )
 
@@ -428,7 +428,7 @@ class TestSourceThemeRenderer(unittest.TestCase):
                         message = "canonical title target missing"
                     else:
                         heading.assign_translation(
-                            distribute_slot_translation(heading.epub_state, "第五章")
+                            synthetic_rich_target(heading.epub_state, "第五章")
                         )
                         heading.meta[CANONICAL_TITLE_ID_META] = "chapter:0"
                         preserved = heading.model_copy(deep=True)

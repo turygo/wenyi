@@ -11,6 +11,7 @@ from trans_novel.pipeline.planning.fingerprints import (
     analyst_model_profile,
     analyze_input_fingerprint,
     assemble_input_fingerprint,
+    assembly_target_fingerprint_part,
     deterministic_qa_input_fingerprint,
     editor_model_profile,
     fast_model_profile,
@@ -29,7 +30,10 @@ from trans_novel.pipeline.planning.fingerprints import (
     translation_structure_fingerprint_part,
     translator_model_profile,
 )
-from trans_novel.pipeline.planning.note_fingerprints import note_fingerprint_updates
+from trans_novel.pipeline.planning.note_fingerprints import (
+    content_fingerprints,
+    note_fingerprint_updates,
+)
 from trans_novel.pipeline.planning.planner import (
     PlanEntry,
     PlannedStage,
@@ -60,8 +64,10 @@ __all__ = [
     "analyst_model_profile",
     "analyze_input_fingerprint",
     "assemble_input_fingerprint",
+    "assembly_target_fingerprint_part",
     "build_prescan_inputs",
     "build_title_catalog",
+    "content_fingerprints",
     "deterministic_qa_input_fingerprint",
     "editor_model_profile",
     "fast_model_profile",

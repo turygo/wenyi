@@ -8,8 +8,9 @@ from dataclasses import asdict
 from trans_novel.agents import langprofile
 from trans_novel.agents.polisher import PolishResult
 from trans_novel.config import Config
-from trans_novel.epub.slots import normalize_slot_transport
+from trans_novel.epub.richtext_edits import normalize_rich_target
 from trans_novel.glossary.store import GlossaryStore
+from trans_novel.ingest.models import RichTarget
 from trans_novel.ingest.segmenter import batch_segments
 from trans_novel.llm.errors import LLM_FALLBACK_ERRORS
 from trans_novel.pipeline.contracts import NodeOutcome, NodeRequest
@@ -20,6 +21,7 @@ from trans_novel.pipeline.planning import (
     frozen_input_fingerprint,
     polish_input_fingerprint,
     polish_model_profile,
+    translation_structure_fingerprint_part,
 )
 from trans_novel.pipeline.quality import polish_gate
 from trans_novel.pipeline.state import (
@@ -110,8 +112,10 @@ class PolishNode:
         style_brief: str,
         frozen_book=None,
         frozen_preparation=None,
+        annotator=None,
     ):
         self.polisher = polisher
+        self.annotator = annotator
         self.extractor = extractor
         self.glossary = glossary
         self.config = config
@@ -159,6 +163,7 @@ class PolishNode:
             extract_and_store(self.extractor, self.glossary, src_text, tgt_text, ci)
             store.log_event("chapter_glossary_extracted", chapter=ci)
         source_text = "\n".join(s.source for s in text_segs)
+        source_text += "\n" + translation_structure_fingerprint_part(text_segs)
         if self.frozen_book is not None and self.frozen_preparation is not None:
             fp = frozen_input_fingerprint(
                 self.frozen_preparation.preparation_sha256,
@@ -174,7 +179,18 @@ class PolishNode:
                 source_lang,
                 self.style_brief,
                 punctuation_normalize=self.config.punctuation_normalize,
-                model=polish_model_profile(self.config),
+                model=polish_model_profile(
+                    self.config,
+                    annotate=any(
+                        segment.epub_state is not None
+                        and segment.epub_state.rich_source is not None
+                        and (
+                            segment.epub_state.rich_source.marks
+                            or segment.epub_state.rich_source.atoms
+                        )
+                        for segment in text_segs
+                    ),
+                ),
             )
         return NodeOutcome(fingerprint=fp)
 
@@ -254,29 +270,10 @@ class PolishNode:
                 future, eligible, raw_plain, request_terms, store, ci, start, count
             )
             locked = [term for term in polish_result.locked_terms if term.locked]
-            results = []
-            selected_plain = []
-            for i in range(count):
-                if i not in eligible:
-                    results.append(None)
-                    selected_plain.append(srcs[i])
-                    continue
-                result = polish_gate(
-                    srcs[i],
-                    raw_plain[i],
-                    polish_result.texts[i],
-                    locked_terms=locked,
-                    src_lang=self.polisher.src,
-                    normalize_punctuation=self.config.punctuation_normalize,
-                )
-                results.append(result)
-                selected_plain.append(result.selected)
-            selected_transport = align_epub_translations(batch, selected_plain)
+            results, selected_transport = self._select_targets(
+                batch, raw_plain, polish_result, locked, eligible
+            )
             for i, result in enumerate(results):
-                if batch[i].epub_state is not None and self.config.punctuation_normalize:
-                    selected_transport[i] = normalize_slot_transport(
-                        batch[i].epub_state, selected_transport[i]
-                    )
                 if result is None:
                     continue
                 fallback_reason = polish_result.fallback_reasons.get(i)
@@ -341,6 +338,39 @@ class PolishNode:
                     ]
                 ),
             )
+
+    def _select_targets(self, batch, raw_plain, polish_result, locked, eligible):
+        """先选择完整文字，再保留或建立标注，最后执行目标局部标点编辑。"""
+        results = []
+        selected_plain = []
+        for index, segment in enumerate(batch):
+            if index not in eligible:
+                results.append(None)
+                selected_plain.append(segment.source)
+                continue
+            rich_source = segment.epub_state.rich_source if segment.epub_state is not None else None
+            result = polish_gate(
+                segment.source,
+                raw_plain[index],
+                polish_result.texts[index],
+                locked_terms=locked,
+                src_lang=self.polisher.src,
+                normalize_punctuation=self.config.punctuation_normalize and rich_source is None,
+            )
+            results.append(result)
+            accepted = result.accepted and polish_result.fallback_reasons.get(index) is None
+            selected_plain.append(result.selected if accepted else raw_plain[index])
+        selected_transport = align_epub_translations(
+            batch, selected_plain, annotator=self.annotator
+        )
+        if self.config.punctuation_normalize:
+            selected_transport = [
+                normalize_rich_target(target, source=segment.epub_state.rich_source)
+                if isinstance(target, RichTarget)
+                else target
+                for segment, target in zip(batch, selected_transport, strict=True)
+            ]
+        return results, selected_transport
 
 
 __all__ = ["PolishNode"]

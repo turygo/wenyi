@@ -78,6 +78,7 @@ def build_node_factory(
         ),
         NODE_TRANSLATE: lambda shared, ci: TranslateNode(
             translator=shared.agents.translator,
+            annotator=shared.agents.annotator,
             extractor=shared.agents.extractor,
             polisher=shared.agents.polisher,
             glossary=shared.glossary(),
@@ -90,6 +91,7 @@ def build_node_factory(
         ),
         NODE_POLISH: lambda shared, ci: PolishNode(
             polisher=shared.agents.polisher,
+            annotator=shared.agents.annotator,
             extractor=shared.agents.extractor,
             glossary=shared.glossary(),
             config=config,
@@ -99,6 +101,7 @@ def build_node_factory(
         ),
         NODE_TITLES: lambda shared, ci: TitlesNode(
             client=client,
+            annotator=shared.agents.annotator,
             config=config,
             src=shared.agents.src,
             tgt=shared.agents.tgt,
@@ -107,6 +110,7 @@ def build_node_factory(
         NODE_DETERMINISTIC_QA: lambda shared, ci: DeterministicQANode(glossary=shared.glossary()),
         NODE_REPAIR: lambda shared, ci: RepairNode(
             translator=shared.agents.translator,
+            annotator=shared.agents.annotator,
             glossary=shared.glossary(),
             style_brief=_style(),
             config=config,
