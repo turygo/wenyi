@@ -22,6 +22,7 @@ from trans_novel.pipeline.planning import (
     content_fingerprints,
 )
 from trans_novel.pipeline.state import NODE_SUCCEEDED, NodeState
+from trans_novel.pipeline.state.models import TRANSLATION_POLICY_VERSION
 
 
 def _context(application, store):
@@ -94,7 +95,7 @@ class TestReannotationFingerprints(unittest.TestCase):
                 ],
                 original_targets,
             )
-            self.assertEqual(state.identity.translation_policy_version, 4)
+            self.assertEqual(state.identity.translation_policy_version, TRANSLATION_POLICY_VERSION)
             self.assertTrue(application.client.calls)
             self.assertEqual(
                 {call["operation"] for call in application.client.calls}, {"richtext.annotate"}

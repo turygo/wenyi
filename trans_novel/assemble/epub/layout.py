@@ -332,6 +332,7 @@ def _epub_inventory(source_path: str) -> LayoutInventory:
                 projection.nodes,
                 stylesheets,
                 resource=href,
+                preserve_rule_text=True,
             )
             records = projection.snapshot["nodes"]
             eligible = [

@@ -48,6 +48,15 @@ class CssRule:
     media: Literal["light", "dark"] | None = None
 
 
+def is_animation_property(name: str) -> bool:
+    """统一识别标准及带厂商前缀的动画、过渡属性。"""
+    for prefix in ("-webkit-", "-moz-", "-ms-", "-o-"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    return name in {"animation", "transition"} or name.startswith(("animation-", "transition-"))
+
+
 def _box_footprints(result: dict[str, frozenset[str]]) -> None:
     sides = ("top", "right", "bottom", "left")
     logical_sides = {

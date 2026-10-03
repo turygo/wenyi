@@ -7,7 +7,7 @@ from copy import deepcopy
 from lxml import etree
 
 from trans_novel.assemble.epub.rendering.source_dom import resolve_element_path
-from trans_novel.epub.richtext import RichTarget, validate_rich_target
+from trans_novel.epub.richtext import RichTarget, validate_rich_nesting, validate_rich_target
 from trans_novel.ingest import Segment, segment_preserves_source
 
 
@@ -51,16 +51,16 @@ def rich_block_segments(segments: list[Segment]) -> dict[tuple[int, ...], list[S
     return result
 
 
-def render_rich_block(
-    block: etree._Element, segments: list[Segment]
-) -> dict[etree._Element, etree._Element]:
-    """只重建块内内容，并返回原文节点到译文节点的身份映射。"""
-    marks, atoms = {}, {}
+def _rich_inventory(segments):
+    """合并已严格接受的分段来源，保留独立恢复引用的来源证明。"""
+    marks, atoms, notes = {}, {}, {}
     runs = []
     for segment in segments:
         state, target = segment.epub_state, segment.rich_target
         if state is None or state.rich_source is None or target is None:
             raise ValueError("EPUB rich target contract is missing")
+        if state.rich_source.version != 2 or target.version not in {2, 3}:
+            raise ValueError("EPUB rich rendering requires explicit contract migration")
         validate_rich_target(state.rich_source, target, expected_text=segment.target)
         for inventory, descriptors in (
             (marks, state.rich_source.marks),
@@ -72,8 +72,25 @@ def render_rich_block(
                     raise ValueError("EPUB conflicting inline source descriptors")
                 inventory[descriptor.id] = descriptor
         runs.extend(target.runs)
+        for reference in state.rich_source.note_references:
+            prior = notes.get(reference.mark_id)
+            if prior is not None and prior != reference:
+                raise ValueError("EPUB conflicting note reference descriptors")
+            notes[reference.mark_id] = reference
+    validate_rich_nesting(marks, runs)
+    return marks, atoms, notes, runs
+
+
+def render_rich_block(
+    block: etree._Element, segments: list[Segment]
+) -> dict[etree._Element, etree._Element]:
+    """只重建块内内容，并返回原文节点到译文节点的身份映射。"""
+    marks, atoms, notes, runs = _rich_inventory(segments)
     meaningful_marks = {
-        key for run in runs if run.text or run.atom is not None for key in run.marks
+        key
+        for run in runs
+        if run.text or run.atom is not None or run.note is not None
+        for key in run.marks
     }
     source_marks = {key: resolve_element_path(block, mark.path) for key, mark in marks.items()}
     source_atoms = {key: _atom_owner(block, atom.path) for key, atom in atoms.items()}
@@ -90,7 +107,12 @@ def render_rich_block(
     active_nodes = [staging]
     used_marks: set[str] = set()
     for run in runs:
-        if not run.text and run.atom is None and set(run.marks) <= meaningful_marks:
+        if (
+            not run.text
+            and run.atom is None
+            and run.note is None
+            and set(run.marks) <= meaningful_marks
+        ):
             continue
         common = 0
         while (
@@ -113,8 +135,16 @@ def render_rich_block(
             active_nodes.append(node)
         active_ids = run.marks
         parent = active_nodes[-1]
-        if run.atom is not None:
+        if run.note is not None:
+            # 原编号属于已证明引用对象，绝不写入冻结中文 text。
+            parent.text = (parent.text or "") + notes[run.note].label
+        elif run.atom is not None:
             original = source_atoms[run.atom]
+            if any(marks[key].tag.rsplit("}", 1)[-1].lower() == "a" for key in run.marks) and any(
+                isinstance(node.tag, str) and node.tag.rsplit("}", 1)[-1].lower() == "a"
+                for node in original.iter()
+            ):
+                raise ValueError("EPUB nested atomic rich target link")
             copied = deepcopy(original)
             if isinstance(original.tag, str):
                 copied.tail = None

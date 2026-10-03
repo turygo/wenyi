@@ -431,7 +431,7 @@ class ThemeService:
                     tree, _ = parse_source_markup(data)
                     build_projection(tree.getroot())
                     stylesheets = collect_source_stylesheets(archive, tree.getroot(), resource)
-                    source_specificity_bound(stylesheets, resource=resource)
+                    source_specificity_bound(stylesheets, resource=resource, root=tree.getroot())
                 except (ValueError, etree.LxmlError):
                     raise ThemeError("theme_css", "invalid_markup", resource=resource) from None
 

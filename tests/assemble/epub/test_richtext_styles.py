@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from tests.fixtures.books import write_sample_epub
 from trans_novel.assemble.epub.rendering.theme.source_css import collect_source_stylesheets
-from trans_novel.assemble.epub.richtext_styles import enrich_rich_sources
+from trans_novel.assemble.epub.richtext_styles import _added_dropcap_style, enrich_rich_sources
 from trans_novel.ingest.epub.reader import read_epub
 
 
@@ -59,7 +59,11 @@ class TestRichTextStyles(unittest.TestCase):
             enrich_rich_sources(path, document.chapters)
             marks = {mark.source_text: mark for mark in self._marks(document)}
             self.assertEqual(marks["T"].kind, "decoration")
+            self.assertEqual(marks["T"].semantics, ())
+            self.assertFalse(marks["T"].required)
             self.assertEqual(marks["important text"].kind, "bold")
+            self.assertIn("bold", marks["important text"].semantics)
+            self.assertTrue(marks["important text"].required)
             self.assertTrue(marks["T"].style_evidence)
             self.assertEqual(before, [[slot.model_dump() for slot in group] for group in slots])
             atoms = [
@@ -135,6 +139,50 @@ class TestRichTextStyles(unittest.TestCase):
             marks = self._marks(document)
             self.assertTrue(all(mark.style_evidence for mark in marks))
             self.assertTrue(all(mark.kind == "style" for mark in marks))
+            self.assertEqual(marks[0].semantics, ("bold",))
+            self.assertEqual(marks[1].semantics, ("italic",))
+            self.assertTrue(all(mark.required for mark in marks))
+
+    def test_css_reset_and_math_wrappers_remain_required_without_inventing_literal_roles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._book(
+                directory,
+                '<p><i>italic<span class="roman">normal</span></i> '
+                "X<sub>90</sub> and <sup>2</sup>.</p>",
+                ".roman{font-style:normal}",
+            )
+            document = read_epub(path, "en", "zh")
+            enrich_rich_sources(path, document.chapters)
+            marks = {mark.source_text: mark for mark in self._marks(document)}
+            self.assertEqual(marks["normal"].semantics, ())
+            self.assertTrue(marks["normal"].required)
+            self.assertIn("subscript", marks["90"].semantics)
+            self.assertIn("superscript", marks["2"].semantics)
+
+    def test_relative_small_enlargement_is_decoration_but_weight_and_native_sup_are_semantic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._book(
+                directory,
+                '<p><span class="drop">A</span> story.</p>'
+                '<p><span class="bold">A</span> story.</p>'
+                '<p><sup class="drop">A</sup> symbol.</p>',
+                ".drop{font-size:120%;font-weight:500}.bold{font-weight:bold}",
+            )
+            document = read_epub(path, "en", "zh")
+            enrich_rich_sources(path, document.chapters)
+            marks = self._marks(document)
+            self.assertEqual([mark.kind for mark in marks], ["decoration", "style", "style"])
+            self.assertEqual(marks[0].semantics, ())
+            self.assertIn("bold", marks[1].semantics)
+            self.assertIn("superscript", marks[2].semantics)
+
+    def test_inline_decoration_proof_honors_priority_resets_and_does_not_guess_absolute_size(self):
+        self.assertFalse(_added_dropcap_style([".drop{font-size:2em;font:inherit}"]))
+        self.assertTrue(_added_dropcap_style([".drop{font-size:2em!important;font:inherit}"]))
+        self.assertFalse(_added_dropcap_style(["#a{font-size:1em}", ".drop{font-size:2em}"]))
+        self.assertFalse(_added_dropcap_style([".drop{font-size:48px;font-weight:bold}"]))
+        self.assertFalse(_added_dropcap_style([".drop{float:left;all:initial}"]))
+        self.assertTrue(_added_dropcap_style([".drop{initial-letter:2}"]))
 
     def test_source_hash_mismatch_fails_without_mutating_evidence(self):
         with tempfile.TemporaryDirectory() as directory:

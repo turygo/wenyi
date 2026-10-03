@@ -183,7 +183,7 @@ def source_subset(
         if not nodes:
             continue
         try:
-            whole = whole_source_mode(source_path, resource, nodes)
+            whole = whole_source_mode(source_path, path, resource)
         except (ValueError, KeyError, etree.LxmlError, zipfile.BadZipFile):
             failures.append(
                 archive_model.item(
@@ -224,6 +224,7 @@ def source_subset(
 def exact_bilingual_proof(
     source_path: Path,
     mono_path: Path,
+    bilingual_path: Path,
     bilingual_soups: dict[str, BeautifulSoup],
     failures: list[dict[str, str]],
     checked: dict[str, int],
@@ -237,7 +238,9 @@ def exact_bilingual_proof(
         soup = bilingual_soups.get(resource)
         actual_nodes = soup.select(".tn-source") if soup is not None else []
         try:
-            whole = whole_source_mode(source_path, resource, actual_nodes)
+            whole = (
+                whole_source_mode(source_path, bilingual_path, resource) if actual_nodes else False
+            )
         except (ValueError, KeyError, etree.LxmlError, zipfile.BadZipFile):
             failures.append(
                 archive_model.item(

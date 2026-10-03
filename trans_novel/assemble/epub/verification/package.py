@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 
 from trans_novel.assemble.epub.verification import archive_compare as compare
 from trans_novel.assemble.epub.verification import archive_model, structure
+from trans_novel.assemble.epub.verification.decorations import prove_soup_decoration_style
+from trans_novel.epub.markup import resource_parser
 from trans_novel.epub.package import HTML_MEDIA, NCX_MEDIA
 from trans_novel.epub.package import read_package as read_package_model
 
@@ -117,6 +119,28 @@ def check_manifest_resources(
         )
 
 
+def _prove_source_decoration(source_zip, resource, source_data, output_soup, failures):
+    """在资源散列比较前核对唯一允许增加的来源绑定样式。"""
+    if output_soup is None:
+        return
+    try:
+        prove_soup_decoration_style(
+            source_zip,
+            resource,
+            resource_parser(source_data)[0].getroot(),
+            output_soup,
+        )
+    except ValueError:
+        failures.append(
+            archive_model.item(
+                "resources",
+                "decoration_override_mismatch",
+                resource,
+                "style",
+            )
+        )
+
+
 def compare_source_archive(
     source_path: Any,
     model_info: dict[str, Any],
@@ -169,6 +193,13 @@ def compare_source_archive(
                 if source_data is None:
                     continue
                 source_soup, _ = structure.html_soup(source_data, source_item["media"])
+                _prove_source_decoration(
+                    source_zip,
+                    source_item["path"],
+                    source_data,
+                    soups.get(source_item["path"]),
+                    failures,
+                )
                 source_soups[source_item["path"]] = source_soup
                 source_ids[source_item["path"]] = structure.ids(source_soup)
             temp_checked = dict.fromkeys(checked, 0)

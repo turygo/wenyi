@@ -10,16 +10,25 @@ from collections import defaultdict
 import tinycss2
 from lxml import etree
 
+from trans_novel.assemble.epub.rendering.theme.css import CssDeclaration
 from trans_novel.assemble.epub.rendering.theme.source_css import (
     collect_source_stylesheets,
+    source_semantic_styles,
     source_style_evidence,
+    source_style_requirements,
+)
+from trans_novel.assemble.epub.rendering.theme.source_selectors import (
+    source_declarations,
+    source_selector_branches,
+)
+from trans_novel.assemble.epub.rendering.theme.source_semantics import (
+    decoration_declarations,
+    dropcap_style_proven,
 )
 from trans_novel.epub.archive import preflight_zip, read_member
 from trans_novel.epub.markup import resource_parser
-from trans_novel.epub.richtext import InlineMark, RichSource
+from trans_novel.epub.richtext import InlineMark, RichSource, tag_semantics
 from trans_novel.ingest.models import Chapter
-
-_FONT_SIZE = re.compile(r"^(\d+(?:\.\d+)?)em$")
 
 
 def _resolve(root: etree._Element, path: tuple[int, ...]) -> etree._Element:
@@ -33,38 +42,40 @@ def _resolve(root: etree._Element, path: tuple[int, ...]) -> etree._Element:
 
 
 def _added_dropcap_style(evidence: list[str]) -> bool:
-    """仅接受新增的无条件字号和粗体声明，不猜测条件 CSS 的生效状态。"""
-    size = False
-    bold = False
-    for value in evidence:
+    """仅计算新增无条件装饰证据的获胜属性，不以加重本身判断装饰。"""
+    winners = {}
+    for order, value in enumerate(evidence):
         if value.startswith(("@media", "@supports")):
             continue
         if "{" not in value or not value.endswith("}"):
             continue
-        declarations = tinycss2.parse_declaration_list(
-            value.split("{", 1)[1][:-1], skip_whitespace=True, skip_comments=True
+        selector, body = value.split("{", 1)
+        inline = selector.startswith("@inline ")
+        specificity = (
+            (0, 0, 0)
+            if inline
+            else max(
+                item.specificity
+                for item in source_selector_branches(
+                    tinycss2.parse_component_value_list(selector), resource="<style>"
+                )
+            )
         )
-        for declaration in declarations:
-            if declaration.type != "declaration":
-                continue
-            rendered = tinycss2.serialize(declaration.value).strip().lower()
-            if declaration.lower_name == "font-size":
-                match = _FONT_SIZE.fullmatch(rendered)
-                size = size or bool(match and float(match.group(1)) >= 1.5)
-            elif declaration.lower_name == "font-weight":
-                bold = bold or rendered == "bold" or (rendered.isdigit() and int(rendered) >= 700)
-    return size and bold
+        declarations = source_declarations(
+            tinycss2.parse_component_value_list(body[:-1]), resource="<style>"
+        )
+        for prop, text, important, index in decoration_declarations(declarations):
+            rank = (important, inline, specificity, order, index)
+            if prop not in winners or rank > winners[prop][0]:
+                winners[prop] = (rank, text)
+    return dropcap_style_proven(
+        tuple(CssDeclaration(prop, text) for prop, (_, text) in winners.items())
+    )
 
 
 def _opening_letter(mark: InlineMark, sources: list[RichSource]) -> bool:
     """首字可带开引号或独立成词，但不能把完整短语或后续字母当装饰。"""
-    if mark.kind != "style" or mark.tag.rsplit("}", 1)[-1].lower() in {
-        "a",
-        "b",
-        "strong",
-        "em",
-        "i",
-    }:
+    if mark.kind != "style" or tag_semantics(mark.tag):
         return False
     if re.fullmatch(r"[“‘\"']?[A-Za-z]", mark.source_text) is None:
         return False
@@ -121,13 +132,31 @@ def enrich_rich_sources(source_path: str, chapters: list[Chapter]) -> None:
             stylesheets = collect_source_stylesheets(archive, root, href)
             evidence = source_style_evidence(root, nodes, stylesheets, resource=href)
             by_node = dict(zip(nodes, evidence, strict=True))
+            semantics = dict(
+                zip(
+                    nodes,
+                    source_semantic_styles(root, nodes, stylesheets, resource=href),
+                    strict=True,
+                )
+            )
+            requirements = dict(
+                zip(
+                    nodes,
+                    source_style_requirements(root, nodes, stylesheets, resource=href),
+                    strict=True,
+                )
+            )
             for mark, node, block_path in records:
                 mark.style_evidence = list(by_node[node])
+                mark.semantics = tuple(dict.fromkeys((*tag_semantics(mark.tag), *semantics[node])))
+                mark.required = bool(tag_semantics(mark.tag)) or requirements[node]
                 parent_evidence = set(by_node.get(node.getparent(), ()))
                 added = [value for value in mark.style_evidence if value not in parent_evidence]
                 block_sources = by_block[block_path]
                 if _opening_letter(mark, block_sources) and _added_dropcap_style(added):
                     mark.kind = "decoration"
+                    mark.semantics = ()
+                    mark.required = False
 
 
 __all__ = ["enrich_rich_sources"]

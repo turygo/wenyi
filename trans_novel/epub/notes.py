@@ -39,6 +39,7 @@ _PROTECTED_TAGS = {"script", "style", "code", "math", "svg", "form", "nav"}
 _SYMBOL_MARKER_RE = re.compile(r"^(?:\*{1,3}|†{1,3}|‡{1,3}|§{1,3}|¶{1,3})$")
 _NUMBER_MARKER_RE = re.compile(r"^(?:[0-9]{1,4}|\[[0-9]{1,4}\]|\([0-9]{1,4}\))$")
 _WS_RE = re.compile(r"[ \t\r\n\f\v]+")
+_RECOVERY_NUMBER_RE = re.compile(r"^(?:[0-9]{1,4}|\[[0-9]{1,4}\]|\([0-9]{1,4}\))\.?$")
 
 
 def _local_name(element: etree._Element) -> str:
@@ -459,4 +460,247 @@ def detect_note_relations(
     }
 
 
-__all__ = ["NoteMarker", "NoteRelations", "NoteTarget", "detect_note_relations"]
+def note_resources_by_semantics(
+    entries: list[dict],
+) -> dict[str, Literal["footnote", "endnote"]]:
+    """按 guide/landmark 的显式语义返回无冲突的注释资源。"""
+    evidence: dict[str, set[Literal["footnote", "endnote"]]] = {}
+    for entry in entries:
+        href = entry.get("resource_href")
+        if not isinstance(href, str) or not href:
+            continue
+        tokens = {
+            token
+            for name in ("type", "nav_type", "role")
+            if isinstance(entry.get(name), str)
+            for token in entry[name].split()
+        }
+        if tokens & {"notes", "footnotes", "doc-footnote"}:
+            evidence.setdefault(href, set()).add("footnote")
+        if tokens & {"endnotes", "doc-endnotes"}:
+            evidence.setdefault(href, set()).add("endnote")
+    return {href: next(iter(kinds)) for href, kinds in evidence.items() if len(kinds) == 1}
+
+
+def _recovery_marker_kind(label: str) -> Literal["symbol", "number"] | None:
+    if _SYMBOL_MARKER_RE.fullmatch(label):
+        return "symbol"
+    if _RECOVERY_NUMBER_RE.fullmatch(label):
+        return "number"
+    return None
+
+
+def _recovery_labels_correspond(left: str, right: str) -> bool:
+    if _RECOVERY_NUMBER_RE.fullmatch(left) and _RECOVERY_NUMBER_RE.fullmatch(right):
+        return left.removesuffix(".").strip("[]()") == right.removesuffix(".").strip("[]()")
+    return left == right
+
+
+def _recovery_ref_targets(anchor: etree._Element) -> list[etree._Element]:
+    targets = [anchor]
+    preceding = _preceding_empty_identifier(anchor)
+    if preceding is not None:
+        targets.append(preceding)
+    top = anchor
+    while top.getparent() is not None and _local_name(top.getparent()) in {"span", "sup"}:
+        parent = top.getparent()
+        if (
+            (parent.text or "").strip()
+            or (top.tail or "").strip()
+            or len(_element_children(parent)) != 1
+        ):
+            break
+        targets.append(parent)
+        top = parent
+    return targets
+
+
+def _recovery_has_body(block: etree._Element, backlink: etree._Element) -> bool:
+    parts: list[str] = []
+    for element in block.iter():
+        if not isinstance(element.tag, str):
+            continue
+        within_backlink = element is backlink or any(
+            ancestor is backlink for ancestor in element.iterancestors()
+        )
+        if not within_backlink and element.text:
+            parts.append(element.text)
+        if element is not block and element.tail and (element is backlink or not within_backlink):
+            parts.append(element.tail)
+    return bool("".join(parts).strip())
+
+
+def _recovery_pair_allowed(
+    ref: etree._Element,
+    backlink: etree._Element,
+    note_href: str,
+    note_block: etree._Element,
+    resource_kinds: Mapping[str, Literal["footnote", "endnote"]],
+) -> bool:
+    ref_label = _normalized_label(ref)
+    backlink_label = _normalized_label(backlink)
+    if not _recovery_labels_correspond(ref_label, backlink_label):
+        return False
+    if not _at_note_start(note_block, backlink):
+        return False
+    if not _recovery_has_body(note_block, backlink):
+        return False
+    if (
+        _recovery_marker_kind(ref_label) == "number"
+        and _marker_kinds(ref) != {"noteref"}
+        and _marker_kinds(backlink) != {"backlink"}
+        and not _has_note_semantics(note_block)
+        and note_href not in resource_kinds
+    ):
+        body_block = _note_block(ref)
+        return (
+            _local_name(note_block) in _NOTE_BLOCK_TAGS
+            and body_block is not None
+            and not _at_note_start(body_block, ref)
+        )
+    return True
+
+
+def _recoverable_pairs(
+    anchors: list[tuple[str, etree._Element]],
+    resolved: Mapping[int, tuple[str, etree._Element] | None],
+    resource_kinds: Mapping[str, Literal["footnote", "endnote"]],
+) -> list[_InferredPair]:
+    pairs: list[_InferredPair] = []
+    for ref_href, ref in anchors:
+        if (
+            _marker_kinds(ref) - {"noteref"}
+            or _recovery_marker_kind(_normalized_label(ref)) is None
+        ):
+            continue
+        linked_note = resolved[id(ref)]
+        if linked_note is None:
+            continue
+        note_href, note_target = linked_note
+        note_block = _note_block(note_target)
+        if note_block is None:
+            continue
+        accepted_targets = _recovery_ref_targets(ref)
+        backlinks = [
+            (href, anchor)
+            for href, anchor in anchors
+            if href == note_href
+            and (anchor is note_block or any(node is note_block for node in anchor.iterancestors()))
+            and resolved[id(anchor)] is not None
+            and resolved[id(anchor)][0] == ref_href
+            and any(resolved[id(anchor)][1] is target for target in accepted_targets)
+        ]
+        if len(backlinks) != 1:
+            continue
+        backlink_href, backlink = backlinks[0]
+        if (
+            _marker_kinds(backlink) - {"backlink"}
+            or _recovery_marker_kind(_normalized_label(backlink)) is None
+            or not _recovery_pair_allowed(ref, backlink, note_href, note_block, resource_kinds)
+        ):
+            continue
+        linked_ref = resolved[id(backlink)]
+        if linked_ref is None:
+            continue
+        pairs.append(
+            (
+                ref_href,
+                ref,
+                note_href,
+                note_target,
+                note_block,
+                backlink_href,
+                backlink,
+                linked_ref[1],
+            )
+        )
+    return pairs
+
+
+def _unique_recovery_pairs(
+    pairs: list[_InferredPair],
+    anchors: list[tuple[str, etree._Element]],
+    resolved: Mapping[int, tuple[str, etree._Element] | None],
+) -> list[_InferredPair]:
+    roles: dict[int, set[str]] = {}
+    inbound: dict[tuple[str, int], int] = {}
+    for _, ref, _, _, _, _, backlink, _ in pairs:
+        roles.setdefault(id(ref), set()).add("noteref")
+        roles.setdefault(id(backlink), set()).add("backlink")
+    for _, anchor in anchors:
+        if _marker_kinds(anchor) - {"noteref"}:
+            continue
+        if _recovery_marker_kind(_normalized_label(anchor)) is None:
+            continue
+        linked = resolved[id(anchor)]
+        if linked is None:
+            continue
+        block = _note_block(linked[1])
+        if block is not None:
+            key = (linked[0], id(block))
+            inbound[key] = inbound.get(key, 0) + 1
+    return [
+        pair
+        for pair in pairs
+        if roles[id(pair[1])] == {"noteref"}
+        and roles[id(pair[6])] == {"backlink"}
+        and inbound.get((pair[2], id(pair[4]))) == 1
+    ]
+
+
+def detect_recoverable_note_relations(
+    resources: Mapping[str, etree._Element],
+    *,
+    excluded_resources: Collection[str] = (),
+    note_resources: Mapping[str, Literal["footnote", "endnote"]] | None = None,
+) -> NoteRelations:
+    """返回满足双向唯一证明的注释对象关系，保持源 DOM 和原始标签不变。"""
+    excluded = set(excluded_resources)
+    indexes = _identifier_indexes(resources, excluded)
+    anchors, resolved = _resolved_anchors(resources, excluded, indexes)
+    resource_kinds = note_resources or {}
+    pairs = _recoverable_pairs(anchors, resolved, resource_kinds)
+    markers: list[NoteMarker] = []
+    targets: list[NoteTarget] = []
+    for (
+        ref_href,
+        ref,
+        note_href,
+        note_target,
+        block,
+        backlink_href,
+        backlink,
+        linked_ref,
+    ) in _unique_recovery_pairs(pairs, anchors, resolved):
+        for href, anchor, kind, target_href, target in (
+            (ref_href, ref, "noteref", note_href, note_target),
+            (backlink_href, backlink, "backlink", ref_href, linked_ref),
+        ):
+            markers.append(
+                {
+                    "resource_href": href,
+                    "path": _element_path(resources[href], anchor),
+                    "kind": kind,
+                    "label": _anchor_label(anchor),
+                    "target_resource": target_href,
+                    "target_path": _element_path(resources[target_href], target),
+                }
+            )
+        targets.append(
+            {
+                "resource_href": note_href,
+                "path": _element_path(resources[note_href], block),
+                "kind": _target_kind(block) or resource_kinds.get(note_href, "footnote"),
+            }
+        )
+    return {"version": 1, "markers": markers, "targets": targets}
+
+
+__all__ = [
+    "NoteMarker",
+    "NoteRelations",
+    "NoteTarget",
+    "detect_note_relations",
+    "detect_recoverable_note_relations",
+    "note_resources_by_semantics",
+]

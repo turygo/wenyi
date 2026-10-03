@@ -11,6 +11,8 @@ from lxml import etree
 
 from trans_novel.assemble.epub.metadata import epub_language
 from trans_novel.assemble.epub.rendering.bilingual import dedupe_segment_mappings
+from trans_novel.assemble.epub.rendering.decorations import render_decoration_overrides
+from trans_novel.assemble.epub.rendering.note_recovery import validate_note_references
 from trans_novel.assemble.epub.rendering.source_dom import toc_kind_at
 from trans_novel.assemble.epub.rendering.source_markup import (
     parse_source_markup,
@@ -93,6 +95,7 @@ def _source_state(
         if isinstance(item, dict) and isinstance(item.get("href"), str)
     }
     chapters = [store.load_chapter(c["index"]) for c in manifest["chapters"]]
+    validate_note_references(source_path, chapters)
     all_segments = [segment for chapter in chapters for segment in chapter.segments]
     deduped_segments = dedupe_segment_mappings(all_segments)
     grouped: dict[str, list[Segment]] = {}
@@ -218,6 +221,9 @@ def _render_source_archive(
                             target_lang=archive_lang,
                             source_lang=source_lang,
                         )
+                    rendered = render_decoration_overrides(
+                        zin, name, data, rendered, grouped[name], target_lang
+                    )
                     _write_source_member(zout, info, rendered)
                 elif toc_kind_at(toc_entries, name) in {"nav", "ncx"}:
                     resource = resources_meta.get(name)

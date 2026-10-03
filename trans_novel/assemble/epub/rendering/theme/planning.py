@@ -49,6 +49,7 @@ from trans_novel.assemble.epub.rendering.theme.projection import (
     build_projection,
 )
 from trans_novel.assemble.epub.rendering.theme.source_css import collect_source_stylesheets
+from trans_novel.assemble.epub.rendering.theme.source_selectors import source_node_map
 from trans_novel.epub.layout import LayoutAssignment
 from trans_novel.epub.notes import NoteRelations
 
@@ -333,19 +334,11 @@ def _marked_soup(
     root: etree._Element, markers: dict[etree._Element, dict[str, str]], resource: str
 ) -> tuple[BeautifulSoup, dict[int, etree._Element]]:
     try:
-        soup = BeautifulSoup(etree.tostring(root), "xml")
+        soup, reverse = source_node_map(root, resource=resource)
     except (ValueError, TypeError, etree.LxmlError):
         raise ThemeError("theme_css", "invalid_markup", resource=resource) from None
-    xml_nodes = [node for node in root.iter() if isinstance(node.tag, str)]
-    soup_nodes = [node for node in soup.find_all(True) if isinstance(node, Tag)]
-    if len(xml_nodes) != len(soup_nodes) or any(
-        local_name(xml.tag).lower() != str(tag.name).split(":")[-1].lower()
-        for xml, tag in zip(xml_nodes, soup_nodes, strict=True)
-    ):
-        raise ThemeError("theme_css", "invalid_markup", resource=resource)
-    reverse = {id(tag): xml for xml, tag in zip(xml_nodes, soup_nodes, strict=True)}
-    for xml, tag in zip(xml_nodes, soup_nodes, strict=True):
-        for name, value in markers.get(xml, {}).items():
+    for tag in soup.find_all(True):
+        for name, value in markers.get(reverse[id(tag)], {}).items():
             tag[name] = value
     return soup, reverse
 
@@ -560,7 +553,7 @@ def plan_resource(
         resource=resource_href,
     )
     stylesheets = collect_source_stylesheets(archive, root, resource_href)
-    guards = source_specificity_bound(stylesheets, resource=resource_href)
+    guards = source_specificity_bound(stylesheets, resource=resource_href, root=root)
     css = _compile_css(matches, addresses, guards)
     marker_changes = tuple(
         MarkerChange(

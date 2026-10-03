@@ -6,14 +6,14 @@ import hashlib
 import os
 import zipfile
 from collections.abc import Iterable
-from typing import Any, Literal
+from typing import Any
 
 from lxml import etree
 
 from trans_novel.epub.archive import ZipSafetyError, preflight_zip, read_member
 from trans_novel.epub.markup import resource_parser
 from trans_novel.epub.navigation import parse_nav_landmarks, parse_toc_entries
-from trans_novel.epub.notes import detect_note_relations
+from trans_novel.epub.notes import detect_note_relations, note_resources_by_semantics
 from trans_novel.epub.package import HTML_MEDIA, read_package
 from trans_novel.ingest.epub.chapters import logical_chapters
 from trans_novel.ingest.epub.markup import annotate_resource
@@ -52,27 +52,6 @@ def _semantic_hints_by_resource(
             ]
             hints.setdefault(href, []).extend(values)
     return hints
-
-
-def _note_resources_by_semantics(
-    guide_entries: list[dict[str, Any]], landmarks: list[dict[str, Any]]
-) -> dict[str, Literal["footnote", "endnote"]]:
-    evidence: dict[str, set[Literal["footnote", "endnote"]]] = {}
-    for entry in [*guide_entries, *landmarks]:
-        href = entry.get("resource_href")
-        if not isinstance(href, str) or not href:
-            continue
-        tokens = {
-            token
-            for name in ("type", "nav_type", "role")
-            if isinstance(entry.get(name), str)
-            for token in entry[name].split()
-        }
-        if tokens & {"notes", "footnotes", "doc-footnote"}:
-            evidence.setdefault(href, set()).add("footnote")
-        if tokens & {"endnotes", "doc-endnotes"}:
-            evidence.setdefault(href, set()).add("endnote")
-    return {href: next(iter(kinds)) for href, kinds in evidence.items() if len(kinds) == 1}
 
 
 def _parse_resources(zf: zipfile.ZipFile, content_paths: list[str]) -> list[_ParsedResource]:
@@ -132,7 +111,7 @@ def read_epub(path: str, source_lang: str, target_lang: str) -> Document:
             toc_entries = parse_toc_entries(zf, model["toc_kinds"])
             landmarks = parse_nav_landmarks(zf, [str(item["path"]) for item in model["nav_items"]])
             resource_hints = _semantic_hints_by_resource(model["guide_entries"], landmarks)
-            note_resources = _note_resources_by_semantics(model["guide_entries"], landmarks)
+            note_resources = note_resources_by_semantics([*model["guide_entries"], *landmarks])
 
             archive_hash = hashlib.sha256()
             with open(path, "rb") as source_file:

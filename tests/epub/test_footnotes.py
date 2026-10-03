@@ -14,6 +14,7 @@ from tests.fixtures.richtext import synthetic_rich_target
 from trans_novel.assemble.epub.rendering import assemble_source_epub
 from trans_novel.assemble.epub.verification.validation import validate_epub
 from trans_novel.config import Config
+from trans_novel.epub.richtext import InlineRun, RichTarget
 from trans_novel.ingest.epub.reader import read_epub
 from trans_novel.llm import FakeClient
 from trans_novel.pipeline import Application
@@ -83,7 +84,14 @@ class TestEpubFootnotes(unittest.TestCase):
         doc = read_epub(str(self.source), "en", "zh")
         segment = doc.chapters[0].segments[0]
         self.assertEqual(segment.source, "Lead power units tail end 3 foreign")
-        segment.assign_translation(synthetic_rich_target(segment.epub_state, "Translation"))
+        source = segment.epub_state.rich_source
+        # 该测试的三个对应范围显式声明，普通链接各自保持独立实体。
+        runs = [
+            InlineRun(text=target, marks=next(run.marks for run in source.runs if word in run.text))
+            for word, target in (("power", "Trans"), ("3", "la"), ("foreign", "tion"))
+        ]
+        runs.extend(InlineRun(atom=atom.id) for atom in source.atoms)
+        segment.assign_translation(RichTarget(runs=runs))
         manifest = {
             "meta": doc.meta,
             "source_lang": "en",

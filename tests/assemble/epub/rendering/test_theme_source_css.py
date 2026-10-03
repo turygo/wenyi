@@ -10,6 +10,7 @@ from lxml import etree
 from trans_novel.assemble.epub.rendering.theme.contracts import ThemeError
 from trans_novel.assemble.epub.rendering.theme.source_css import (
     collect_source_stylesheets,
+    source_semantic_styles,
     source_style_evidence,
 )
 
@@ -68,12 +69,17 @@ class TestSourceStylesheetCollection(unittest.TestCase):
                 "file:OPS/css/nested/one.css",
                 "file:OPS/css/base.css",
                 "inline:1",
+                "file:OPS/shared.css#occurrence:2",
+                "file:OPS/css/nested/one.css#occurrence:2",
+                "file:OPS/css/base.css#occurrence:2",
                 "inline:2",
                 "inline:3",
             ],
         )
         self.assertIn("élan", sheets["file:OPS/css/nested/one.css"].decode())
         self.assertIn("café", sheets["file:OPS/css/base.css"].decode())
+        self.assertTrue(sheets["file:OPS/shared.css"].startswith(b"@media screen{@media screen{"))
+        self.assertTrue(sheets["file:OPS/shared.css#occurrence:2"].startswith(b"@media screen{"))
         self.assertTrue(all(b"@charset" not in css.lower() for css in sheets.values()))
         self.assertTrue(all(b"@import" not in css.lower() for css in sheets.values()))
         self.assertEqual(after, members)
@@ -104,6 +110,75 @@ class TestSourceStylesheetCollection(unittest.TestCase):
                 "inline:0",
             ],
         )
+        self.assertEqual(sheets["file:OPS/text/a.css"], b"#a {}")
+        self.assertEqual(sheets["file:OPS/text/b.css"], b"@media print{#b {}}")
+        self.assertEqual(sheets["file:OPS/text/c.css"], b"@supports (display: grid){#c {}}")
+
+    def test_preserves_each_import_condition_and_source_order(self) -> None:
+        sheets, after = _collect(
+            {"OPS/text/a.css": b"p{font-style:italic}"},
+            '<style>@import "a.css" print;@import "a.css" screen;p{font-weight:500}</style>'
+            '<link rel="stylesheet" href="a.css"/>',
+        )
+        self.assertEqual(
+            list(sheets),
+            [
+                "file:OPS/text/a.css",
+                "file:OPS/text/a.css#occurrence:2",
+                "inline:0",
+                "file:OPS/text/a.css#occurrence:3",
+            ],
+        )
+        self.assertEqual(
+            list(sheets.values()),
+            [
+                b"@media print{p{font-style:italic}}",
+                b"@media screen{p{font-style:italic}}",
+                b"p{font-weight:500}",
+                b"p{font-style:italic}",
+            ],
+        )
+        self.assertEqual(after["OPS/text/a.css"], b"p{font-style:italic}")
+
+    def test_nested_imports_keep_supports_and_media_context(self) -> None:
+        sheets, _ = _collect(
+            {
+                "OPS/text/a.css": b'@import "b.css" supports(selector(p)) print;p{}',
+                "OPS/text/b.css": b"p{font-style:italic}",
+            },
+            '<style media="screen">@import "a.css" supports(display: grid);</style>',
+        )
+        self.assertEqual(
+            sheets["file:OPS/text/b.css"],
+            b"@media screen{@supports (display: grid){@supports selector(p){@media print{p{font-style:italic}}}}}",
+        )
+
+    def test_style_and_link_media_attributes_are_wrapped(self) -> None:
+        sheets, _ = _collect(
+            {"OPS/text/a.css": b"p{font-style:italic}"},
+            '<link rel="stylesheet" href="a.css" media="print"/>'
+            '<style media="screen and (min-width: 1px)">p{font-weight:500}</style>'
+            '<style media="all">p{font-style:normal}</style>',
+        )
+        self.assertEqual(sheets["file:OPS/text/a.css"], b"@media print{p{font-style:italic}}")
+        self.assertEqual(
+            sheets["inline:0"], b"@media screen and (min-width: 1px){p{font-weight:500}}"
+        )
+        self.assertEqual(sheets["inline:1"], b"p{font-style:normal}")
+
+    def test_conditional_import_cannot_be_assumed_to_apply_to_semantics(self) -> None:
+        root = _root("", "<p>Text</p>")
+        paragraph = root.xpath("//*[local-name()='p']")[0]
+        for condition in ("print", "supports(display: grid)"):
+            with self.subTest(condition=condition):
+                sheets, _ = _collect(
+                    {"OPS/text/a.css": b"p{font-style:italic}"},
+                    f'<style>@import "a.css" {condition};</style>',
+                )
+                with self.assertRaisesRegex(ThemeError, "^ambiguous_source_semantics$"):
+                    source_semantic_styles(
+                        root, (paragraph,), sheets, resource="OPS/text/chapter.xhtml"
+                    )
 
     def test_nested_import_is_left_for_the_source_bound_validator(self) -> None:
         sheets, _after = _collect({}, "<style>@media screen { @import 'nested.css'; }</style>")
@@ -173,6 +248,62 @@ class TestSourceStylesheetCollection(unittest.TestCase):
 
 
 class TestSourceStyleEvidence(unittest.TestCase):
+    def test_layout_preserves_rule_text_declaration_order_and_conditions(self) -> None:
+        root = _root("", '<p style="color: navy;">Text</p>')
+        paragraph = root.xpath("//*[local-name()='p']")[0]
+        sheets = {"book": b"@media print { p { color: red;\ncolor: blue !important; } }"}
+        self.assertEqual(
+            source_style_evidence(
+                root, (paragraph,), sheets, resource="chapter", preserve_rule_text=True
+            ),
+            (("@media print{p{color: red;\ncolor: blue !important;}}", "@inline p{color: navy;}"),),
+        )
+        self.assertEqual(
+            source_style_evidence(root, (paragraph,), sheets, resource="chapter"),
+            (("@media print{p{color:red;color:blue !important}}", "@inline p{color: navy;}"),),
+        )
+
+    def test_layout_preserves_one_ordinary_selector_list_with_matched_union(self) -> None:
+        root = _root("", '<section><p class="quote">Text</p></section><div>Other</div>')
+        nodes = root.xpath("//*[local-name()='p' or local-name()='div']")
+        sheets = {"book": b"section, p.quote, div { color: red; }"}
+        self.assertEqual(
+            source_style_evidence(root, nodes, sheets, resource="chapter", preserve_rule_text=True),
+            (("section, p.quote, div{color: red;}",), ("section, p.quote, div{color: red;}",)),
+        )
+        self.assertEqual(
+            source_style_evidence(root, nodes, sheets, resource="chapter"),
+            (("section{color:red}", "p.quote{color:red}"), ("div{color:red}",)),
+        )
+
+    def test_layout_mixed_pseudo_rule_keeps_only_ordinary_branch(self) -> None:
+        root = _root("", "<p>Text</p>")
+        paragraph = root.xpath("//*[local-name()='p']")[0]
+        sheets = {"book": b"p, p::first-letter { font-size: 120%; }"}
+        self.assertEqual(
+            source_style_evidence(
+                root, (paragraph,), sheets, resource="chapter", preserve_rule_text=True
+            ),
+            (("p{font-size: 120%;}",),),
+        )
+        self.assertEqual(
+            source_style_evidence(root, (paragraph,), sheets, resource="chapter"),
+            (("p{font-size:120%}",),),
+        )
+
+    def test_layout_excludes_nonmatching_dynamic_branch_from_selector_list(self) -> None:
+        root = _root("", "<p>Text</p>")
+        paragraph = root.xpath("//*[local-name()='p']")[0]
+        sheets = {"book": b"p, .missing:hover { font-weight: bold; }"}
+        for preserve in (False, True):
+            with self.subTest(preserve_rule_text=preserve):
+                self.assertEqual(
+                    source_style_evidence(
+                        root, (paragraph,), sheets, resource="chapter", preserve_rule_text=preserve
+                    ),
+                    (("p{font-weight: bold;}" if preserve else "p{font-weight:bold}",),),
+                )
+
     def test_matches_node_and_ancestors_with_media_and_inline_context(self) -> None:
         root = _root(
             "",

@@ -7,7 +7,7 @@ from collections.abc import Collection
 from lxml import etree
 
 from trans_novel.epub.markup import is_backlink, is_noteref
-from trans_novel.epub.richtext import InlineAtom, InlineMark, InlineRun, RichSource
+from trans_novel.epub.richtext import InlineAtom, InlineMark, InlineRun, RichSource, tag_semantics
 from trans_novel.epub.slots import EpubSegmentState
 
 _OPAQUE = {"script", "style", "rt", "rp"}
@@ -132,6 +132,7 @@ def extract_rich_sources(
                 attributes=dict(node.attrib),
                 source_text="",
                 kind=mark_kind,
+                semantics=tag_semantics(node.tag),
             )
             active = (*active, mark_id)
         add(path, "text", node.text, active)

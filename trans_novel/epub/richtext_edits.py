@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from itertools import pairwise
 
-from trans_novel.epub.richtext import InlineRun, RichSource, RichTarget
+from trans_novel.epub.richtext import InlineRun, RichSource, RichTarget, semantic_roles
 from trans_novel.postprocess.text_edits import (
     TextEdit,
     literal_ranges,
@@ -13,17 +13,15 @@ from trans_novel.postprocess.text_edits import (
     validate_text_edits,
 )
 
-_LITERAL_TAGS = frozenset({"code", "kbd", "samp", "pre"})
-
 
 def _edit_marks(target: RichTarget, edit: TextEdit) -> tuple[str, ...]:
     offset = 0
     consumed: set[tuple[str, ...]] = set()
     for run in target.runs:
         end = offset + len(run.text)
-        if run.atom is not None:
+        if run.atom is not None or run.omission is not None or run.note is not None:
             if edit.start < offset < edit.end or edit.start == edit.end == offset:
-                raise ValueError("target edit crosses an immutable atom")
+                raise ValueError("target edit crosses an immutable atom or omission")
         elif max(offset, edit.start) < min(end, edit.end) or (
             edit.start == edit.end and offset <= edit.start <= end and run.text
         ):
@@ -37,9 +35,17 @@ def _edit_marks(target: RichTarget, edit: TextEdit) -> tuple[str, ...]:
 def protected_rich_ranges(
     target: RichTarget, source: RichSource | None = None
 ) -> list[tuple[int, int]]:
-    """代码范围及 URL 属于字面量，确定性编辑不得改变其内容。"""
+    """代码、网址和邮箱链接属于字面量，确定性编辑不得改变其内容。"""
     literal_ids = (
-        {mark.id for mark in source.marks if mark.tag.rsplit("}", 1)[-1].lower() in _LITERAL_TAGS}
+        {
+            mark.id
+            for mark in source.marks
+            if "literal" in semantic_roles(mark)
+            or (
+                mark.tag.rsplit("}", 1)[-1].lower() == "a"
+                and mark.attributes.get("href", "").lower().startswith("mailto:")
+            )
+        }
         if source is not None
         else set()
     )
@@ -60,10 +66,21 @@ def apply_rich_edits(
     validate_text_edits(target.text, edits)
     protected = protected_rich_ranges(target, source)
     if any(
-        max(start, edit.start) < min(end, edit.end) for edit in edits for start, end in protected
+        max(start, edit.start) < min(end, edit.end) or start < edit.start == edit.end < end
+        for edit in edits
+        for start, end in protected
     ):
         raise ValueError("target edit touches a protected literal")
     replacements = [_edit_marks(target, edit) for edit in edits]
+    identity_ids = (
+        {
+            mark.id
+            for mark in source.marks
+            if mark.attributes.get("id") or mark.attributes.get("name")
+        }
+        if source is not None
+        else set()
+    )
     runs: list[InlineRun] = []
     offset = 0
     emitted: set[int] = set()
@@ -73,6 +90,7 @@ def apply_rich_edits(
             runs.append(run.model_copy(deep=True))
             continue
         cursor = offset
+        first_run = len(runs)
         for index, edit in enumerate(edits):
             if edit.end <= offset and not (edit.start == edit.end == offset):
                 continue
@@ -90,11 +108,13 @@ def apply_rich_edits(
             cursor = max(cursor, min(end, edit.end))
         if cursor < end:
             runs.append(InlineRun(text=run.text[cursor - offset :], marks=run.marks))
+        if first_run == len(runs) and identity_ids.intersection(run.marks):
+            runs.append(InlineRun(marks=run.marks))
         offset = end
     for index, edit in enumerate(edits):
         if index not in emitted and edit.start == edit.end == len(target.text) and edit.replacement:
             runs.append(InlineRun(text=edit.replacement, marks=replacements[index]))
-    return RichTarget(runs=runs)
+    return RichTarget(version=target.version, runs=runs)
 
 
 def normalize_rich_target(target: RichTarget, *, source: RichSource | None = None) -> RichTarget:
@@ -111,7 +131,7 @@ def normalize_rich_target(target: RichTarget, *, source: RichSource | None = Non
         except ValueError:
             continue
         safe.append(edit)
-    return apply_rich_edits(target, safe)
+    return apply_rich_edits(target, safe, source=source)
 
 
 def omit_decorations(target: RichTarget, source: RichSource) -> RichTarget:
@@ -129,12 +149,12 @@ def omit_decorations(target: RichTarget, source: RichSource) -> RichTarget:
                 runs.append(InlineRun(marks=run.marks[: index + 1]))
                 identities.add(mark_id)
         retained = tuple(mark for mark in run.marks if mark not in decorations)
-        if run.text or run.atom is not None or retained:
+        if run.text or run.atom is not None or run.note is not None or retained:
             runs.append(run.model_copy(update={"marks": retained}))
     for mark_id, mark in decorations.items():
         if mark_id not in identities and (mark.attributes.get("id") or mark.attributes.get("name")):
             runs.append(InlineRun(marks=(mark_id,)))
-    result = RichTarget(runs=runs)
+    result = RichTarget(version=target.version, runs=runs)
     if result.text != target.text:
         raise ValueError("decoration removal changed target prose")
     return result
@@ -231,7 +251,7 @@ def place_boundary_atoms(
                 )
         offset = end
     emit(offset)
-    updated = RichTarget(runs=result)
+    updated = RichTarget(version=target.version, runs=result)
     if updated.text != target.text:
         raise ValueError("page anchor relocation changed target prose")
     return updated, changed

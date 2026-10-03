@@ -12,17 +12,20 @@ from typing import Any
 from lxml import etree
 
 from trans_novel.assemble.epub.rendering import dedupe_segment_mappings, segment_needs_source
+from trans_novel.assemble.epub.rendering.note_recovery import validate_note_references
 from trans_novel.assemble.epub.rendering.richtext import rich_block_segments
 from trans_novel.assemble.epub.rendering.source_dom import normalize_translated_italics
 from trans_novel.assemble.epub.rendering.theme import NotePathMapping
 from trans_novel.assemble.epub.verification import archive_model, dom, preservation
 from trans_novel.assemble.epub.verification import bilingual as bilingual_module
 from trans_novel.assemble.epub.verification import navigation as nav_module
+from trans_novel.assemble.epub.verification.decorations import prove_and_remove_decoration_style
 from trans_novel.assemble.epub.verification.richtext import prove_and_restore_rich_blocks
 from trans_novel.epub.markup import resource_parser
 from trans_novel.epub.package import HTML_MEDIA, NCX_MEDIA, read_package
 from trans_novel.epub.slots import normalized_source_text, slot_contract_digest
 from trans_novel.ingest import canonical_title_id, segment_preserves_source
+from trans_novel.postprocess.language import normalize_lang_code
 
 MAX_MEMBER_BYTES = archive_model.MAX_MEMBER_BYTES
 
@@ -388,6 +391,19 @@ def _validate_resource(
     except ValueError:
         failures.append(archive_model.item("state", "rich_target_missing", resource, "target"))
         return
+    try:
+        prove_and_remove_decoration_style(
+            source_zip,
+            resource,
+            root_source,
+            root_output,
+            required=bool(rich_groups) and normalize_lang_code(target_lang) == "zh",
+        )
+    except ValueError:
+        failures.append(
+            archive_model.item("dom", "decoration_override_mismatch", resource, "target")
+        )
+        return
     mapped_nodes = _mapped_note_nodes(
         root_source, root_output, note_mappings, rich_groups, resource, failures
     )
@@ -498,6 +514,18 @@ def _validate_resources(
             )
 
 
+def _note_sources_valid(source_path, chapters, failures) -> bool:
+    """在输出证明之前独立重读原书关系，旧空证明不改变提取布局。"""
+    try:
+        validate_note_references(str(source_path), chapters)
+    except ValueError:
+        failures.append(
+            archive_model.item("state", "note_recovery_source_mismatch", "<source>", "proof")
+        )
+        return False
+    return True
+
+
 def slot_proof(
     source_path: Path,
     output_path: Path,
@@ -513,6 +541,8 @@ def slot_proof(
     checked: dict[str, int],
     note_mappings: Mapping[str, tuple[NotePathMapping, ...]] | None = None,
 ) -> dict[str, int]:
+    if not _note_sources_valid(source_path, chapters, failures):
+        return {"text_slots": 0, "toc_labels": 0, "language_fields": 0, "bilingual_nodes": 0}
     all_segments = [
         segment
         for chapter in chapters

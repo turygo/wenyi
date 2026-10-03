@@ -15,7 +15,7 @@ from trans_novel.assemble.epub.rendering.bilingual import (
 from trans_novel.assemble.epub.rendering.source_dom import bilingual_source_copy
 from trans_novel.assemble.epub.verification import dom
 from trans_novel.assemble.epub.verification import source as source_proof
-from trans_novel.epub.richtext import validate_rich_target
+from trans_novel.epub.richtext import validate_rich_nesting, validate_rich_target
 from trans_novel.ingest.epub.markup import designated_slot_values
 from trans_novel.ingest.epub.richtext import extract_rich_sources
 
@@ -113,6 +113,8 @@ def _source_inventory(block, segments) -> tuple[dict, dict]:
     for segment in segments:
         fresh = expected[_slot_geometry(segment.epub_state)]
         saved = segment.epub_state.rich_source
+        if saved is not None and (saved.version != 2 or segment.rich_target.version not in {2, 3}):
+            raise ValueError("EPUB rich verification requires explicit contract migration")
         if saved is None or saved.runs != fresh.runs or saved.atoms != fresh.atoms:
             raise ValueError("EPUB rich source inventory mismatch")
         actual_marks = {mark.id: mark for mark in saved.marks}
@@ -134,6 +136,48 @@ def _source_inventory(block, segments) -> tuple[dict, dict]:
     return marks, atoms
 
 
+def _expected_target_tokens(runs, marks, scopes_by_mark, atom_signatures, notes):
+    """从已批准目标顺序确定身份归属，包括零宽记录的精确位置。"""
+    meaningful = {
+        key
+        for run in runs
+        if run.text or run.atom is not None or run.note is not None
+        for key in run.marks
+    }
+    active = ()
+    used = set()
+    expected = []
+    for run in runs:
+        if not run.text and run.atom is None and run.note is None and set(run.marks) <= meaningful:
+            continue
+        common = 0
+        while common < min(len(active), len(run.marks)) and active[common] == run.marks[common]:
+            common += 1
+        for index in range(common, len(run.marks)):
+            key = run.marks[index]
+            if key not in used:
+                owned = tuple(
+                    sorted(
+                        (name, value)
+                        for name, value in marks[key].attributes.items()
+                        if name in {"id", "name"}
+                    )
+                )
+                if owned:
+                    chain = tuple(scopes_by_mark[item] for item in run.marks[: index + 1])
+                    _append_token(expected, "identity", owned, chain)
+                used.add(key)
+        active = run.marks
+        scopes = tuple(scopes_by_mark[key] for key in run.marks)
+        if run.atom is not None:
+            _append_token(expected, "atom", atom_signatures[run.atom], scopes)
+        elif run.note is not None:
+            _append_token(expected, "text", notes[run.note].label, scopes)
+        else:
+            _append_token(expected, "text", run.text, scopes)
+    return expected
+
+
 def prove_rich_target(source_block, output_block, segments) -> None:
     """按实际输出遍历核对文字与格式范围，不调用渲染器。"""
     marks, atoms = _source_inventory(source_block, segments)
@@ -147,14 +191,14 @@ def prove_rich_target(source_block, output_block, segments) -> None:
         )
         for key, atom in atoms.items()
     }
-    expected = []
-    for segment in segments:
-        for run in segment.rich_target.runs:
-            scopes = tuple(mark_scopes[key] for key in run.marks)
-            if run.atom is not None:
-                _append_token(expected, "atom", atom_signatures[run.atom], scopes)
-            else:
-                _append_token(expected, "text", run.text, scopes)
+    runs = [run for segment in segments for run in segment.rich_target.runs]
+    validate_rich_nesting(marks, runs)
+    notes = {
+        reference.mark_id: reference
+        for segment in segments
+        for reference in segment.epub_state.rich_source.note_references
+    }
+    expected = _expected_target_tokens(runs, marks, mark_scopes, atom_signatures, notes)
     allowed_scopes = set(mark_scopes.values())
     identities = Counter(
         (key, value)
@@ -162,12 +206,6 @@ def prove_rich_target(source_block, output_block, segments) -> None:
         for key, value in mark.attributes.items()
         if key in {"id", "name"}
     )
-    identity_scopes = {
-        (key, value): mark_scopes[mark.id]
-        for mark in marks.values()
-        for key, value in mark.attributes.items()
-        if key in {"id", "name"}
-    }
     found_identities: Counter = Counter()
     actual = []
 
@@ -182,6 +220,11 @@ def prove_rich_target(source_block, output_block, segments) -> None:
                     signature = untailed
                     owns_tail = False
             if signature in atom_signatures.values():
+                if any(item[0].rsplit("}", 1)[-1].lower() == "a" for item in scopes) and any(
+                    isinstance(node.tag, str) and node.tag.rsplit("}", 1)[-1].lower() == "a"
+                    for node in child.iter()
+                ):
+                    raise ValueError("EPUB nested atomic rich target link")
                 _append_token(actual, "atom", signature, scopes)
                 if owns_tail:
                     continue
@@ -219,12 +262,20 @@ def prove_rich_target(source_block, output_block, segments) -> None:
                 )
                 if scope not in allowed_scopes:
                     raise ValueError("EPUB unexpected rich target format")
-                for key, value in child.attrib.items():
-                    if key in {"id", "name"}:
-                        if identity_scopes.get((key, value)) != scope:
-                            raise ValueError("EPUB fabricated rich target identity")
-                        found_identities[(key, value)] += 1
-                walk(child, (*scopes, scope))
+                child_scopes = (*scopes, scope)
+                if child.tag.rsplit("}", 1)[-1].lower() == "a" and any(
+                    item[0].rsplit("}", 1)[-1].lower() == "a" for item in scopes
+                ):
+                    raise ValueError("EPUB nested rich target link")
+                owned = tuple(
+                    sorted(
+                        (key, value) for key, value in child.attrib.items() if key in {"id", "name"}
+                    )
+                )
+                if owned:
+                    found_identities.update(owned)
+                    _append_token(actual, "identity", owned, child_scopes)
+                walk(child, child_scopes)
             _append_token(actual, "text", child.tail or "", scopes)
 
     walk(output_block)

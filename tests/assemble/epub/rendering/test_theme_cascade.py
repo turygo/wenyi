@@ -125,12 +125,17 @@ class TestSourceSpecificityBound(unittest.TestCase):
             (b"p { & span { color: red } }", "source_nesting"),
             (b"@import 'x.css';", "import_not_resolved"),
             (b"@scope (.x) { p {} }", "unsupported_source_rule"),
-            (b"p::before { color: red }", "unsupported_source_selector"),
             (b"@namespace svg url(x); svg|a {}", "unsupported_source_selector"),
         )
         for css, detail in cases:
             with self.subTest(detail=detail), self.assertRaisesRegex(ThemeError, f"^{detail}$"):
                 source_specificity_bound({"source": css})
+
+    def test_terminal_pseudo_elements_validate_their_base_and_count_its_ids(self) -> None:
+        self.assertEqual(source_specificity_bound({"source": b"#x::before{color:red}"}), 2)
+        self.assertEqual(source_specificity_bound({"source": b"#x:first-letter{font-size:2em}"}), 2)
+        with self.assertRaisesRegex(ThemeError, "^unsupported_source_selector$"):
+            source_specificity_bound({"source": b"p||span::first-letter{font-size:2em}"})
 
     def test_namespace_metadata_and_attribute_dash_match_are_supported(self) -> None:
         css = b"@namespace url(http://www.w3.org/1999/xhtml); [lang|=zh] {}"

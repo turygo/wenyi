@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import zipfile
 from collections import Counter
-
-from lxml import etree
+from pathlib import Path
 
 from trans_novel.assemble.epub.rendering.bilingual import (
     is_bilingual_container_tag,
@@ -31,9 +30,24 @@ def _shape(node, *, root=True):
     )
 
 
-def whole_source_mode(source_path, resource, nodes) -> bool:
+def whole_source_mode(source_path: Path, output_path: Path, resource: str) -> bool:
     """完整含 BR 副本启动整块证明；拒绝混入旧逐槽副本或伪造子树。"""
-    if not any(node.name in {"p", "div"} and node.find("br") is not None for node in nodes):
+    with zipfile.ZipFile(output_path) as archive:
+        output_data = archive_model.read_member(archive, archive.getinfo(resource))
+    output_root = resource_parser(output_data)[0].getroot()
+    nodes = [
+        node
+        for node in output_root.iter()
+        if isinstance(node.tag, str) and "tn-source" in str(node.get("class", "")).split()
+    ]
+    if not any(
+        archive_model.local_name(node.tag).lower() in {"p", "div"}
+        and any(
+            isinstance(child.tag, str) and archive_model.local_name(child.tag).lower() == "br"
+            for child in node.iterdescendants()
+        )
+        for node in nodes
+    ):
         return False
     with zipfile.ZipFile(source_path) as archive:
         data = archive_model.read_member(archive, archive.getinfo(resource))
@@ -57,10 +71,9 @@ def whole_source_mode(source_path, resource, nodes) -> bool:
             candidates.append(node)
     used: Counter = Counter()
     for actual in nodes:
-        parsed = etree.fromstring(
-            str(actual).encode(), etree.XMLParser(no_network=True, resolve_entities=False)
-        )
-        signature = _shape(parsed)
+        # 精确证明直接读取原始输出树，避免 Soup 折叠纯空白后再序列化。
+        signature = _shape(actual)
+        actual_tag = archive_model.local_name(actual.tag).lower()
         matched = None
         for index, original in enumerate(candidates):
             if used[index]:
@@ -73,10 +86,10 @@ def whole_source_mode(source_path, resource, nodes) -> bool:
                 if original_tag in {"p", "div"}
                 else "p"
             )
-            if actual.name != source_tag:
+            if actual_tag != source_tag:
                 continue
-            safe = sanitized_source_copy(original, actual.name)
-            ruby = japanese_ruby_source_copy(original, "ja", actual.name)
+            safe = sanitized_source_copy(original, actual_tag)
+            ruby = japanese_ruby_source_copy(original, "ja", actual_tag)
             if signature == _shape(safe) or (ruby is not None and signature == _shape(ruby)):
                 matched = index
                 break

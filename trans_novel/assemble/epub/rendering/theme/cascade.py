@@ -2,11 +2,22 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-import soupsieve
 import tinycss2
+from lxml import etree
 
 from trans_novel.assemble.epub.rendering.theme.contracts import ThemeError
-from trans_novel.assemble.epub.rendering.theme.css import CssRule, declaration_properties
+from trans_novel.assemble.epub.rendering.theme.css import (
+    CssRule,
+    declaration_properties,
+    is_animation_property,
+)
+from trans_novel.assemble.epub.rendering.theme.source_applicability import (
+    project_nonmatching_animations,
+)
+from trans_novel.assemble.epub.rendering.theme.source_selectors import (
+    source_selector_branches,
+    supported_source_selector,
+)
 
 _MAX_SPECIFICITY = 128
 _MAX_CONDITIONAL_DEPTH = 64
@@ -70,7 +81,7 @@ def normalize_inline(
             continue
         if (
             has_theme_declaration
-            and _is_animation_property(item.lower_name)
+            and is_animation_property(item.lower_name)
             and not _is_none(item.value)
         ):
             raise _fail("source_animation", resource, node_id=node_id)
@@ -138,19 +149,9 @@ def _selector_hashes(tokens: list[object], resource: str) -> int:
     if not selector:
         raise _source_fail("invalid_source_css", resource)
     hashes = _count_hashes(tokens, resource)
-    try:
-        soupsieve.compile(selector)
-    except (soupsieve.SelectorSyntaxError, NotImplementedError, ValueError):
-        raise _source_fail("unsupported_source_selector", resource) from None
+    for branch in source_selector_branches(tokens, resource=resource):
+        supported_source_selector(branch, resource=resource, semantic=False)
     return hashes
-
-
-def _is_animation_property(name: str) -> bool:
-    for prefix in ("-webkit-", "-moz-", "-ms-", "-o-"):
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
-    return name in {"animation", "transition"} or name.startswith(("animation-", "transition-"))
 
 
 def _is_none(tokens: list[object]) -> bool:
@@ -173,7 +174,7 @@ def _check_source_declarations(tokens: list[object], resource: str) -> None:
             raise _source_fail("source_nesting", resource)
         if _tokens_have_error(declaration.value):
             raise _source_fail("invalid_source_css", resource)
-        if _is_animation_property(declaration.lower_name) and not _is_none(declaration.value):
+        if is_animation_property(declaration.lower_name) and not _is_none(declaration.value):
             raise _source_fail("source_animation", resource)
 
 
@@ -200,8 +201,8 @@ def _walk_source_rules(
         if rule.type == "error":
             raise _source_fail("invalid_source_css", resource)
         if rule.type == "qualified-rule":
-            hashes += _selector_hashes(rule.prelude, resource)
             _check_source_declarations(rule.content, resource)
+            hashes += _selector_hashes(rule.prelude, resource)
             continue
         if rule.type != "at-rule":
             raise _source_fail("unsupported_source_rule", resource)
@@ -244,8 +245,16 @@ def source_specificity_bound(
     stylesheets: Mapping[str, bytes],
     *,
     resource: str = "theme",
+    root: etree._Element | None = None,
 ) -> int:
     """返回严格高于全部源选择器 ID 数量总和的保守界限。"""
+    if root is not None:
+        stylesheets = project_nonmatching_animations(
+            stylesheets,
+            root,
+            resource=resource,
+            require_missing_identity=True,
+        )
     hashes = 0
     for data in stylesheets.values():
         try:

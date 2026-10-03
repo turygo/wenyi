@@ -48,6 +48,29 @@ def _response(runs, record_id=0):
 
 
 class TestRichTextAnnotator(unittest.TestCase):
+    def test_whitespace_rejection_reports_exact_difference_without_changing_input(self):
+        source = RichSource(
+            marks=[InlineMark(id="amount", path=(0,), tag="b", source_text="200")],
+            runs=[InlineRun(text="200", marks=("amount",)), InlineRun(text=" grams")],
+        )
+        expected = "200 克 煮熟"
+        responses = iter(
+            [
+                _response([{"text": "200", "marks": ["amount"]}, {"text": " 克煮熟"}]),
+                _response([{"text": "200", "marks": ["amount"]}, {"text": " 克 煮熟"}]),
+            ]
+        )
+        client = FakeClient(handler=lambda *_: next(responses))
+        result = RichTextAnnotator(client, _config(retries=1)).annotate_batch([source], [expected])
+        self.assertEqual(result.targets[0].text, expected)
+        first, second = (json.loads(call["messages"][-1]["content"]) for call in client.calls)
+        self.assertEqual(first["segments"], second["segments"])
+        detail = second["retry_feedback"]["detail"]
+        self.assertIn('"offset": 5', detail)
+        self.assertIn('"expected_code_point": "U+0020"', detail)
+        self.assertIn('"actual_code_point": "U+716E"', detail)
+        self.assertIn('"expected_context": "200 克 煮熟"', detail)
+
     def test_reorders_emphasis_and_places_note_after_the_complete_statement(self):
         target = "格雷厄姆的全部原始章节均完整保留。我还用粗体标出了格雷厄姆的许多段落。"
         source = _source()
@@ -59,6 +82,7 @@ class TestRichTextAnnotator(unittest.TestCase):
         self.assertEqual(result.targets[0].runs[1].atom, "note")
         self.assertEqual(result.targets[0].runs[3].text, "粗体")
         self.assertEqual(result.targets[0].runs[3].marks, ("bold",))
+        self.assertEqual(result.targets[0].version, 2)
         self.assertEqual(source.model_dump(), before)
         self.assertEqual(result.request_count, 1)
         self.assertEqual(client.calls[0]["agent"], "analyst")
@@ -72,6 +96,54 @@ class TestRichTextAnnotator(unittest.TestCase):
         self.assertEqual(result.targets[0].text, "普通译文。")
         self.assertEqual(result.request_count, 0)
         self.assertEqual(client.calls, [])
+
+    def test_eat_kuku_implicit_subject_selects_version_three_without_rewriting(self):
+        source = RichSource(
+            marks=[
+                InlineMark(id="subject", path=(0,), tag="i", source_text="You"),
+                InlineMark(id="food", path=(1,), tag="i", source_text="kuku"),
+            ],
+            runs=[
+                InlineRun(text="You", marks=("subject",)),
+                InlineRun(text=" eat "),
+                InlineRun(text="kuku", marks=("food",)),
+                InlineRun(text="!"),
+            ],
+        )
+        runs = [
+            {
+                "marks": ["subject"],
+                "omission": "implicit",
+                "explanation": "The imperative implies the second-person subject.",
+            },
+            {"text": "吃"},
+            {"text": "库库", "marks": ["food"]},
+            {"text": "！"},
+        ]
+        client = FakeClient(handler=lambda *_: _response(runs))
+        result = RichTextAnnotator(client, _config()).annotate_batch([source], ["吃库库！"])
+        self.assertEqual(result.targets[0].version, 3)
+        self.assertEqual(result.targets[0].text, "吃库库！")
+        self.assertEqual(result.targets[0].runs[0].omission, "implicit")
+        self.assertEqual(result.targets[0].runs[2].marks, ("food",))
+        request = json.loads(client.calls[0]["messages"][-1]["content"])
+        self.assertEqual(request["segments"][0]["source"], source.model_dump(mode="json"))
+
+    def test_implicit_retry_rejects_empty_explanation_then_preserves_target(self):
+        source = RichSource(marks=[InlineMark(id="subject", path=(0,), tag="i", source_text="You")])
+        invalid = [
+            {"marks": ["subject"], "omission": "implicit", "explanation": " "},
+            {"text": "吃库库！"},
+        ]
+        valid = [{**invalid[0], "explanation": "The subject is implied."}, invalid[1]]
+        responses = iter([_response(invalid), _response(valid)])
+        client = FakeClient(handler=lambda *_: next(responses))
+        result = RichTextAnnotator(client, _config(1)).annotate_batch([source], ["吃库库！"])
+        self.assertEqual(result.targets[0].version, 3)
+        self.assertEqual(result.targets[0].text, "吃库库！")
+        self.assertEqual(result.request_count, 2)
+        retry = json.loads(client.calls[1]["messages"][-1]["content"])
+        self.assertIn("requires an explanation", retry["retry_feedback"]["detail"])
 
     def test_one_mark_can_cover_reordered_discontinuous_target_ranges(self):
         source = RichSource(
@@ -125,7 +197,41 @@ class TestRichTextAnnotator(unittest.TestCase):
         result = RichTextAnnotator(client, _config(1)).annotate_batch([source], [target])
         self.assertEqual(result.targets[0].text, target)
         self.assertEqual(result.request_count, 2)
-        self.assertEqual(client.calls[0]["messages"], client.calls[1]["messages"])
+        first = json.loads(client.calls[0]["messages"][-1]["content"])
+        retried = json.loads(client.calls[1]["messages"][-1]["content"])
+        self.assertEqual(first["segments"], retried["segments"])
+        self.assertNotIn("retry_feedback", first)
+        self.assertIn("record 0", retried["retry_feedback"]["detail"])
+        self.assertEqual(client.calls[0]["messages"][0], client.calls[1]["messages"][0])
+
+    def test_optional_style_identity_is_required_and_retry_receives_missing_mark_id(self):
+        source = RichSource(
+            marks=[
+                InlineMark(
+                    id="opening",
+                    path=(0,),
+                    tag="span",
+                    kind="style",
+                    attributes={"id": "opening-quote"},
+                    source_text="“",
+                )
+            ],
+            runs=[InlineRun(text="“", marks=("opening",)), InlineRun(text="Book")],
+        )
+        responses = iter(
+            [
+                _response([{"text": "《书》"}]),
+                _response([{"text": "", "marks": ["opening"]}, {"text": "《书》"}]),
+            ]
+        )
+        client = FakeClient(handler=lambda *_: next(responses))
+        result = RichTextAnnotator(client, _config(1)).annotate_batch([source], ["《书》"])
+        self.assertEqual(result.targets[0].text, "《书》")
+        self.assertEqual(result.targets[0].runs[0].marks, ("opening",))
+        retry = json.loads(client.calls[1]["messages"][-1]["content"])
+        self.assertIn("inline anchor identity", retry["retry_feedback"]["detail"])
+        self.assertIn("opening", retry["retry_feedback"]["detail"])
+        self.assertEqual(result.request_count, 2)
 
     def test_invalid_text_marks_atoms_coordinates_and_ids_fail_explicitly(self):
         target = "格雷厄姆的全部原始章节均完整保留。我还用粗体标出了格雷厄姆的许多段落。"

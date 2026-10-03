@@ -5,10 +5,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
-import soupsieve
 import tinycss2
 from bs4 import BeautifulSoup
-from bs4.element import Tag
 from lxml import etree
 
 from trans_novel.assemble.epub.rendering.theme.cascade import (
@@ -16,10 +14,34 @@ from trans_novel.assemble.epub.rendering.theme.cascade import (
     source_specificity_bound,
 )
 from trans_novel.assemble.epub.rendering.theme.contracts import ThemeError
+from trans_novel.assemble.epub.rendering.theme.source_applicability import (
+    project_nonmatching_animations,
+    reject_inline_animations,
+)
+from trans_novel.assemble.epub.rendering.theme.source_selectors import (
+    SourceRule,
+    semantic_properties,
+    source_node_map,
+    source_rules,
+    source_selector_applies,
+)
+from trans_novel.assemble.epub.rendering.theme.source_semantics import (
+    chinese_dropcap_overrides,
+    source_semantic_styles,
+    source_style_requirements,
+)
 from trans_novel.epub.archive import ZipSafetyError, read_member, safe_name
 from trans_novel.epub.navigation import resolve_epub_href
 
 _IGNORED_TOKENS = {"whitespace", "comment"}
+
+__all__ = [
+    "chinese_dropcap_overrides",
+    "collect_source_stylesheets",
+    "source_semantic_styles",
+    "source_style_evidence",
+    "source_style_requirements",
+]
 
 
 def _fail(resource: str, detail: str = "source_import_failed") -> ThemeError:
@@ -59,13 +81,45 @@ def _has_layer(tokens: list[object]) -> bool:
     return False
 
 
-def _import_href(prelude: list[object], resource: str) -> str:
+def _media_wrappers(value: str) -> tuple[str, ...]:
+    tokens = tinycss2.parse_component_value_list(value)
+    if _has_error(tokens):
+        raise ValueError
+    media = tinycss2.serialize(tokens).strip()
+    return () if not media or media.lower() == "all" else (f"@media {media}",)
+
+
+def _import_wrappers(conditions: list[object]) -> tuple[str, ...]:
+    wrappers = []
+    significant = [
+        token for token in conditions if getattr(token, "type", None) not in _IGNORED_TOKENS
+    ]
+    if significant and getattr(significant[0], "lower_name", None) == "supports":
+        support = significant[0]
+        arguments = [
+            token
+            for token in support.arguments
+            if getattr(token, "type", None) not in _IGNORED_TOKENS
+        ]
+        if not arguments:
+            raise ValueError
+        text = tinycss2.serialize(support.arguments).strip()
+        if len(arguments) != 1 or getattr(arguments[0], "type", None) != "function":
+            text = f"({text})"
+        wrappers.append(f"@supports {text}")
+        conditions = conditions[conditions.index(support) + 1 :]
+    wrappers.extend(_media_wrappers(tinycss2.serialize(conditions)))
+    return tuple(wrappers)
+
+
+def _import_href(prelude: list[object], resource: str) -> tuple[str, tuple[str, ...]]:
     if _has_error(prelude):
         raise ValueError
     tokens = [token for token in prelude if getattr(token, "type", None) not in _IGNORED_TOKENS]
     if not tokens:
         raise ValueError
-    source, conditions = tokens[0], tokens[1:]
+    source = tokens[0]
+    conditions = prelude[prelude.index(source) + 1 :]
     token_type = getattr(source, "type", None)
     if token_type in {"string", "url"}:
         href = source.value
@@ -84,7 +138,7 @@ def _import_href(prelude: list[object], resource: str) -> str:
         raise ValueError
     if _has_layer(conditions):
         raise _fail(resource, "source_layers")
-    return href
+    return href, _import_wrappers(conditions)
 
 
 def _resolve_stylesheet(base_path: str, raw_href: str) -> str:
@@ -107,15 +161,40 @@ def _is_css(node: etree._Element) -> bool:
     return media_type is None or not media_type.strip() or media_type.strip().lower() == "text/css"
 
 
+def _stylesheet_nodes(
+    root: etree._Element, resource: str
+) -> Iterator[tuple[etree._Element, int | None]]:
+    style_ordinal = 0
+    for node in root.iter():
+        if not isinstance(node.tag, str):
+            continue
+        name = node.tag.rsplit("}", 1)[-1].lower()
+        if "{http://www.w3.org/XML/1998/namespace}base" in node.attrib or (
+            name == "base" and node.get("href") is not None
+        ):
+            raise _fail(resource, "source_base_unsupported")
+        if name == "style":
+            ordinal = style_ordinal
+            style_ordinal += 1
+            if _is_css(node):
+                yield node, ordinal
+        elif (
+            name == "link"
+            and _is_css(node)
+            and "stylesheet" in {token.lower() for token in (node.get("rel") or "").split()}
+        ):
+            yield node, None
+
+
 def collect_source_stylesheets(
     archive: zipfile.ZipFile,
     root: etree._Element,
     resource_href: str,
 ) -> dict[str, bytes]:
-    """收集资源引用的归档内样式表，并返回移除顶层导入后的 UTF-8 副本。"""
+    """按原顺序展开每次导入，保留条件并返回 UTF-8 副本。"""
     collected: dict[str, bytes] = {}
-    complete: set[str] = set()
     active: set[str] = set()
+    occurrences: dict[str, int] = {}
 
     def collect_bytes(
         data: bytes,
@@ -124,6 +203,7 @@ def collect_source_stylesheets(
         base_path: str,
         protocol_encoding: str | None = None,
         environment_encoding: Any = None,
+        wrappers: tuple[str, ...] = (),
     ) -> None:
         rules, encoding = tinycss2.parse_stylesheet_bytes(
             data,
@@ -141,19 +221,27 @@ def collect_source_stylesheets(
                 if keyword == "charset":
                     continue
                 if keyword == "import":
+                    href, conditions = _import_href(rule.prelude, resource_href)
                     collect_file(
-                        _resolve_stylesheet(base_path, _import_href(rule.prelude, resource_href)),
+                        _resolve_stylesheet(base_path, href),
                         environment_encoding=encoding,
+                        wrappers=(*wrappers, *conditions),
                     )
                     continue
             retained.append(rule)
-        collected[key] = tinycss2.serialize(retained).encode("utf-8")
+        css = tinycss2.serialize(retained)
+        for condition in reversed(wrappers):
+            css = f"{condition}{{{css}}}"
+        occurrences[key] = occurrences.get(key, 0) + 1
+        occurrence = occurrences[key]
+        actual_key = key if occurrence == 1 else f"{key}#occurrence:{occurrence}"
+        collected[actual_key] = css.encode("utf-8")
 
-    def collect_file(member: str, *, environment_encoding: Any = None) -> None:
+    def collect_file(
+        member: str, *, environment_encoding: Any = None, wrappers: tuple[str, ...] = ()
+    ) -> None:
         if member in active:
             raise _fail(resource_href, "source_import_cycle")
-        if member in complete:
-            return
         active.add(member)
         try:
             info = archive.getinfo(member)
@@ -162,39 +250,28 @@ def collect_source_stylesheets(
                 key=f"file:{member}",
                 base_path=member,
                 environment_encoding=environment_encoding,
+                wrappers=wrappers,
             )
-            complete.add(member)
         finally:
             active.remove(member)
 
     try:
         if not safe_name(resource_href):
             raise ValueError
-        style_ordinal = 0
-        for node in root.iter():
-            if not isinstance(node.tag, str):
-                continue
-            local_name = node.tag.rsplit("}", 1)[-1].lower()
-            if "{http://www.w3.org/XML/1998/namespace}base" in node.attrib or (
-                local_name == "base" and node.get("href") is not None
-            ):
-                raise _fail(resource_href, "source_base_unsupported")
-            if local_name == "style":
-                ordinal = style_ordinal
-                style_ordinal += 1
-                if _is_css(node):
-                    collect_bytes(
-                        "".join(node.itertext()).encode("utf-8"),
-                        key=f"inline:{ordinal}",
-                        base_path=resource_href,
-                        protocol_encoding="utf-8",
-                    )
-            elif (
-                local_name == "link"
-                and "stylesheet" in {token.lower() for token in (node.get("rel") or "").split()}
-                and _is_css(node)
-            ):
-                collect_file(_resolve_stylesheet(resource_href, node.get("href") or ""))
+        for node, ordinal in _stylesheet_nodes(root, resource_href):
+            if ordinal is not None:
+                collect_bytes(
+                    "".join(node.itertext()).encode("utf-8"),
+                    key=f"inline:{ordinal}",
+                    base_path=resource_href,
+                    protocol_encoding="utf-8",
+                    wrappers=_media_wrappers(node.get("media") or ""),
+                )
+            else:
+                collect_file(
+                    _resolve_stylesheet(resource_href, node.get("href") or ""),
+                    wrappers=_media_wrappers(node.get("media") or ""),
+                )
     except ThemeError:
         raise
     except (
@@ -211,42 +288,55 @@ def collect_source_stylesheets(
     return collected
 
 
-def _evidence_rules(
-    rules: list[object],
-    *,
-    media: tuple[str, ...] = (),
-) -> Iterator[tuple[str, str, tuple[str, ...]]]:
-    for rule in rules:
-        if getattr(rule, "type", None) == "qualified-rule":
-            yield (
-                tinycss2.serialize(rule.prelude).strip(),
-                tinycss2.serialize(rule.content).strip(),
-                media,
-            )
-            continue
-        if (
-            getattr(rule, "type", None) == "at-rule"
-            and getattr(rule, "lower_at_keyword", None) in {"media", "supports"}
-            and getattr(rule, "content", None) is not None
-        ):
-            keyword = str(rule.lower_at_keyword)
-            condition = tinycss2.serialize(rule.prelude).strip()
-            nested = tinycss2.parse_rule_list(
-                rule.content,
-                skip_whitespace=True,
-                skip_comments=True,
-            )
-            yield from _evidence_rules(
-                nested,
-                media=(*media, f"@{keyword} {condition}"),
-            )
-
-
 def _wrap_evidence(selector: str, declarations: str, media: tuple[str, ...]) -> str:
     value = f"{selector}{{{declarations}}}"
     for condition in reversed(media):
         value = f"{condition}{{{value}}}"
     return value
+
+
+def _rule_evidence(
+    rule: SourceRule,
+    soup: BeautifulSoup,
+    reverse: Mapping[int, etree._Element],
+    *,
+    resource: str,
+    preserve_rule_text: bool,
+) -> list[tuple[frozenset[etree._Element], str]]:
+    declarations = (
+        rule.declaration_text
+        if preserve_rule_text
+        else ";".join(
+            f"{item.name}:{item.value}{' !important' if item.important else ''}"
+            for item in rule.declarations
+        )
+    )
+    matched = []
+    all_admitted = True
+    for selector in rule.selectors:
+        if selector.pseudo is not None or not source_selector_applies(
+            soup,
+            selector,
+            resource=resource,
+            semantic=bool(semantic_properties(rule.declarations)),
+        ):
+            all_admitted = False
+            continue
+        try:
+            selected = frozenset(
+                reverse[id(tag)] for tag in soup.select(selector.base) if id(tag) in reverse
+            )
+            if selected:
+                matched.append(
+                    (selected, _wrap_evidence(selector.selector, declarations, rule.conditions))
+                )
+        except (RecursionError, NotImplementedError, TypeError, ValueError):
+            raise _fail(resource, "unsupported_source_selector") from None
+    if preserve_rule_text and all_admitted and matched:
+        # 整条普通规则只输出一次，但不将拒绝的动态分支或伪元素带回证据。
+        union = frozenset(node for selected, _ in matched for node in selected)
+        return [(union, _wrap_evidence(rule.selector_text, declarations, rule.conditions))]
+    return matched
 
 
 def source_style_evidence(
@@ -255,46 +345,30 @@ def source_style_evidence(
     stylesheets: Mapping[str, bytes],
     *,
     resource: str,
+    preserve_rule_text: bool = False,
 ) -> tuple[tuple[str, ...], ...]:
     """返回每个节点及其祖先匹配的原始 CSS 证据，并保留条件规则上下文。"""
-    source_specificity_bound(stylesheets, resource=resource)
-    xml_nodes = [node for node in root.iter() if isinstance(node.tag, str)]
+    source_specificity_bound(
+        project_nonmatching_animations(stylesheets, root, resource=resource), resource=resource
+    )
+    reject_inline_animations(root, resource=resource)
     try:
-        soup = BeautifulSoup(etree.tostring(root), "xml")
+        soup, reverse = source_node_map(root, resource=resource)
     except (TypeError, ValueError, etree.LxmlError):
         raise _fail(resource, "invalid_markup") from None
-    soup_nodes = [node for node in soup.find_all(True) if isinstance(node, Tag)]
-    if len(xml_nodes) != len(soup_nodes) or any(
-        xml.tag.rsplit("}", 1)[-1].lower() != str(parsed.name).split(":")[-1].lower()
-        for xml, parsed in zip(xml_nodes, soup_nodes, strict=True)
-    ):
-        raise _fail(resource, "invalid_markup")
-    reverse = {id(parsed): xml for xml, parsed in zip(xml_nodes, soup_nodes, strict=True)}
-
     matched: list[tuple[frozenset[etree._Element], str]] = []
-    for data in stylesheets.values():
-        try:
-            rules, _encoding = tinycss2.parse_stylesheet_bytes(
-                data,
-                skip_whitespace=True,
-                skip_comments=True,
+    for rule in source_rules(stylesheets, resource=resource):
+        matched.extend(
+            _rule_evidence(
+                rule,
+                soup,
+                reverse,
+                resource=resource,
+                preserve_rule_text=preserve_rule_text,
             )
-            for selector, declarations, media in _evidence_rules(rules):
-                selected = frozenset(
-                    reverse[id(tag)] for tag in soup.select(selector) if id(tag) in reverse
-                )
-                if selected:
-                    matched.append((selected, _wrap_evidence(selector, declarations, media)))
-        except (
-            RecursionError,
-            soupsieve.SelectorSyntaxError,
-            NotImplementedError,
-            TypeError,
-            ValueError,
-        ):
-            raise _fail(resource, "unsupported_source_selector") from None
+        )
 
-    node_set = set(xml_nodes)
+    node_set = set(reverse.values())
     output: list[tuple[str, ...]] = []
     for node in nodes:
         if node not in node_set:

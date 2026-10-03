@@ -343,7 +343,9 @@ def _validate_epub_triplet_projected(
                     data = archive_model.model_read(zf, item["path"], proof_failures)
                     if data is not None:
                         soups[item["path"]] = structure.html_soup(data, item["media"])[0]
-            dom.exact_bilingual_proof(source_path, mono_path, soups, proof_failures, proof_checked)
+            dom.exact_bilingual_proof(
+                source_path, mono_path, bilingual_path, soups, proof_failures, proof_checked
+            )
         except (OSError, zipfile.BadZipFile):
             proof_failures.append(
                 archive_model.item("bilingual_source", "proof_unreadable", "<output>", "unreadable")

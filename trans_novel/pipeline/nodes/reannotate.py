@@ -16,6 +16,7 @@ from trans_novel.epub.richtext import (
 )
 from trans_novel.epub.richtext_edits import omit_decorations
 from trans_novel.ingest.models import segment_preserves_source
+from trans_novel.pipeline.nodes.reannotation_inputs import raw_target_digest
 from trans_novel.pipeline.state import RunStore
 from trans_novel.pipeline.state.models import (
     STATUS_DONE,
@@ -39,9 +40,10 @@ def _target_digest(chapters) -> str:
 def _migration_input(store, input_path):
     state = store.load_state()
     digest = source_bytes_hash(input_path)
-    if state.identity.translation_policy_version not in {3, TRANSLATION_POLICY_VERSION}:
+    old_policy = state.identity.translation_policy_version
+    if old_policy not in {3, 4, TRANSLATION_POLICY_VERSION}:
         raise ValueError(
-            "rich migration requires legacy policy 3 or the current translation policy"
+            "rich migration requires legacy policy 3, 4 or the current translation policy"
         )
     if state.fmt != "epub" or state.meta.get("epub_schema") != 4:
         raise ValueError("rich migration requires a completed schema-4 EPUB run")
@@ -59,13 +61,15 @@ def _migration_input(store, input_path):
         raise ValueError("rich migration requires all chapters to be complete")
     if any(progress.pending_polish for progress in state.progress.values()):
         raise ValueError("rich migration requires completed polish checkpoints")
+    original = raw_target_digest(store, [chapter.index for chapter in state.chapters])
     chapters = [
         store.load_chapter(chapter.index)
         for chapter in sorted(state.chapters, key=lambda c: c.index)
     ]
     if any(segment.target is None for chapter in chapters for segment in chapter.segments):
         raise ValueError("rich migration requires complete saved targets")
-    original = _target_digest(chapters)
+    if _target_digest(chapters) != original:
+        raise ValueError("rich migration model loading changed saved target text")
     record = state.meta.get("richtext_migration")
     expected = {"source_sha256": digest, "target_sha256": original}
     if record is not None and (
@@ -81,19 +85,49 @@ def _migration_input(store, input_path):
     protected = {}
     for marker in state.meta.get("epub_notes", {}).get("markers", []):
         protected.setdefault(marker["resource_href"], set()).add(tuple(marker["path"]))
-    hydrate_rich_sources(input_path, chapters, protected_paths=protected)
+    restored = hydrate_rich_sources(
+        input_path,
+        chapters,
+        protected_paths=protected,
+        restore_legacy_whitespace=old_policy == 3,
+    )
     old_sources = _reuse_decoration_annotations(chapters, old_inventories)
     state.meta["richtext_migration"] = {**(record or {}), **expected}
+    added = []
+    if restored:
+        audit = state.meta["richtext_migration"].setdefault("legacy_whitespace_restored", [])
+        known = {stable_digest(item) for item in audit}
+        added = [item for item in restored if stable_digest(item) not in known]
+        audit.extend(added)
     store.save_state(state)
+    if restored and added:
+        store.log_event("richtext_legacy_whitespace_restored", records=added)
     return state, chapters, original, old_sources
+
+
+def _legacy_geometry_matches(previous, source) -> bool:
+    """原始几何必须相同；旧 CSS 证据不是身份，新语义仍需重新严格校验。"""
+    if previous.runs != source.runs or previous.atoms != source.atoms:
+        return False
+    fields = ("id", "path", "tag", "attributes", "source_text", "kind")
+    return len(previous.marks) == len(source.marks) and all(
+        all(getattr(old, field) == getattr(new, field) for field in fields)
+        for old, new in zip(previous.marks, source.marks, strict=True)
+    )
 
 
 def _reuse_decoration_annotations(chapters, old_inventories):
     """只接受已重新核对原书的装饰分类变化，不绕过其他来源变更。"""
-    old_sources = {key: rich_source_digest(value) for key, value in old_inventories.items()}
+    old_sources = {}
     for chapter in chapters:
         for segment in chapter.segments:
             if segment.rich_target is None:
+                if "richtext_pending" in segment.meta:
+                    segment.meta["richtext_pending"] = {
+                        "version": 2,
+                        "source_sha256": rich_source_digest(segment.epub_state.rich_source),
+                        "target_sha256": stable_digest(segment.target),
+                    }
                 continue
             key = chapter.index, segment.index
             previous = old_inventories.get(key)
@@ -108,9 +142,34 @@ def _reuse_decoration_annotations(chapters, old_inventories):
                         and current.kind == "decoration"
                     ):
                         mark.kind = "decoration"
-                if previous == source:
-                    old_sources[key] = rich_source_digest(source)
-            segment.rich_target = omit_decorations(segment.rich_target, source)
+            legacy = segment.rich_target.version == 1
+            matches = previous is not None and (
+                _legacy_geometry_matches(previous, source)
+                if legacy
+                else previous.model_copy(update={"note_references": source.note_references})
+                == source
+            )
+            candidate = omit_decorations(segment.rich_target, source)
+            if legacy:
+                candidate = candidate.model_copy(update={"version": RICHTEXT_VERSION})
+            if matches:
+                try:
+                    validate_rich_target(source, candidate, expected_text=segment.target)
+                except ValueError:
+                    matches = False
+            if matches:
+                segment.assign_translation(candidate)
+                segment.meta.pop("richtext_pending", None)
+                old_sources[key] = rich_source_digest(source)
+            else:
+                segment.rich_target = None
+                for slot in segment.epub_state.slots:
+                    slot.target_value = None
+                segment.meta["richtext_pending"] = {
+                    "version": 2,
+                    "source_sha256": rich_source_digest(source),
+                    "target_sha256": stable_digest(segment.target),
+                }
     return old_sources
 
 
@@ -122,11 +181,7 @@ def _annotation_jobs(chapters, old_sources, batch_size):
         pending = []
         for segment in chapter.segments:
             source = segment.epub_state.rich_source
-            if (
-                chapter.preserve_source
-                or segment_preserves_source(segment)
-                or segment.target == segment.source
-            ):
+            if segment_preserves_source(segment) or segment.target == segment.source:
                 reused += 1
                 continue
             old = old_sources.get((chapter.index, segment.index))
@@ -138,6 +193,7 @@ def _annotation_jobs(chapters, old_sources, batch_size):
                 target = RichTarget(runs=[InlineRun(text=segment.target)])
                 validate_rich_target(source, target, expected_text=segment.target)
                 segment.assign_translation(target)
+                segment.meta.pop("richtext_pending", None)
                 deterministic += 1
                 continue
             pending.append(segment)
@@ -165,6 +221,7 @@ def _commit_batches(store, jobs, annotator, progress, total, reused):
     pending = deque()
     iterator = iter(jobs)
     first_error = None
+    first_failure = None
     with ThreadPoolExecutor(max_workers=4) as executor:
 
         def schedule():
@@ -184,6 +241,12 @@ def _commit_batches(store, jobs, annotator, progress, total, reused):
             except BaseException as error:
                 if first_error is None:
                     first_error = error
+                    first_failure = {
+                        "chapter_index": chapter.index,
+                        "segment_indices": [segment.index for segment in segments],
+                        "error_type": type(error).__name__,
+                        "error_detail": str(error),
+                    }
                 continue
             for segment, target in zip(segments, result.targets, strict=True):
                 expected = segment.target
@@ -191,6 +254,7 @@ def _commit_batches(store, jobs, annotator, progress, total, reused):
                 segment.assign_translation(target)
                 if segment.target != expected:
                     raise ValueError("rich migration assignment changed saved target")
+                segment.meta.pop("richtext_pending", None)
             store.save_chapter(chapter)
             annotated += len(segments)
             requests += result.request_count
@@ -200,7 +264,10 @@ def _commit_batches(store, jobs, annotator, progress, total, reused):
                 schedule()
     if first_error is not None:
         store.log_event(
-            "richtext_migration_interrupted", annotated=annotated, model_requests=requests
+            "richtext_migration_interrupted",
+            annotated=annotated,
+            model_requests=requests,
+            failed_batch=first_failure,
         )
         raise first_error
     return annotated, requests
@@ -226,11 +293,21 @@ def reannotate_store(
     page_anchors_moved = settle_page_anchors(input_path, chapters)
     for chapter in chapters:
         store.save_chapter(chapter)
+    persisted_raw = raw_target_digest(store, [chapter.index for chapter in chapters])
     persisted = [store.load_chapter(chapter.index) for chapter in chapters]
-    if _target_digest(persisted) != original:
+    if persisted_raw != original or _target_digest(persisted) != original:
         raise ValueError("rich migration changed saved target text")
     state.identity.translation_policy_version = TRANSLATION_POLICY_VERSION
     state.meta["richtext_version"] = RICHTEXT_VERSION
+    state.meta["richtext_target_version"] = max(
+        (
+            segment.rich_target.version
+            for chapter in chapters
+            for segment in chapter.segments
+            if segment.rich_target is not None
+        ),
+        default=2,
+    )
     state.meta["richtext_migration"]["complete"] = True
     store.save_state(state)
     report = {
@@ -241,6 +318,7 @@ def reannotate_store(
         "deterministic": deterministic,
         "page_anchors_moved": page_anchors_moved,
         "target_sha256": original,
+        "target_contract_version": state.meta["richtext_target_version"],
     }
     store.log_event("richtext_migration_completed", **report)
     return report

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 
 from lxml import etree
 
@@ -71,6 +72,17 @@ def normalize_translated_italics(
     return segments
 
 
+def _detached_document(tree: etree._ElementTree) -> etree._ElementTree:
+    """脱离会触发 XHTML 自动修补的 DTD 上下文，保留文档前后的全部节点。"""
+    original = tree.getroot()
+    root = deepcopy(original)
+    for sibling in reversed(list(original.itersiblings(preceding=True))):
+        root.addprevious(deepcopy(sibling))
+    for sibling in reversed(list(original.itersiblings())):
+        root.addnext(deepcopy(sibling))
+    return root.getroottree()
+
+
 def serialize_source_tree(tree: etree._ElementTree, data: bytes, mode: str) -> bytes:
     probe = data
     for bom in (b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff"):
@@ -78,11 +90,18 @@ def serialize_source_tree(tree: etree._ElementTree, data: bytes, mode: str) -> b
             probe = probe[len(bom) :]
             break
     declaration = bool(re.match(rb"\s*<\?xml\b", probe))
+    serialized_tree = _detached_document(tree)
     if mode == "recovered":
-        return etree.tostring(tree, encoding="UTF-8", xml_declaration=declaration, method="xml")
+        return etree.tostring(
+            serialized_tree,
+            encoding="UTF-8",
+            xml_declaration=declaration,
+            doctype=tree.docinfo.doctype or None,
+            method="xml",
+        )
     encoding = tree.docinfo.encoding or "UTF-8"
     return etree.tostring(
-        tree,
+        serialized_tree,
         encoding=encoding,
         xml_declaration=declaration,
         doctype=tree.docinfo.doctype or None,

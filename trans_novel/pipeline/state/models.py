@@ -13,7 +13,7 @@ from trans_novel.ingest.models import ChapterProcessing
 
 RUN_STATE_SCHEMA_VERSION = 4
 RUN_INPUT_SCHEMA_VERSION = 2
-TRANSLATION_POLICY_VERSION = 4
+TRANSLATION_POLICY_VERSION = 5
 STATUS_PENDING = "pending"
 STATUS_DONE = "done"
 ChapterStatus = Literal["pending", "done"]
