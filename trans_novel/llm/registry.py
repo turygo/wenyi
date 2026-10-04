@@ -23,7 +23,7 @@ _PROVIDER_SPECS: dict[str, dict[str, Any]] = {
     "opencode-go": {
         "provider_name": "OpenCode Go",
         "default_base_url": "https://opencode.ai/zen/go/v1",
-        "default_api_key_env": "OPENCODE_API_KEY",
+        "default_api_key_env": "OPENCODE_GO_API_KEY",
         "requires_api_key": True,
     },
     "bailian": {

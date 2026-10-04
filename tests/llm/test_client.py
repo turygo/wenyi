@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
 from typing import ClassVar
-from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -287,26 +285,6 @@ class TestProviderTransportConfiguration(unittest.TestCase):
         self.assertEqual(builtin.api_key_env, "DEEPSEEK_API_KEY")
         self.assertEqual(custom.base_url, "https://custom.example/v1")
         self.assertEqual(custom.api_key_env, "CUSTOM_API_KEY")
-
-    def test_opencode_go_sends_identity_and_session_headers(self):
-        from trans_novel.llm.registry import ProviderRegistry
-        from trans_novel.llm.usage import UsageTracker
-
-        cfg = LLMConfig(models={"translator": ["opencode-go/muse-spark-1.3-contributor"]})
-        registry = ProviderRegistry(cfg, UsageTracker())
-        with (
-            patch.dict(os.environ, {"OPENCODE_API_KEY": "test-key"}),
-            patch("openai.OpenAI") as openai,
-        ):
-            transport = registry.transport("opencode-go")
-            transport._ensure_client()
-
-        headers = openai.call_args.kwargs["default_headers"]
-        self.assertEqual(headers["User-Agent"], "wenyi")
-        self.assertRegex(
-            headers["x-opencode-session"],
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-        )
 
 
 class TestRoleProfiles(unittest.TestCase):

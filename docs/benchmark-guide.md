@@ -108,7 +108,7 @@ candidates:
 `muse-spark-1.3-contributor` 显式启用数据贡献：
 
 ```bash
-export OPENCODE_API_KEY='<secret>'
+export OPENCODE_GO_API_KEY='<secret>'
 ```
 
 不要把密钥写进 YAML、状态目录或命令历史。

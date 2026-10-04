@@ -15,11 +15,11 @@
 解压后直接运行：
 
 ```bash
-export OPENCODE_API_KEY=sk-...
+export OPENCODE_GO_API_KEY=sk-...
 ./wenyi translate book.epub
 ```
 
-在 Windows PowerShell 中，先运行 `$env:OPENCODE_API_KEY = "sk-..."` 设置环境变量，
+在 Windows PowerShell 中，先运行 `$env:OPENCODE_GO_API_KEY = "sk-..."` 设置环境变量，
 再运行 `.\wenyi.exe translate .\book.epub`。API Key 来自
 [OpenCode Go](https://dev.opencode.ai/docs/go/) 订阅。没有 `config.yaml` 时程序直接使用
 OpenCode Go 的 DeepSeek V4 Flash + `balanced` 默认值，不会自动写文件；需要改模型时运行 `wenyi init`。
@@ -217,7 +217,7 @@ Provider 使用固定的官方地址和密钥环境变量：
 
 | Provider | 密钥环境变量 |
 | --- | --- |
-| `opencode-go` | `OPENCODE_API_KEY` |
+| `opencode-go` | `OPENCODE_GO_API_KEY` |
 | `deepseek` | `DEEPSEEK_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
 | `openrouter` | `OPENROUTER_API_KEY` |

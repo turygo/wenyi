@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Corrected OpenCode Go credential lookup and setup instructions to `OPENCODE_GO_API_KEY`, keeping keys out of repository configuration.
+
 - Added target contract v3 for explicit implicit/merged zero-range emphasis declarations while retaining Chinese anchor identities, rejecting omissions of links, notation or literals, and preserving historical source serialization and paid annotation reuse.
 - Restored missing note labels as independent source-proven reference objects using unambiguous reciprocal relations, transparent identifier wrappers and note prose evidence, without changing frozen Chinese strings, original slot ledgers or legacy note extraction. Assembly and independent verification recheck source relations and rendered note scopes.
 
