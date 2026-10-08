@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "strategy_version": "chapter_semantics_v2",
+  "source_fingerprint": "8ae6e0acaccec550cd9fb80e7fb8d477c731b26b2a8066144f1c617848c03bb3",
+  "configured_analyst_models": [
+    "deepseek/deepseek-chat"
+  ],
+  "chapters": {
+    "0": {
+      "chapter_id": 0,
+      "source_sha256": "a88a59f6fa127479c8d15873045d4c970456f893eae609b964af5b8efd6a5238",
+      "chunks": [
+        {
+          "index": 0,
+          "source_sha256": "06886b5045dc0781e56ef94792f5da787fb3558a3f37f6a73b9879e0e8dd31be",
+          "result": {
+            "chapter_id": 0,
+            "kind": "translatable",
+            "reason": "合成叙事章节包含面向读者的正文。"
+          }
+        }
+      ]
+    },
+    "1": {
+      "chapter_id": 1,
+      "source_sha256": "14e128b6f6b3423eda054d29cfa472bfbbf98cca5611a796cf4a28899b619c32",
+      "chunks": [
+        {
+          "index": 0,
+          "source_sha256": "462018bf61ac2c9f005d7288de32b4dae772b033e51fa46836ac6cb1a085b5f7",
+          "result": {
+            "chapter_id": 1,
+            "kind": "translatable",
+            "reason": "合成叙事章节包含面向读者的正文。"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,18 @@
+llm:
+  models:
+    translator:
+    - deepseek/deepseek-chat
+    analyst:
+    - deepseek/deepseek-chat
+    editor:
+    - deepseek/deepseek-chat
+    fast:
+    - deepseek/deepseek-chat
+quality: balanced
+output:
+  mono: true
+  bilingual:
+    enabled: true
+    order: target_first
+  override_theme: null
+  bilingual_styles: builtin:bilingual

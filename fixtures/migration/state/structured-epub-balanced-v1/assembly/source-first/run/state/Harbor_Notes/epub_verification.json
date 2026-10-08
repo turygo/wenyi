@@ -1,0 +1,636 @@
+{
+  "schema_version": 1,
+  "mode": "bilingual",
+  "assurance": "verified",
+  "passed": true,
+  "published": true,
+  "source_sha256": "c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10",
+  "output_sha256": "83caa9c7f9551fffcb284cf36ce65012f0e570f4a8990db413af988c2a287e34",
+  "output_label": "structured-v1-source-first-bi.epub",
+  "failures": [],
+  "warnings": [],
+  "checked": {
+    "zip": 10,
+    "resources": 7,
+    "spine": 2,
+    "nav": 8,
+    "internal_links": 6,
+    "anchors": 13,
+    "footnotes": 1,
+    "assets": 4,
+    "placeholders": 86,
+    "parse": 13,
+    "bilingual_source": 29
+  },
+  "authorized_differences": {
+    "text_slots": 23,
+    "toc_labels": 4,
+    "language_fields": 3,
+    "bilingual_nodes": 14
+  },
+  "theme": {
+    "resources": 2,
+    "role_counts": {},
+    "protected_count": 8,
+    "note_change_count": 0,
+    "marker_count": 14,
+    "normalized_declaration_count": 0,
+    "warning_counts": {},
+    "stylesheets": [
+      {
+        "resource": "OEBPS/text/chapter-1.xhtml",
+        "path": "OEBPS/tn-theme/style-0.css",
+        "sha256": "25778fadc3124f57f55de34fb12367d6ca26c378180b5730da45b55fc8bcacc3"
+      },
+      {
+        "resource": "OEBPS/text/chapter-2.xhtml",
+        "path": "OEBPS/tn-theme/style-1.css",
+        "sha256": "e074ea770b8ab09e45da6814ae7ab238abe94e7438e8367feb767a2b5cb50d91"
+      }
+    ]
+  },
+  "output_digest": "51fc065494191362e481ff17958e46cb6c783697dfe85ffff601ffa9ac1a8f85",
+  "published_outputs": {
+    "structured-v1.epub": {
+      "schema_version": 1,
+      "mode": "monolingual",
+      "assurance": "verified",
+      "passed": true,
+      "published": true,
+      "source_sha256": "c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10",
+      "output_sha256": "5324935bffe1f74d7f1beaefd872dcdc3ef8d2493b0bfbc50479f064e14f37ad",
+      "output_label": "structured-v1.epub",
+      "failures": [],
+      "warnings": [],
+      "checked": {
+        "zip": 10,
+        "resources": 7,
+        "spine": 2,
+        "nav": 8,
+        "internal_links": 6,
+        "anchors": 13,
+        "footnotes": 1,
+        "assets": 4,
+        "placeholders": 68,
+        "parse": 13,
+        "bilingual_source": 2
+      },
+      "authorized_differences": {
+        "text_slots": 23,
+        "toc_labels": 4,
+        "language_fields": 3,
+        "bilingual_nodes": 0
+      },
+      "theme": null,
+      "output_digest": "8b523cebf308d85ce1843527815a4002f1a146cd9984bf3669bf7521e98e076d",
+      "triplet": {
+        "schema_version": 1,
+        "structural_pass": true,
+        "source": {
+          "schema_version": 1,
+          "path_sha256": "c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10",
+          "structural_pass": true,
+          "counts": {
+            "zip": {
+              "checked": 10,
+              "failures": 0,
+              "warnings": 0
+            },
+            "resources": {
+              "checked": 7,
+              "failures": 0,
+              "warnings": 0
+            },
+            "spine": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            },
+            "nav": {
+              "checked": 8,
+              "failures": 0,
+              "warnings": 0
+            },
+            "internal_links": {
+              "checked": 6,
+              "failures": 0,
+              "warnings": 0
+            },
+            "anchors": {
+              "checked": 13,
+              "failures": 0,
+              "warnings": 0
+            },
+            "footnotes": {
+              "checked": 1,
+              "failures": 0,
+              "warnings": 0
+            },
+            "assets": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            },
+            "placeholders": {
+              "checked": 68,
+              "failures": 0,
+              "warnings": 0
+            },
+            "parse": {
+              "checked": 5,
+              "failures": 0,
+              "warnings": 0
+            },
+            "bilingual_source": {
+              "checked": 0,
+              "failures": 0,
+              "warnings": 0
+            }
+          },
+          "failures": [],
+          "warnings": [],
+          "generated_resources": []
+        },
+        "mono": {
+          "schema_version": 1,
+          "path_sha256": "5324935bffe1f74d7f1beaefd872dcdc3ef8d2493b0bfbc50479f064e14f37ad",
+          "structural_pass": true,
+          "counts": {
+            "zip": {
+              "checked": 10,
+              "failures": 0,
+              "warnings": 0
+            },
+            "resources": {
+              "checked": 7,
+              "failures": 0,
+              "warnings": 0
+            },
+            "spine": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            },
+            "nav": {
+              "checked": 8,
+              "failures": 0,
+              "warnings": 0
+            },
+            "internal_links": {
+              "checked": 6,
+              "failures": 0,
+              "warnings": 0
+            },
+            "anchors": {
+              "checked": 13,
+              "failures": 0,
+              "warnings": 0
+            },
+            "footnotes": {
+              "checked": 1,
+              "failures": 0,
+              "warnings": 0
+            },
+            "assets": {
+              "checked": 4,
+              "failures": 0,
+              "warnings": 0
+            },
+            "placeholders": {
+              "checked": 68,
+              "failures": 0,
+              "warnings": 0
+            },
+            "parse": {
+              "checked": 5,
+              "failures": 0,
+              "warnings": 0
+            },
+            "bilingual_source": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            }
+          },
+          "failures": [],
+          "warnings": [],
+          "generated_resources": [],
+          "theme": null
+        },
+        "bilingual": {
+          "schema_version": 1,
+          "path_sha256": "1da725da81ff5436cce5e4312998597e954bd8228c2b886d4341e32e4cf451a9",
+          "structural_pass": true,
+          "counts": {
+            "zip": {
+              "checked": 10,
+              "failures": 0,
+              "warnings": 0
+            },
+            "resources": {
+              "checked": 7,
+              "failures": 0,
+              "warnings": 0
+            },
+            "spine": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            },
+            "nav": {
+              "checked": 8,
+              "failures": 0,
+              "warnings": 0
+            },
+            "internal_links": {
+              "checked": 6,
+              "failures": 0,
+              "warnings": 0
+            },
+            "anchors": {
+              "checked": 13,
+              "failures": 0,
+              "warnings": 0
+            },
+            "footnotes": {
+              "checked": 1,
+              "failures": 0,
+              "warnings": 0
+            },
+            "assets": {
+              "checked": 4,
+              "failures": 0,
+              "warnings": 0
+            },
+            "placeholders": {
+              "checked": 86,
+              "failures": 0,
+              "warnings": 0
+            },
+            "parse": {
+              "checked": 5,
+              "failures": 0,
+              "warnings": 0
+            },
+            "bilingual_source": {
+              "checked": 43,
+              "failures": 0,
+              "warnings": 0
+            }
+          },
+          "failures": [],
+          "warnings": [],
+          "generated_resources": [],
+          "theme": {
+            "resources": 2,
+            "role_counts": {},
+            "protected_count": 8,
+            "note_change_count": 0,
+            "marker_count": 14,
+            "normalized_declaration_count": 0,
+            "warning_counts": {},
+            "stylesheets": [
+              {
+                "resource": "OEBPS/text/chapter-1.xhtml",
+                "path": "OEBPS/tn-theme/style-0.css",
+                "sha256": "f567e550b8a24696ecc5f7ae7729bd7307cbb3146d59d10887ad72fb6d45ee60"
+              },
+              {
+                "resource": "OEBPS/text/chapter-2.xhtml",
+                "path": "OEBPS/tn-theme/style-1.css",
+                "sha256": "f5594ced11a8c55f3a71def6eedb80b9633dbf53bdcf0a55408669aa894c3933"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "structured-v1-bi.epub": {
+      "schema_version": 1,
+      "mode": "bilingual",
+      "assurance": "verified",
+      "passed": true,
+      "published": true,
+      "source_sha256": "c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10",
+      "output_sha256": "1da725da81ff5436cce5e4312998597e954bd8228c2b886d4341e32e4cf451a9",
+      "output_label": "structured-v1-bi.epub",
+      "failures": [],
+      "warnings": [],
+      "checked": {
+        "zip": 10,
+        "resources": 7,
+        "spine": 2,
+        "nav": 8,
+        "internal_links": 6,
+        "anchors": 13,
+        "footnotes": 1,
+        "assets": 4,
+        "placeholders": 86,
+        "parse": 13,
+        "bilingual_source": 29
+      },
+      "authorized_differences": {
+        "text_slots": 23,
+        "toc_labels": 4,
+        "language_fields": 3,
+        "bilingual_nodes": 14
+      },
+      "theme": {
+        "resources": 2,
+        "role_counts": {},
+        "protected_count": 8,
+        "note_change_count": 0,
+        "marker_count": 14,
+        "normalized_declaration_count": 0,
+        "warning_counts": {},
+        "stylesheets": [
+          {
+            "resource": "OEBPS/text/chapter-1.xhtml",
+            "path": "OEBPS/tn-theme/style-0.css",
+            "sha256": "f567e550b8a24696ecc5f7ae7729bd7307cbb3146d59d10887ad72fb6d45ee60"
+          },
+          {
+            "resource": "OEBPS/text/chapter-2.xhtml",
+            "path": "OEBPS/tn-theme/style-1.css",
+            "sha256": "f5594ced11a8c55f3a71def6eedb80b9633dbf53bdcf0a55408669aa894c3933"
+          }
+        ]
+      },
+      "output_digest": "8b523cebf308d85ce1843527815a4002f1a146cd9984bf3669bf7521e98e076d",
+      "triplet": {
+        "schema_version": 1,
+        "structural_pass": true,
+        "source": {
+          "schema_version": 1,
+          "path_sha256": "c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10",
+          "structural_pass": true,
+          "counts": {
+            "zip": {
+              "checked": 10,
+              "failures": 0,
+              "warnings": 0
+            },
+            "resources": {
+              "checked": 7,
+              "failures": 0,
+              "warnings": 0
+            },
+            "spine": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            },
+            "nav": {
+              "checked": 8,
+              "failures": 0,
+              "warnings": 0
+            },
+            "internal_links": {
+              "checked": 6,
+              "failures": 0,
+              "warnings": 0
+            },
+            "anchors": {
+              "checked": 13,
+              "failures": 0,
+              "warnings": 0
+            },
+            "footnotes": {
+              "checked": 1,
+              "failures": 0,
+              "warnings": 0
+            },
+            "assets": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            },
+            "placeholders": {
+              "checked": 68,
+              "failures": 0,
+              "warnings": 0
+            },
+            "parse": {
+              "checked": 5,
+              "failures": 0,
+              "warnings": 0
+            },
+            "bilingual_source": {
+              "checked": 0,
+              "failures": 0,
+              "warnings": 0
+            }
+          },
+          "failures": [],
+          "warnings": [],
+          "generated_resources": []
+        },
+        "mono": {
+          "schema_version": 1,
+          "path_sha256": "5324935bffe1f74d7f1beaefd872dcdc3ef8d2493b0bfbc50479f064e14f37ad",
+          "structural_pass": true,
+          "counts": {
+            "zip": {
+              "checked": 10,
+              "failures": 0,
+              "warnings": 0
+            },
+            "resources": {
+              "checked": 7,
+              "failures": 0,
+              "warnings": 0
+            },
+            "spine": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            },
+            "nav": {
+              "checked": 8,
+              "failures": 0,
+              "warnings": 0
+            },
+            "internal_links": {
+              "checked": 6,
+              "failures": 0,
+              "warnings": 0
+            },
+            "anchors": {
+              "checked": 13,
+              "failures": 0,
+              "warnings": 0
+            },
+            "footnotes": {
+              "checked": 1,
+              "failures": 0,
+              "warnings": 0
+            },
+            "assets": {
+              "checked": 4,
+              "failures": 0,
+              "warnings": 0
+            },
+            "placeholders": {
+              "checked": 68,
+              "failures": 0,
+              "warnings": 0
+            },
+            "parse": {
+              "checked": 5,
+              "failures": 0,
+              "warnings": 0
+            },
+            "bilingual_source": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            }
+          },
+          "failures": [],
+          "warnings": [],
+          "generated_resources": [],
+          "theme": null
+        },
+        "bilingual": {
+          "schema_version": 1,
+          "path_sha256": "1da725da81ff5436cce5e4312998597e954bd8228c2b886d4341e32e4cf451a9",
+          "structural_pass": true,
+          "counts": {
+            "zip": {
+              "checked": 10,
+              "failures": 0,
+              "warnings": 0
+            },
+            "resources": {
+              "checked": 7,
+              "failures": 0,
+              "warnings": 0
+            },
+            "spine": {
+              "checked": 2,
+              "failures": 0,
+              "warnings": 0
+            },
+            "nav": {
+              "checked": 8,
+              "failures": 0,
+              "warnings": 0
+            },
+            "internal_links": {
+              "checked": 6,
+              "failures": 0,
+              "warnings": 0
+            },
+            "anchors": {
+              "checked": 13,
+              "failures": 0,
+              "warnings": 0
+            },
+            "footnotes": {
+              "checked": 1,
+              "failures": 0,
+              "warnings": 0
+            },
+            "assets": {
+              "checked": 4,
+              "failures": 0,
+              "warnings": 0
+            },
+            "placeholders": {
+              "checked": 86,
+              "failures": 0,
+              "warnings": 0
+            },
+            "parse": {
+              "checked": 5,
+              "failures": 0,
+              "warnings": 0
+            },
+            "bilingual_source": {
+              "checked": 43,
+              "failures": 0,
+              "warnings": 0
+            }
+          },
+          "failures": [],
+          "warnings": [],
+          "generated_resources": [],
+          "theme": {
+            "resources": 2,
+            "role_counts": {},
+            "protected_count": 8,
+            "note_change_count": 0,
+            "marker_count": 14,
+            "normalized_declaration_count": 0,
+            "warning_counts": {},
+            "stylesheets": [
+              {
+                "resource": "OEBPS/text/chapter-1.xhtml",
+                "path": "OEBPS/tn-theme/style-0.css",
+                "sha256": "f567e550b8a24696ecc5f7ae7729bd7307cbb3146d59d10887ad72fb6d45ee60"
+              },
+              {
+                "resource": "OEBPS/text/chapter-2.xhtml",
+                "path": "OEBPS/tn-theme/style-1.css",
+                "sha256": "f5594ced11a8c55f3a71def6eedb80b9633dbf53bdcf0a55408669aa894c3933"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "structured-v1-source-first-bi.epub": {
+      "schema_version": 1,
+      "mode": "bilingual",
+      "assurance": "verified",
+      "passed": true,
+      "published": true,
+      "source_sha256": "c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10",
+      "output_sha256": "83caa9c7f9551fffcb284cf36ce65012f0e570f4a8990db413af988c2a287e34",
+      "output_label": "structured-v1-source-first-bi.epub",
+      "failures": [],
+      "warnings": [],
+      "checked": {
+        "zip": 10,
+        "resources": 7,
+        "spine": 2,
+        "nav": 8,
+        "internal_links": 6,
+        "anchors": 13,
+        "footnotes": 1,
+        "assets": 4,
+        "placeholders": 86,
+        "parse": 13,
+        "bilingual_source": 29
+      },
+      "authorized_differences": {
+        "text_slots": 23,
+        "toc_labels": 4,
+        "language_fields": 3,
+        "bilingual_nodes": 14
+      },
+      "theme": {
+        "resources": 2,
+        "role_counts": {},
+        "protected_count": 8,
+        "note_change_count": 0,
+        "marker_count": 14,
+        "normalized_declaration_count": 0,
+        "warning_counts": {},
+        "stylesheets": [
+          {
+            "resource": "OEBPS/text/chapter-1.xhtml",
+            "path": "OEBPS/tn-theme/style-0.css",
+            "sha256": "25778fadc3124f57f55de34fb12367d6ca26c378180b5730da45b55fc8bcacc3"
+          },
+          {
+            "resource": "OEBPS/text/chapter-2.xhtml",
+            "path": "OEBPS/tn-theme/style-1.css",
+            "sha256": "e074ea770b8ab09e45da6814ae7ab238abe94e7438e8367feb767a2b5cb50d91"
+          }
+        ]
+      },
+      "output_digest": "51fc065494191362e481ff17958e46cb6c783697dfe85ffff601ffa9ac1a8f85"
+    }
+  }
+}

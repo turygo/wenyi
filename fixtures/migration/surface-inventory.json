@@ -1,0 +1,6966 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "61835587606b5cb81cdcd81eec8427fd4f638df4",
+  "binary_names": {
+    "reference": "trans-novel",
+    "native": "wenyi"
+  },
+  "equality_oracle": "Command spellings, native argument rules, semantic outcomes and observed exit categories; not terminal colors/wrapping/incidental wording.",
+  "cases": [
+    {
+      "case_id": "command.root",
+      "input": {
+        "arguments": []
+      },
+      "parameters": [
+        {
+          "name": "config",
+          "kind": "option",
+          "spellings": [
+            "--config",
+            "-c"
+          ],
+          "negative_spellings": [],
+          "default": "config.yaml",
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "version",
+          "kind": "option",
+          "spellings": [
+            "--version"
+          ],
+          "negative_spellings": [],
+          "default": false,
+          "required": false,
+          "nargs": 1,
+          "type": "BOOL",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": true,
+          "eager": true
+        }
+      ],
+      "no_args_is_help": true,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R0",
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 48,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.root.config",
+      "input": {
+        "command": [],
+        "parameter": "config",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "config",
+        "kind": "option",
+        "spellings": [
+          "--config",
+          "-c"
+        ],
+        "negative_spellings": [],
+        "default": "config.yaml",
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R0",
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 48,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.root.version",
+      "input": {
+        "command": [],
+        "parameter": "version",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "version",
+        "kind": "option",
+        "spellings": [
+          "--version"
+        ],
+        "negative_spellings": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "type": "BOOL",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": true,
+        "eager": true
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R0",
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 48,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.init",
+      "input": {
+        "arguments": [
+          "init"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "force",
+          "kind": "option",
+          "spellings": [
+            "--force"
+          ],
+          "negative_spellings": [],
+          "default": false,
+          "required": false,
+          "nargs": 1,
+          "type": "BOOL",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": true,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 83,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.init.force",
+      "input": {
+        "command": [
+          "init"
+        ],
+        "parameter": "force",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "force",
+        "kind": "option",
+        "spellings": [
+          "--force"
+        ],
+        "negative_spellings": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "type": "BOOL",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": true,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 83,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.translate",
+      "input": {
+        "arguments": [
+          "translate"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "input",
+          "kind": "argument",
+          "spellings": [
+            "input"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "chapter",
+          "kind": "option",
+          "spellings": [
+            "--chapter"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "<IntRange x>=0>",
+          "allowed_values": null,
+          "minimum": 0,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "fmt",
+          "kind": "option",
+          "spellings": [
+            "--format"
+          ],
+          "negative_spellings": [],
+          "default": "epub",
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "out",
+          "kind": "option",
+          "spellings": [
+            "--out"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "quality",
+          "kind": "option",
+          "spellings": [
+            "--quality"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "source_language",
+          "kind": "option",
+          "spellings": [
+            "--source-language"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "honorifics",
+          "kind": "option",
+          "spellings": [
+            "--honorifics"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "polish",
+          "kind": "option",
+          "spellings": [
+            "--polish"
+          ],
+          "negative_spellings": [
+            "--no-polish"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "BOOL",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": true,
+          "eager": false
+        },
+        {
+          "name": "mono",
+          "kind": "option",
+          "spellings": [
+            "--mono"
+          ],
+          "negative_spellings": [
+            "--no-mono"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "BOOL",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": true,
+          "eager": false
+        },
+        {
+          "name": "bilingual",
+          "kind": "option",
+          "spellings": [
+            "--bilingual"
+          ],
+          "negative_spellings": [
+            "--no-bilingual"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "BOOL",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": true,
+          "eager": false
+        },
+        {
+          "name": "prepare",
+          "kind": "option",
+          "spellings": [
+            "--prepare"
+          ],
+          "negative_spellings": [],
+          "default": false,
+          "required": false,
+          "nargs": 1,
+          "type": "BOOL",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": true,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.input",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "input",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "input",
+        "kind": "argument",
+        "spellings": [
+          "input"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.chapter",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "chapter",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "chapter",
+        "kind": "option",
+        "spellings": [
+          "--chapter"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "<IntRange x>=0>",
+        "allowed_values": null,
+        "minimum": 0,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.fmt",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "fmt",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "fmt",
+        "kind": "option",
+        "spellings": [
+          "--format"
+        ],
+        "negative_spellings": [],
+        "default": "epub",
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.out",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "out",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "out",
+        "kind": "option",
+        "spellings": [
+          "--out"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.quality",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "quality",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "quality",
+        "kind": "option",
+        "spellings": [
+          "--quality"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.source_language",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "source_language",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "source_language",
+        "kind": "option",
+        "spellings": [
+          "--source-language"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.honorifics",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "honorifics",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "honorifics",
+        "kind": "option",
+        "spellings": [
+          "--honorifics"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.polish",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "polish",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "polish",
+        "kind": "option",
+        "spellings": [
+          "--polish"
+        ],
+        "negative_spellings": [
+          "--no-polish"
+        ],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "BOOL",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": true,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.mono",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "mono",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "mono",
+        "kind": "option",
+        "spellings": [
+          "--mono"
+        ],
+        "negative_spellings": [
+          "--no-mono"
+        ],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "BOOL",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": true,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.bilingual",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "bilingual",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "bilingual",
+        "kind": "option",
+        "spellings": [
+          "--bilingual"
+        ],
+        "negative_spellings": [
+          "--no-bilingual"
+        ],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "BOOL",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": true,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.translate.prepare",
+      "input": {
+        "command": [
+          "translate"
+        ],
+        "parameter": "prepare",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "prepare",
+        "kind": "option",
+        "spellings": [
+          "--prepare"
+        ],
+        "negative_spellings": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "type": "BOOL",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": true,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 217,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.resume",
+      "input": {
+        "arguments": [
+          "resume"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "input",
+          "kind": "argument",
+          "spellings": [
+            "input"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "fmt",
+          "kind": "option",
+          "spellings": [
+            "--format"
+          ],
+          "negative_spellings": [],
+          "default": "epub",
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R4",
+        "R8",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 263,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.resume.input",
+      "input": {
+        "command": [
+          "resume"
+        ],
+        "parameter": "input",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "input",
+        "kind": "argument",
+        "spellings": [
+          "input"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R4",
+        "R8",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 263,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.resume.fmt",
+      "input": {
+        "command": [
+          "resume"
+        ],
+        "parameter": "fmt",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "fmt",
+        "kind": "option",
+        "spellings": [
+          "--format"
+        ],
+        "negative_spellings": [],
+        "default": "epub",
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R4",
+        "R8",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 263,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.status",
+      "input": {
+        "arguments": [
+          "status"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "input",
+          "kind": "argument",
+          "spellings": [
+            "input"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R6",
+        "R8"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 272,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.status.input",
+      "input": {
+        "command": [
+          "status"
+        ],
+        "parameter": "input",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "input",
+        "kind": "argument",
+        "spellings": [
+          "input"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R6",
+        "R8"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 272,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools",
+      "input": {
+        "arguments": [
+          "tools"
+        ]
+      },
+      "parameters": [],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R0",
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 13,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_glossary",
+      "input": {
+        "arguments": [
+          "tools",
+          "glossary"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "input",
+          "kind": "argument",
+          "spellings": [
+            "input"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "action",
+          "kind": "argument",
+          "spellings": [
+            "action"
+          ],
+          "negative_spellings": [],
+          "default": "list",
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "arg1",
+          "kind": "argument",
+          "spellings": [
+            "arg1"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "arg2",
+          "kind": "argument",
+          "spellings": [
+            "arg2"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 20,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_glossary.input",
+      "input": {
+        "command": [
+          "tools",
+          "glossary"
+        ],
+        "parameter": "input",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "input",
+        "kind": "argument",
+        "spellings": [
+          "input"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 20,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_glossary.action",
+      "input": {
+        "command": [
+          "tools",
+          "glossary"
+        ],
+        "parameter": "action",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "action",
+        "kind": "argument",
+        "spellings": [
+          "action"
+        ],
+        "negative_spellings": [],
+        "default": "list",
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 20,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_glossary.arg1",
+      "input": {
+        "command": [
+          "tools",
+          "glossary"
+        ],
+        "parameter": "arg1",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "arg1",
+        "kind": "argument",
+        "spellings": [
+          "arg1"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 20,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_glossary.arg2",
+      "input": {
+        "command": [
+          "tools",
+          "glossary"
+        ],
+        "parameter": "arg2",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "arg2",
+        "kind": "argument",
+        "spellings": [
+          "arg2"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 20,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_assemble",
+      "input": {
+        "arguments": [
+          "tools",
+          "assemble"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "input",
+          "kind": "argument",
+          "spellings": [
+            "input"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "out",
+          "kind": "option",
+          "spellings": [
+            "--out"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "fmt",
+          "kind": "option",
+          "spellings": [
+            "--format"
+          ],
+          "negative_spellings": [],
+          "default": "epub",
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "mono",
+          "kind": "option",
+          "spellings": [
+            "--mono"
+          ],
+          "negative_spellings": [
+            "--no-mono"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "BOOL",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": true,
+          "eager": false
+        },
+        {
+          "name": "bilingual",
+          "kind": "option",
+          "spellings": [
+            "--bilingual"
+          ],
+          "negative_spellings": [
+            "--no-bilingual"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "BOOL",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": true,
+          "eager": false
+        },
+        {
+          "name": "reanalyze_layout",
+          "kind": "option",
+          "spellings": [
+            "--reanalyze-layout"
+          ],
+          "negative_spellings": [],
+          "default": false,
+          "required": false,
+          "nargs": 1,
+          "type": "BOOL",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": true,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R7",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 84,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_assemble.input",
+      "input": {
+        "command": [
+          "tools",
+          "assemble"
+        ],
+        "parameter": "input",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "input",
+        "kind": "argument",
+        "spellings": [
+          "input"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R7",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 84,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_assemble.out",
+      "input": {
+        "command": [
+          "tools",
+          "assemble"
+        ],
+        "parameter": "out",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "out",
+        "kind": "option",
+        "spellings": [
+          "--out"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R7",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 84,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_assemble.fmt",
+      "input": {
+        "command": [
+          "tools",
+          "assemble"
+        ],
+        "parameter": "fmt",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "fmt",
+        "kind": "option",
+        "spellings": [
+          "--format"
+        ],
+        "negative_spellings": [],
+        "default": "epub",
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R7",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 84,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_assemble.mono",
+      "input": {
+        "command": [
+          "tools",
+          "assemble"
+        ],
+        "parameter": "mono",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "mono",
+        "kind": "option",
+        "spellings": [
+          "--mono"
+        ],
+        "negative_spellings": [
+          "--no-mono"
+        ],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "BOOL",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": true,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R7",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 84,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_assemble.bilingual",
+      "input": {
+        "command": [
+          "tools",
+          "assemble"
+        ],
+        "parameter": "bilingual",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "bilingual",
+        "kind": "option",
+        "spellings": [
+          "--bilingual"
+        ],
+        "negative_spellings": [
+          "--no-bilingual"
+        ],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "BOOL",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": true,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R7",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 84,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_assemble.reanalyze_layout",
+      "input": {
+        "command": [
+          "tools",
+          "assemble"
+        ],
+        "parameter": "reanalyze_layout",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "reanalyze_layout",
+        "kind": "option",
+        "spellings": [
+          "--reanalyze-layout"
+        ],
+        "negative_spellings": [],
+        "default": false,
+        "required": false,
+        "nargs": 1,
+        "type": "BOOL",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": true,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R7",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 84,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_reannotate",
+      "input": {
+        "arguments": [
+          "tools",
+          "reannotate"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "input",
+          "kind": "argument",
+          "spellings": [
+            "input"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "state_copy",
+          "kind": "option",
+          "spellings": [
+            "--state-copy"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R9"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 135,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_reannotate.input",
+      "input": {
+        "command": [
+          "tools",
+          "reannotate"
+        ],
+        "parameter": "input",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "input",
+        "kind": "argument",
+        "spellings": [
+          "input"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R9"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 135,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_reannotate.state_copy",
+      "input": {
+        "command": [
+          "tools",
+          "reannotate"
+        ],
+        "parameter": "state_copy",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "state_copy",
+        "kind": "option",
+        "spellings": [
+          "--state-copy"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R9"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 135,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_qa",
+      "input": {
+        "arguments": [
+          "tools",
+          "qa"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "input",
+          "kind": "argument",
+          "spellings": [
+            "input"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 157,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_qa.input",
+      "input": {
+        "command": [
+          "tools",
+          "qa"
+        ],
+        "parameter": "input",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "input",
+        "kind": "argument",
+        "spellings": [
+          "input"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 157,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_report",
+      "input": {
+        "arguments": [
+          "tools",
+          "report"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "input",
+          "kind": "argument",
+          "spellings": [
+            "input"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 173,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_report.input",
+      "input": {
+        "command": [
+          "tools",
+          "report"
+        ],
+        "parameter": "input",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "input",
+        "kind": "argument",
+        "spellings": [
+          "input"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 173,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark"
+        ]
+      },
+      "parameters": [],
+      "no_args_is_help": true,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 14,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_report",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "report"
+        ]
+      },
+      "parameters": [],
+      "no_args_is_help": true,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 29,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_report_build",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "report",
+          "build"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "run_dir",
+          "kind": "argument",
+          "spellings": [
+            "run_dir"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "review_dir",
+          "kind": "argument",
+          "spellings": [
+            "review_dir"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "price_path",
+          "kind": "argument",
+          "spellings": [
+            "price_path"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "out",
+          "kind": "option",
+          "spellings": [
+            "--out"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "integration",
+          "kind": "option",
+          "spellings": [
+            "--integration"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 198,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_report_build.run_dir",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "report",
+          "build"
+        ],
+        "parameter": "run_dir",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "run_dir",
+        "kind": "argument",
+        "spellings": [
+          "run_dir"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 198,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_report_build.review_dir",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "report",
+          "build"
+        ],
+        "parameter": "review_dir",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "review_dir",
+        "kind": "argument",
+        "spellings": [
+          "review_dir"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 198,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_report_build.price_path",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "report",
+          "build"
+        ],
+        "parameter": "price_path",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "price_path",
+        "kind": "argument",
+        "spellings": [
+          "price_path"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 198,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_report_build.out",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "report",
+          "build"
+        ],
+        "parameter": "out",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "out",
+        "kind": "option",
+        "spellings": [
+          "--out"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 198,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_report_build.integration",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "report",
+          "build"
+        ],
+        "parameter": "integration",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "integration",
+        "kind": "option",
+        "spellings": [
+          "--integration"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 198,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_report_validate",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "report",
+          "validate"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "report_dir",
+          "kind": "argument",
+          "spellings": [
+            "report_dir"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 226,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_report_validate.report_dir",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "report",
+          "validate"
+        ],
+        "parameter": "report_dir",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "report_dir",
+        "kind": "argument",
+        "spellings": [
+          "report_dir"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 226,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_run",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "run"
+        ]
+      },
+      "parameters": [],
+      "no_args_is_help": true,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 24,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_run_canary",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "run",
+          "canary"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "book_spec",
+          "kind": "argument",
+          "spellings": [
+            "book_spec"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "candidates",
+          "kind": "argument",
+          "spellings": [
+            "candidates"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "out",
+          "kind": "option",
+          "spellings": [
+            "--out"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "book_id",
+          "kind": "option",
+          "spellings": [
+            "--book-id"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": false,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 95,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_run_canary.book_spec",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "run",
+          "canary"
+        ],
+        "parameter": "book_spec",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "book_spec",
+        "kind": "argument",
+        "spellings": [
+          "book_spec"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 95,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_run_canary.candidates",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "run",
+          "canary"
+        ],
+        "parameter": "candidates",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "candidates",
+        "kind": "argument",
+        "spellings": [
+          "candidates"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 95,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_run_canary.out",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "run",
+          "canary"
+        ],
+        "parameter": "out",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "out",
+        "kind": "option",
+        "spellings": [
+          "--out"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 95,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_run_canary.book_id",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "run",
+          "canary"
+        ],
+        "parameter": "book_id",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "book_id",
+        "kind": "option",
+        "spellings": [
+          "--book-id"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": false,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Omission uses declared parser default; CLI nullable output values remain absent until per-field resolution.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 95,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_run_full",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "run",
+          "full"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "book_spec",
+          "kind": "argument",
+          "spellings": [
+            "book_spec"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "candidates",
+          "kind": "argument",
+          "spellings": [
+            "candidates"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "out",
+          "kind": "option",
+          "spellings": [
+            "--out"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 111,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_run_full.book_spec",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "run",
+          "full"
+        ],
+        "parameter": "book_spec",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "book_spec",
+        "kind": "argument",
+        "spellings": [
+          "book_spec"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 111,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_run_full.candidates",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "run",
+          "full"
+        ],
+        "parameter": "candidates",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "candidates",
+        "kind": "argument",
+        "spellings": [
+          "candidates"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 111,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_run_full.out",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "run",
+          "full"
+        ],
+        "parameter": "out",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "out",
+        "kind": "option",
+        "spellings": [
+          "--out"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 111,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_corpus",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "corpus"
+        ]
+      },
+      "parameters": [],
+      "no_args_is_help": true,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 19,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_corpus_scan",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "corpus",
+          "scan"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "book_spec",
+          "kind": "argument",
+          "spellings": [
+            "book_spec"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "out",
+          "kind": "option",
+          "spellings": [
+            "--out"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 37,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_corpus_scan.book_spec",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "corpus",
+          "scan"
+        ],
+        "parameter": "book_spec",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "book_spec",
+        "kind": "argument",
+        "spellings": [
+          "book_spec"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 37,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_corpus_scan.out",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "corpus",
+          "scan"
+        ],
+        "parameter": "out",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "out",
+        "kind": "option",
+        "spellings": [
+          "--out"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 37,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_corpus_build",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "corpus",
+          "build"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "book_spec",
+          "kind": "argument",
+          "spellings": [
+            "book_spec"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "selection",
+          "kind": "argument",
+          "spellings": [
+            "selection"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "out",
+          "kind": "option",
+          "spellings": [
+            "--out"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 52,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_corpus_build.book_spec",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "corpus",
+          "build"
+        ],
+        "parameter": "book_spec",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "book_spec",
+        "kind": "argument",
+        "spellings": [
+          "book_spec"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 52,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_corpus_build.selection",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "corpus",
+          "build"
+        ],
+        "parameter": "selection",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "selection",
+        "kind": "argument",
+        "spellings": [
+          "selection"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 52,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_corpus_build.out",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "corpus",
+          "build"
+        ],
+        "parameter": "out",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "out",
+        "kind": "option",
+        "spellings": [
+          "--out"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 52,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_corpus_validate",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "corpus",
+          "validate"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "corpus_dir",
+          "kind": "argument",
+          "spellings": [
+            "corpus_dir"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 68,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_corpus_validate.corpus_dir",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "corpus",
+          "validate"
+        ],
+        "parameter": "corpus_dir",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "corpus_dir",
+        "kind": "argument",
+        "spellings": [
+          "corpus_dir"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 68,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_evaluate",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "evaluate"
+        ]
+      },
+      "parameters": [],
+      "no_args_is_help": true,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 26,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_evaluate_prepare",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "evaluate",
+          "prepare"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "run_dir",
+          "kind": "argument",
+          "spellings": [
+            "run_dir"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "review_spec",
+          "kind": "argument",
+          "spellings": [
+            "review_spec"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "out",
+          "kind": "option",
+          "spellings": [
+            "--out"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 154,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_evaluate_prepare.run_dir",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "evaluate",
+          "prepare"
+        ],
+        "parameter": "run_dir",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "run_dir",
+        "kind": "argument",
+        "spellings": [
+          "run_dir"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 154,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_evaluate_prepare.review_spec",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "evaluate",
+          "prepare"
+        ],
+        "parameter": "review_spec",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "review_spec",
+        "kind": "argument",
+        "spellings": [
+          "review_spec"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 154,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_evaluate_prepare.out",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "evaluate",
+          "prepare"
+        ],
+        "parameter": "out",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "out",
+        "kind": "option",
+        "spellings": [
+          "--out"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 154,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_evaluate_finalize",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "evaluate",
+          "finalize"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "review_dir",
+          "kind": "argument",
+          "spellings": [
+            "review_dir"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "results_dir",
+          "kind": "argument",
+          "spellings": [
+            "results_dir"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 169,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_evaluate_finalize.review_dir",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "evaluate",
+          "finalize"
+        ],
+        "parameter": "review_dir",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "review_dir",
+        "kind": "argument",
+        "spellings": [
+          "review_dir"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 169,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_evaluate_finalize.results_dir",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "evaluate",
+          "finalize"
+        ],
+        "parameter": "results_dir",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "results_dir",
+        "kind": "argument",
+        "spellings": [
+          "results_dir"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 169,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_evaluate_validate",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "evaluate",
+          "validate"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "review_dir",
+          "kind": "argument",
+          "spellings": [
+            "review_dir"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 183,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_evaluate_validate.review_dir",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "evaluate",
+          "validate"
+        ],
+        "parameter": "review_dir",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "review_dir",
+        "kind": "argument",
+        "spellings": [
+          "review_dir"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 183,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_integration",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "integration"
+        ]
+      },
+      "parameters": [],
+      "no_args_is_help": true,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 25,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "command.tools_benchmark_integration_run",
+      "input": {
+        "arguments": [
+          "tools",
+          "benchmark",
+          "integration",
+          "run"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "corpus_dir",
+          "kind": "argument",
+          "spellings": [
+            "corpus_dir"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "book_spec",
+          "kind": "argument",
+          "spellings": [
+            "book_spec"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "candidates",
+          "kind": "argument",
+          "spellings": [
+            "candidates"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "integration_spec",
+          "kind": "argument",
+          "spellings": [
+            "integration_spec"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        },
+        {
+          "name": "out",
+          "kind": "option",
+          "spellings": [
+            "--out"
+          ],
+          "negative_spellings": [],
+          "default": null,
+          "required": true,
+          "nargs": 1,
+          "type": "STRING",
+          "allowed_values": null,
+          "minimum": null,
+          "maximum": null,
+          "is_flag": false,
+          "eager": false
+        }
+      ],
+      "no_args_is_help": false,
+      "expected": {
+        "outcome": "Registered command/group; parameters retain absence separately from defaults.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 126,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_integration_run.corpus_dir",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "integration",
+          "run"
+        ],
+        "parameter": "corpus_dir",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "corpus_dir",
+        "kind": "argument",
+        "spellings": [
+          "corpus_dir"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 126,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_integration_run.book_spec",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "integration",
+          "run"
+        ],
+        "parameter": "book_spec",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "book_spec",
+        "kind": "argument",
+        "spellings": [
+          "book_spec"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 126,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_integration_run.candidates",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "integration",
+          "run"
+        ],
+        "parameter": "candidates",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "candidates",
+        "kind": "argument",
+        "spellings": [
+          "candidates"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 126,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_integration_run.integration_spec",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "integration",
+          "run"
+        ],
+        "parameter": "integration_spec",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "integration_spec",
+        "kind": "argument",
+        "spellings": [
+          "integration_spec"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 126,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "argument.tools_benchmark_integration_run.out",
+      "input": {
+        "command": [
+          "tools",
+          "benchmark",
+          "integration",
+          "run"
+        ],
+        "parameter": "out",
+        "presence": "omitted versus explicitly supplied"
+      },
+      "contract": {
+        "name": "out",
+        "kind": "option",
+        "spellings": [
+          "--out"
+        ],
+        "negative_spellings": [],
+        "default": null,
+        "required": true,
+        "nargs": 1,
+        "type": "STRING",
+        "allowed_values": null,
+        "minimum": null,
+        "maximum": null,
+        "is_flag": false,
+        "eager": false
+      },
+      "expected": {
+        "outcome": "Required input error when omitted",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 126,
+        "kind": "baseline_source"
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "process.000",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "8ab05e69208576ed9364673cd60c6a74a3634ab67f7858a216a9a3980ff0f961",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.001",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "init",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "init",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "2a57498c3ddad040e3e1c884cdd6e38520193d9a22cf22e84f23aef5539631fb",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.002",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "translate",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "translate",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "20eab81a94651e14588d67d1cc4bd6ff56fce6f74666b78b56a542daea2c4e4f",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.003",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "resume",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "resume",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "6708fe52fc4303837d481bb53b87f5d47f6ca084b8c9539cc0f4775a2fc99171",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.004",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "status",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "status",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "89e97ee774f459d20cd9c03fd393aacbc5a3ccfc49e701deda9086e84767e963",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.005",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "5a196cc27bd6ae38abf67ff8468092be5e71b639201f2ef057b7351904bc096a",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.006",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "glossary",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "glossary",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "bfed23f16830ba9331181f03a2270faf7a56f4fb3b9408c810f53c67ec4d1aa4",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.007",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "assemble",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "assemble",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "7044a2927ec6e25b79330de0f9389422a37851035cf2b30f3e5d5a0923f60a07",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.008",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "reannotate",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "reannotate",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "30b792aa9dc120463d3019bd4b5be7a9cf48fde8f6fad6e7c4118f0697d585ca",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.009",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "qa",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "qa",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "3621d22aa04409c1c0233ccfa3088b704c9e39630c45236f5ea2ce78602bd543",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.010",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "report",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "report",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "c88dbf7dabc4e3d0b77e4473e6d864376c93a9ea925ddba8a2c58f5232d29a27",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.011",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "d2de4f6d3a825443f60c2af747f3e23014d771c9dc04c2779084a15c65385430",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.012",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "report",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "report",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "d0693b204a215547e0b43ed13e49da60a62c2681c002d02bc6be55b182f60af9",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.013",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "report",
+          "build",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "report",
+          "build",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "551d4164136988b9286cfc4e8079561327f1c9c257e55801bee30e4551ebfacf",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.014",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "report",
+          "validate",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "report",
+          "validate",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "f9ea17cf7eca5bee1de7885f99462b523648798790db2d6c81aa97b7a4380999",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.015",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "run",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "run",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "874628b131adc6b002adee8fe392b301e6f981f5bc3f24e4d627fbd7fa120d50",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.016",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "run",
+          "canary",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "run",
+          "canary",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "47d3290876450ed86c569ba4e42e9640afe7a44944a01b6cdcd8874799d7d56a",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.017",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "run",
+          "full",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "run",
+          "full",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "f9b7ac19a5d36085553ccc055271f7ef22edd431cff4adeda1ea7b8a98e910d5",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.018",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "corpus",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "corpus",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "dd55f837a9abf5a961a3fb1e1e103c129de89c06504d57f143084df921598195",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.019",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "corpus",
+          "scan",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "corpus",
+          "scan",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "d798aa5b1798dabbac3fb39ac0cc8caaee45ed5fb06909a06c9ae27ece79478a",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.020",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "corpus",
+          "build",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "corpus",
+          "build",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "5bba07c4922c3f7524b3e5b9890766e70e9832b8374710b1a57be473bf277022",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.021",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "corpus",
+          "validate",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "corpus",
+          "validate",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "038f7f82c4da553e91dd9d7e29f8d5d14de676bc137ae93dbe7d4fbe114341d8",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.022",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "evaluate",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "evaluate",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "1a7ff116f707ec832a6421a003d2d73eea1fd1d1429613298f783362774d7fa9",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.023",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "evaluate",
+          "prepare",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "evaluate",
+          "prepare",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "ac479d56e58683ef9f893e77b9f51183d2f9bcb2dcdd10725da9138a7c261c40",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.024",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "evaluate",
+          "finalize",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "evaluate",
+          "finalize",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "7c38f7b4dd83173e4983ae46128b88f5aa47dd3217e4619571c046cec2bdecab",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.025",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "evaluate",
+          "validate",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "evaluate",
+          "validate",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "f260b8e6a86118f2ebc46e44c83970b4ac041946385d6adde40a91b8351f5e2e",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.026",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "integration",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "integration",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "1e0690fe10b08bdc3941622bedb1d07bd1c17c56724073a6672cb799432669af",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.027",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "integration",
+          "run",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "tools",
+          "benchmark",
+          "integration",
+          "run",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "caefce147aa2a66fd4d1d9bbf6dbcc83c0bb03cd5c244cae4ec3a27b5ef3963d",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.028",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 2,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel"
+        ],
+        "exit_status": 2,
+        "stdout_sha256": "3e7e459e566fe28bf62842ffec61b70951d815c6a6222b9e9884cc0301fe5beb",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.029",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--version"
+        ]
+      },
+      "expected": {
+        "outcome": "version",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--version"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "52c60e9de50c6b973b88da66d6348ece23db711dd335d5bcda89aa5c6f265417",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "version"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.030",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--config"
+        ]
+      },
+      "expected": {
+        "outcome": "argument_error",
+        "exit_status": 2,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--config"
+        ],
+        "exit_status": 2,
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256": "fabaa6822da940b4ec19ceb3571637de0071bcf731c1293cd65392e25b9d94c2",
+        "outcome": "argument_error"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.031",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "-c"
+        ]
+      },
+      "expected": {
+        "outcome": "argument_error",
+        "exit_status": 2,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "-c"
+        ],
+        "exit_status": 2,
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256": "0f2c9ee8e6b391abe53a32fdec8ce99634a871d495d90bb694570fa376f18f26",
+        "outcome": "argument_error"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.032",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--definitely-unknown"
+        ]
+      },
+      "expected": {
+        "outcome": "argument_error",
+        "exit_status": 2,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--definitely-unknown"
+        ],
+        "exit_status": 2,
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256": "bd5b5d1b4b22796a683dd0ce028bebdbf1804989f68bebbe5e24d775e272a391",
+        "outcome": "argument_error"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.033",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "unavailable"
+        ]
+      },
+      "expected": {
+        "outcome": "argument_error",
+        "exit_status": 2,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "unavailable"
+        ],
+        "exit_status": 2,
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256": "5e736368e38a5c2acf5007115c27ba7822e900c8a7ea5c6c9cdab7dfcb8ecfbc",
+        "outcome": "argument_error"
+      },
+      "modules": [
+        "R0"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.034",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--config",
+          "missing config.yaml",
+          "--help"
+        ]
+      },
+      "expected": {
+        "outcome": "help",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "--config",
+          "missing config.yaml",
+          "--help"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "8ab05e69208576ed9364673cd60c6a74a3634ab67f7858a216a9a3980ff0f961",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "help"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "process.035",
+      "input": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "-c",
+          "path with spaces.yaml",
+          "--version"
+        ]
+      },
+      "expected": {
+        "outcome": "version",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "observation": {
+        "arguments": [
+          "python",
+          "-m",
+          "trans_novel",
+          "-c",
+          "path with spaces.yaml",
+          "--version"
+        ],
+        "exit_status": 0,
+        "stdout_sha256": "52c60e9de50c6b973b88da66d6348ece23db711dd335d5bcda89aa5c6f265417",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outcome": "version"
+      },
+      "modules": [
+        "R0",
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 300
+      },
+      "evidence_class": "reference_process"
+    },
+    {
+      "case_id": "behavior.translate.prepare_chapter",
+      "input": {
+        "command": "translate",
+        "prepare": true,
+        "chapter": 0
+      },
+      "expected": {
+        "outcome": "Conflict after input/config admission, CLI exit category 2; exit not separately exercised.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R5"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 144
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.translate.format",
+      "input": {
+        "command": "translate|resume|tools assemble",
+        "format": [
+          "epub",
+          "txt",
+          "invalid"
+        ]
+      },
+      "expected": {
+        "outcome": "Strip/lowercase epub/txt accepted; unsupported format CLI exit category2, not parser Enum.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/common.py",
+        "line": 66
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.translate.quality",
+      "input": {
+        "quality": [
+          "economy",
+          "balanced",
+          "quality",
+          "invalid"
+        ]
+      },
+      "expected": {
+        "outcome": "Only three presets admitted; invalid apply_quality yields CLI exit category 2.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R5"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 127
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.translate.language",
+      "input": {
+        "source_language": [
+          "omitted",
+          " CODE ",
+          ""
+        ]
+      },
+      "expected": {
+        "outcome": "Omitted retains configured auto; explicit strip; empty becomes auto; target language internally zh.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 136
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.translate.honorifics",
+      "input": {
+        "honorifics": [
+          "keep_style",
+          "normalize",
+          "drop",
+          "invalid"
+        ]
+      },
+      "expected": {
+        "outcome": "Internal default keep_style; invalid value CLI exit category 2.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 129
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.translate.polish",
+      "input": {
+        "polish": [
+          "omitted",
+          true,
+          false
+        ]
+      },
+      "expected": {
+        "outcome": "Quality expansion first; explicit --polish/--no-polish overrides.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R5"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 138
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.outputs.precedence",
+      "input": {
+        "mono": "omitted|false|true",
+        "bilingual.enabled": "omitted|false|true"
+      },
+      "expected": {
+        "outcome": "Each field CLI > explicit config > saved selection > default; omitted is not default false. Both disabled normalize mono true.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R2",
+        "R5"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 265
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.outputs.theme_clear",
+      "input": {
+        "override_theme": null
+      },
+      "expected": {
+        "outcome": "Explicit null clears saved theme; omission can inherit; no translation/layout calls for null theme.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R2",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 280
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.outputs.assets",
+      "input": {
+        "theme": "relative file",
+        "format": "txt"
+      },
+      "expected": {
+        "outcome": "Resolve relative to config origin; unused missing theme cannot break TXT.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R7",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 237
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.init.overwrite",
+      "input": {
+        "force": false,
+        "existing": true
+      },
+      "expected": {
+        "outcome": "Existing config refused exit category 1; --force overwrites; I/O failure exit category 1.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 83
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.status",
+      "input": {
+        "command": "status",
+        "run": "missing|historical|interrupted"
+      },
+      "expected": {
+        "outcome": "Missing run exit category 1. Python RunStore may create directories, migrate/recover on read and GlossaryStore writes WAL/schema. Rust exception: strictly read-only, report recovery/migration needed without reproducing side effects.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R6",
+        "R8"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 272
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.tools.missing_run",
+      "input": {
+        "command": "tools glossary|assemble|reannotate|qa|report",
+        "run": "missing"
+      },
+      "expected": {
+        "outcome": "Requires existing run; CLI exit category 1.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R6",
+        "R9"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 20
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.glossary.actions",
+      "input": {
+        "action": [
+          "list",
+          "conflicts",
+          "audit",
+          "lock",
+          "resolve",
+          "unknown"
+        ],
+        "arg1": "source",
+        "arg2": "target"
+      },
+      "expected": {
+        "outcome": "Default list; list/conflicts read display; audit rewrites content; lock requires source and term, resolve requires source+target and locks. Missing args/unknown action exit category 1.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R6"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 33
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.assemble.errors",
+      "input": {
+        "command": "tools assemble",
+        "failure": "identity|readiness|required_node"
+      },
+      "expected": {
+        "outcome": "Caught failures exit category 2; --reanalyze-layout explicitly refreshes accepted layout.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R2",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 115
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.reannotate.copy",
+      "input": {
+        "state_copy": "required directory"
+      },
+      "expected": {
+        "outcome": "No in-place reannotation; independent source-bound copy.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R9"
+      ],
+      "source": {
+        "path": "trans_novel/cli/tools.py",
+        "line": 135
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.benchmark.errors",
+      "input": {
+        "command": "tools benchmark",
+        "failure": "domain_error"
+      },
+      "expected": {
+        "outcome": "Domain errors normally exit category 2; integration failed predicates exit category 1.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R11",
+        "R12"
+      ],
+      "source": {
+        "path": "trans_novel/benchmark/cli.py",
+        "line": 32
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.runtime.failures",
+      "input": {
+        "command": "translate|resume",
+        "failure": "identity|provider|protocol|verification|required_node"
+      },
+      "expected": {
+        "outcome": "Handled translation error exit category 2; unfinished required node state persisted for resume; no successful suppression.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R3",
+        "R4",
+        "R5",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/app.py",
+        "line": 33
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.root",
+      "input": {},
+      "expected": {
+        "outcome": "Omitted root mapping uses defaults; empty YAML document becomes {}; null top-level from_dict/nonmapping rejected; unknown and deprecated root keys rejected.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 183
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.llm",
+      "input": {
+        "llm": "omitted|null|{}|unknown"
+      },
+      "expected": {
+        "outcome": "Omitted defaults; null rejected; unknown fields forbidden.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 97
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.models",
+      "input": {
+        "llm.models": "omitted|null|{}|unknown"
+      },
+      "expected": {
+        "outcome": "Omitted role fields get distinct defaults; explicit null rejected; unknown role rejected.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 62
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.translator",
+      "input": {
+        "llm.models.translator": [
+          "openrouter/google/gemini-3.8-flash:low"
+        ]
+      },
+      "expected": {
+        "outcome": "Default ordered role list; omitted differs from explicit same value.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 67
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.general_roles",
+      "input": {
+        "llm.models.analyst|editor|fast": [
+          "opencode-go/muse-spark-1.3-contributor:low"
+        ]
+      },
+      "expected": {
+        "outcome": "Default one-element general-role list; omitted fields remain omitted in presence inventory.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 68
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.model_candidates",
+      "input": {
+        "role_value": "null|[]|blank|duplicate|ordered list"
+      },
+      "expected": {
+        "outcome": "Nonempty ordered unique stripped IDs required; null/empty/blank/duplicate invalid; model capabilities and provider identity validated.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 72
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.provider_routing",
+      "input": {
+        "llm.provider_routing": "omitted|{}|null|model-keyed objects"
+      },
+      "expected": {
+        "outcome": "Default {}; only OpenRouter model keys allowed, strict routing records; null rejected.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 103
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.provider_only",
+      "input": {
+        "only": "omitted|null|[]|list"
+      },
+      "expected": {
+        "outcome": "Omitted/null means no constraint, empty list rejected; values ordered strings.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 92
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.provider_order",
+      "input": {
+        "order": "omitted|null|[]|list"
+      },
+      "expected": {
+        "outcome": "Omitted/null means no preference, empty list rejected; ordered strings.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 93
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.provider_fallbacks",
+      "input": {
+        "allow_fallbacks": "omitted|null|false|true"
+      },
+      "expected": {
+        "outcome": "Optional provider bool; omission/null distinct from explicit false; uses Pydantic bool conversion (not StrictBool).",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 94
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.custom_endpoint",
+      "input": {
+        "llm.base_url": "omitted|null|URL",
+        "llm.api_key_env": "omitted|null|ENV_NAME"
+      },
+      "expected": {
+        "outcome": "Defaults null; custom openai-compatible requires nonblank base_url; standard providers reject explicit nonnull custom settings; credentials from environment only.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 104
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.quality",
+      "input": {
+        "quality": "omitted|null|economy|balanced|quality|unknown"
+      },
+      "expected": {
+        "outcome": "Omitted balanced; only three literals; null/unknown rejected; economy/balanced no polish, quality polish.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 189
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.output",
+      "input": {
+        "output": "omitted|null|{}|unknown"
+      },
+      "expected": {
+        "outcome": "Omitted defaults; explicit null invalid; unknown fields rejected.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R5",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 167
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.output.mono",
+      "input": {
+        "mono": "omitted|null|false|true|0|string"
+      },
+      "expected": {
+        "outcome": "Default true; StrictBool only true/false; omission retains absence; null/numeric/string invalid.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R5",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 172
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.output.bilingual",
+      "input": {
+        "bilingual": "omitted|null|false|{}|unknown"
+      },
+      "expected": {
+        "outcome": "Default nested object; legacy boolean format rejected; null rejected; unknown nested fields rejected.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R5",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 173
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.output.bilingual.enabled",
+      "input": {
+        "enabled": "omitted|null|false|true"
+      },
+      "expected": {
+        "outcome": "Default true; StrictBool; omitted independently inherits saved field; null rejected.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R5",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 150
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.output.bilingual.order",
+      "input": {
+        "order": "omitted|null|target_first|source_first|unknown"
+      },
+      "expected": {
+        "outcome": "Default target_first; only two literals; null/unknown rejected.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R5",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 151
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.output.override_theme",
+      "input": {
+        "override_theme": "omitted|null|{styles:PATH}|{styles:null}|unknown"
+      },
+      "expected": {
+        "outcome": "Default null; explicit null clears saved theme, omission can inherit; nonnull requires styles StrictStr; unknown rejected.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R5",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 174
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.output.theme_styles",
+      "input": {
+        "styles": "omitted|null|builtin:chinese-reading|relative CSS|blank|NUL|unknown builtin"
+      },
+      "expected": {
+        "outcome": "Required nonblank non-NUL StrictStr; builtin:chinese-reading only builtin; path origin preserved and relative resolved against config directory.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R5",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 159
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.output.bilingual_styles",
+      "input": {
+        "bilingual_styles": "omitted|null|builtin:bilingual|relative CSS|blank|NUL|unknown builtin"
+      },
+      "expected": {
+        "outcome": "Default builtin:bilingual; StrictStr; null/blank/NUL/other builtin rejected; origin tracked.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R5",
+        "R7"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 175
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.internal_policy",
+      "input": {
+        "public_keys": [
+          "segment",
+          "pipeline",
+          "language",
+          "honorific",
+          "punctuation",
+          "paths"
+        ]
+      },
+      "expected": {
+        "outcome": "Not public YAML knobs; deprecated/unknown rejected. Internal batch1800/segment1200/protocol retry2/context6/prescan4/chapter glossary/no inflight glossary; default source auto,target zh,honorific keep_style,punctuation true,state state.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 193
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.missing_file",
+      "input": {
+        "config_path": "missing"
+      },
+      "expected": {
+        "outcome": "Missing/nonfile returns defaults, no creation; malformed YAML or mapping yields CLI config exit category2.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/config.py",
+        "line": 354
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.input.missing",
+      "input": {
+        "input": "nonexistent"
+      },
+      "expected": {
+        "outcome": "CLI input rejection exit category1; checked before translation config loading.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R3",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/cli/common.py",
+        "line": 60
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.config.invalid",
+      "input": {
+        "config": "malformed YAML|invalid schema"
+      },
+      "expected": {
+        "outcome": "CLI config validation exit category2.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1"
+      ],
+      "source": {
+        "path": "trans_novel/cli/common.py",
+        "line": 50
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "behavior.input.formats_aliases",
+      "input": {
+        "extensions": [
+          ".epub",
+          ".fb2",
+          ".txt",
+          ".text",
+          ".md",
+          ".markdown",
+          "uppercase variants",
+          "unknown"
+        ]
+      },
+      "expected": {
+        "outcome": "Suffix lowercase dispatch: .epub and .fb2 distinct parsers; .txt/.text/.md/.markdown use text parser. Unknown format ValueError, translation CLI category2.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/ingest/segmenter.py",
+        "line": 112
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.model_identity_syntax",
+      "input": {
+        "model": "provider/model[:thinking]",
+        "provider": [
+          "deepseek",
+          "opencode-go",
+          "bailian",
+          "openai",
+          "openrouter",
+          "openai-compatible",
+          "ollama",
+          "vllm",
+          "fake"
+        ]
+      },
+      "expected": {
+        "outcome": "Split only first slash; strip provider/model, exact registered provider and nonempty model required. fake is private reference/test provider, not used by admitted snapshot. No provider spelling aliases.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R3",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/model_profiles.py",
+        "line": 198
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.model_thinking",
+      "input": {
+        "thinking": [
+          "omitted",
+          "off",
+          "low",
+          "medium",
+          "high",
+          "max",
+          "unknown suffix"
+        ],
+        "literal_model": "qwen:32b"
+      },
+      "expected": {
+        "outcome": "Known rightmost thinking suffix parsed; literal colon model IDs preserved. Explicit levels checked against catalog per model. Unknown level rejected for catalogued model; unsupported non-off rejected.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R3",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/model_profiles.py",
+        "line": 214
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "config.provider_credentials",
+      "input": {
+        "providers": {
+          "deepseek": "DEEPSEEK_API_KEY",
+          "opencode-go": "OPENCODE_GO_API_KEY",
+          "bailian": "BAILIAN_API_KEY",
+          "openai": "OPENAI_API_KEY",
+          "openrouter": "OPENROUTER_API_KEY",
+          "openai-compatible": "optional api_key_env",
+          "ollama": null,
+          "vllm": null
+        }
+      },
+      "expected": {
+        "outcome": "Standard provider address/credential policy internal; custom endpoint configured only for openai-compatible. No credentials recorded in fixture/inventory. Local providers do not require key.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "modules": [
+        "R1",
+        "R3",
+        "R10"
+      ],
+      "source": {
+        "path": "trans_novel/llm/registry.py",
+        "line": 16
+      },
+      "evidence_class": "source"
+    }
+  ]
+}

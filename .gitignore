@@ -21,3 +21,7 @@ config.yaml
 .worktrees
 *.spec
 /benchmarks/
+/target/
+!/fixtures/migration/**/*.epub
+!/fixtures/migration/**/*.db
+!/fixtures/migration/**/config.yaml

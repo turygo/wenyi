@@ -1,0 +1,1158 @@
+{
+  "index": 0,
+  "title": "Chapter One",
+  "segments": [
+    {
+      "index": 0,
+      "source": "Chapter One",
+      "kind": "heading",
+      "target": "第一章",
+      "anchor": "tn1_0",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          0
+        ],
+        "block_fingerprint": "1f4ac180d45bbc443bed88b0566c8c28094dff7e0d9b06f143c36e79e184dfdd",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_0:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "Chapter One",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "656eaf3ac59ab68412341917ef273f3ba77482614d5dc90a4f4fff428bf824ce",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "Chapter One",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_0:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "第一章",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": [],
+        "canonical_title_id": "OEBPS/nav.xhtml:0"
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 1,
+      "source": "A quiet passage holds a story.",
+      "kind": "text",
+      "target": "一段安静的文字讲述着故事。",
+      "anchor": "tn1_1",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          1
+        ],
+        "block_fingerprint": "eb7d88bb79473f99b068e4071e8f65988633775d23bd9a08bfbbfaae003b4e36",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_1:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "A ",
+            "target_value": null
+          },
+          {
+            "id": "tn1_1:s2",
+            "element_path": [
+              0
+            ],
+            "field": "text",
+            "source_value": "quiet",
+            "target_value": null
+          },
+          {
+            "id": "tn1_1:s3",
+            "element_path": [
+              0
+            ],
+            "field": "tail",
+            "source_value": " passage holds a story.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "f4990ea92126bbb2adac24c91abe815bcd6f485c436a95310b477734b9d25cb1",
+        "rich_source": {
+          "version": 2,
+          "marks": [
+            {
+              "id": "m:0",
+              "path": [
+                0
+              ],
+              "tag": "{http://www.w3.org/1999/xhtml}strong",
+              "attributes": {},
+              "source_text": "quiet",
+              "kind": "bold",
+              "style_evidence": [
+                "body{font-family:serif}"
+              ],
+              "semantics": [
+                "bold"
+              ],
+              "required": true
+            }
+          ],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "A ",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_1:s1"
+            },
+            {
+              "text": "quiet",
+              "marks": [
+                "m:0"
+              ],
+              "atom": null,
+              "slot_id": "tn1_1:s2"
+            },
+            {
+              "text": " passage holds a story.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_1:s3"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "一段",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "安静",
+            "marks": [
+              "m:0"
+            ],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "的文字讲述着故事。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 2,
+      "source": "A curved line returns.",
+      "kind": "text",
+      "target": "一条弯曲的线条回来了。",
+      "anchor": "tn1_2",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          2
+        ],
+        "block_fingerprint": "50ba0c34fed93cc7968441631746b5435db1888aec2aadabb0e4254f745f51e8",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_2:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "A ",
+            "target_value": null
+          },
+          {
+            "id": "tn1_2:s2",
+            "element_path": [
+              0
+            ],
+            "field": "text",
+            "source_value": "curved",
+            "target_value": null
+          },
+          {
+            "id": "tn1_2:s3",
+            "element_path": [
+              0
+            ],
+            "field": "tail",
+            "source_value": " line returns.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "24c3387940bf9793de005e581a1e4639d7bdb44f48d0baecdf4b45f7539d9c68",
+        "rich_source": {
+          "version": 2,
+          "marks": [
+            {
+              "id": "m:0",
+              "path": [
+                0
+              ],
+              "tag": "{http://www.w3.org/1999/xhtml}em",
+              "attributes": {},
+              "source_text": "curved",
+              "kind": "italic",
+              "style_evidence": [
+                "body{font-family:serif}"
+              ],
+              "semantics": [
+                "italic"
+              ],
+              "required": true
+            }
+          ],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "A ",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_2:s1"
+            },
+            {
+              "text": "curved",
+              "marks": [
+                "m:0"
+              ],
+              "atom": null,
+              "slot_id": "tn1_2:s2"
+            },
+            {
+              "text": " line returns.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_2:s3"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "一条",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "弯曲",
+            "marks": [
+              "m:0"
+            ],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "的线条回来了。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 3,
+      "source": "Follow the harbor home.",
+      "kind": "text",
+      "target": "沿着这条通往港湾的路回家。",
+      "anchor": "tn1_3",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          3
+        ],
+        "block_fingerprint": "70a46f78f3a72e8c2f2c590ef6432c313fded3ddf28a6a36281fbe817353e3bf",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_3:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "Follow ",
+            "target_value": null
+          },
+          {
+            "id": "tn1_3:s2",
+            "element_path": [
+              0
+            ],
+            "field": "text",
+            "source_value": "the harbor",
+            "target_value": null
+          },
+          {
+            "id": "tn1_3:s3",
+            "element_path": [
+              0
+            ],
+            "field": "tail",
+            "source_value": " home.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "0172b1ba1048ca7a3cd48b47b0a9f18e1bd2211c3fb7a7bed6a7ec2c905ed78f",
+        "rich_source": {
+          "version": 2,
+          "marks": [
+            {
+              "id": "m:0",
+              "path": [
+                0
+              ],
+              "tag": "{http://www.w3.org/1999/xhtml}a",
+              "attributes": {
+                "href": "chapter-2.xhtml#chapter-two"
+              },
+              "source_text": "the harbor",
+              "kind": "link",
+              "style_evidence": [
+                "body{font-family:serif}"
+              ],
+              "semantics": [
+                "link"
+              ],
+              "required": true
+            }
+          ],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "Follow ",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_3:s1"
+            },
+            {
+              "text": "the harbor",
+              "marks": [
+                "m:0"
+              ],
+              "atom": null,
+              "slot_id": "tn1_3:s2"
+            },
+            {
+              "text": " home.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_3:s3"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "沿着这条通往",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "港湾",
+            "marks": [
+              "m:0"
+            ],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "的路回家。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 4,
+      "source": "A🙂 reader keeps café exact.",
+      "kind": "text",
+      "target": "🙂读者原样保留 café。",
+      "anchor": "tn1_4",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          4
+        ],
+        "block_fingerprint": "d29cdeceb4c634c718487fcc69c2232b22a0f1ffb236fb762faa855f33cde818",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_4:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "A🙂 reader keeps café exact.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "4fd03fbac275ca7f89cb956ac06b309bf62ce704e06ae5b90e762efe90e1ce8f",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "A🙂 reader keeps café exact.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_4:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "🙂读者原样保留 café。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 5,
+      "source": "Day falls.Night returns.",
+      "kind": "text",
+      "target": "白昼落下。夜色归来。",
+      "anchor": "tn1_5",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          5
+        ],
+        "block_fingerprint": "02e04adbda3dbe3bde975df4226d8f75f8d2b34a06e54501ca6e3c42234d8bce",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_5:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "Day falls.",
+            "target_value": null
+          },
+          {
+            "id": "tn1_5:s2",
+            "element_path": [
+              0
+            ],
+            "field": "tail",
+            "source_value": "Night returns.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "9ad542f63bec47d8a2ce43774210b26c9f9539efb00d18b9a95c1c575f2e10ea",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [
+            {
+              "id": "a:0",
+              "path": [
+                0
+              ],
+              "kind": "linebreak",
+              "label": ""
+            }
+          ],
+          "runs": [
+            {
+              "text": "Day falls.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_5:s1"
+            },
+            {
+              "text": "",
+              "marks": [],
+              "atom": "a:0",
+              "slot_id": null
+            },
+            {
+              "text": "Night returns.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_5:s2"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "白昼落下。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "",
+            "marks": [],
+            "atom": "a:0",
+            "slot_id": null
+          },
+          {
+            "text": "夜色归来。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 6,
+      "source": "A small map rests here.",
+      "kind": "text",
+      "target": "这里留有一张小地图。",
+      "anchor": "tn1_6",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          6
+        ],
+        "block_fingerprint": "c4a322c7877e6bfc728853bdd9c569b375a4ab75992917adc8b3c71122b48fdc",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_6:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "A small map rests here.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "a46c5306614b7af627770852a6a2a557d079305fa5f9dfef30c97aea4f6b36c1",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [
+            {
+              "id": "a:0",
+              "path": [
+                0
+              ],
+              "kind": "media",
+              "label": ""
+            }
+          ],
+          "runs": [
+            {
+              "text": "A small map rests here.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_6:s1"
+            },
+            {
+              "text": "",
+              "marks": [],
+              "atom": "a:0",
+              "slot_id": null
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "这里留有一张小地图。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "",
+            "marks": [],
+            "atom": "a:0",
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 7,
+      "source": "Every reader needs a note.",
+      "kind": "text",
+      "target": "每位读者都需要注释。",
+      "anchor": "tn1_7",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          7
+        ],
+        "block_fingerprint": "8763b03306e1d23f1dcd42b413d034d238b100a9c1db39d602471813b3f7f59a",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_7:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "Every reader needs a note.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "676ec93894802fdb3db4e80667bb3728d0545fe9a36ae535312690d5b34ab525",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [
+            {
+              "id": "a:0",
+              "path": [
+                0
+              ],
+              "kind": "note",
+              "label": "1"
+            }
+          ],
+          "runs": [
+            {
+              "text": "Every reader needs a note.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_7:s1"
+            },
+            {
+              "text": "",
+              "marks": [],
+              "atom": "a:0",
+              "slot_id": null
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "每位读者都需要注释。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "",
+            "marks": [],
+            "atom": "a:0",
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 8,
+      "source": "First list item.",
+      "kind": "text",
+      "target": "列表中的第一项。",
+      "anchor": "tn1_8",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          8,
+          0
+        ],
+        "block_fingerprint": "76ad190851fd9c37dbd2c74cf7db928e4a1806ef99dc545b4505a8c755784d98",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_8:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "First list item.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "11fd73f6ed88c983039e9c000c327aed3986f8df45b6b0e8d48cb970f2d996e8",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "First list item.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_8:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "列表中的第一项。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 9,
+      "source": "Second list item.",
+      "kind": "text",
+      "target": "列表中的第二项。",
+      "anchor": "tn1_9",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          8,
+          1
+        ],
+        "block_fingerprint": "750ae30348dbe7950f6d76ba9b9d74bf1e4b1bae69e6b37e0062540530560e37",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_9:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "Second list item.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "f5c6b038a0601ff67218367e8472cfe1c132c4bf7f2e72115e225e5b8a1559ca",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "Second list item.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_9:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "列表中的第二项。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 10,
+      "source": "A quiet harbor waits.",
+      "kind": "text",
+      "target": "安静的港湾仍在等待。",
+      "anchor": "tn1_10",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          9,
+          0
+        ],
+        "block_fingerprint": "6d0a9fc9be6edbce41a4c336d0ba8f8bb361d097fb6e034c684e11bcacbdfe31",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_10:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "A quiet harbor waits.",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "061c56e92fbad569ed9a7bac61cde5d044d3db513cffce11892fb1dc1c41a351",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "A quiet harbor waits.",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_10:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "安静的港湾仍在等待。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 11,
+      "source": "Axis",
+      "kind": "text",
+      "target": "坐标轴",
+      "anchor": "tn1_11",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          10,
+          1,
+          0,
+          0
+        ],
+        "block_fingerprint": "982bdbd51450bf2829e107124468a6fcf8d70ce7377e319eac3a56b678d8d113",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_11:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "Axis",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "0a62737e600a3c108ef43781f638bfd3893bd8f130e3f3eaa76951eaa77354f6",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "Axis",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_11:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "坐标轴",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 12,
+      "source": "Value",
+      "kind": "text",
+      "target": "数值",
+      "anchor": "tn1_12",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          10,
+          1,
+          0,
+          1
+        ],
+        "block_fingerprint": "83313e1306fb27ad8441bb90a3039752e69d43b49875111d1205166f3f458891",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_12:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "Value",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "df6cd35896c8add1e0d6e6a7954af20e894bd3c13563f62f4fd8ad412589666c",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "Value",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_12:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "数值",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 13,
+      "source": "east",
+      "kind": "text",
+      "target": "东",
+      "anchor": "tn1_13",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          10,
+          2,
+          0,
+          0
+        ],
+        "block_fingerprint": "1a316073ac87c719415be22d233512a5cafc98bdc0941887a597563f56fd6790",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_13:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "east",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "b1165603230d2b81c6c1eb844c14b89e7ea26ee3308eb2a6a730228c28692932",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "east",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_13:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "东",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 14,
+      "source": "3",
+      "kind": "text",
+      "target": "3",
+      "anchor": "tn1_14",
+      "resource_href": "OEBPS/text/chapter-1.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "block_path": [
+          1,
+          10,
+          2,
+          0,
+          1
+        ],
+        "block_fingerprint": "47453463457436ac5566453cdf97d64a708b41548b29ce70e59a8e04a1235832",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn1_14:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "3",
+            "target_value": "3"
+          }
+        ],
+        "slot_contract_sha256": "f8cdacaa1c9a70307e38c2bfb67ec1412bc42519d4429295bc0a84000c6c81f0",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "3",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn1_14:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": null,
+      "meta": {
+        "semantic_hints": []
+      },
+      "preserve_source": false
+    }
+  ],
+  "href": "OEBPS/text/chapter-1.xhtml",
+  "meta": {
+    "epub_split_strategy": "toc-depth-0",
+    "toc_entry_id": "OEBPS/nav.xhtml:0",
+    "semantic_hints": []
+  },
+  "processing": {
+    "action": "translate",
+    "review_required": false,
+    "reason": "合成叙事章节包含面向读者的正文。",
+    "source_sha256": "a88a59f6fa127479c8d15873045d4c970456f893eae609b964af5b8efd6a5238",
+    "strategy_version": "chapter_semantics_v2"
+  }
+}

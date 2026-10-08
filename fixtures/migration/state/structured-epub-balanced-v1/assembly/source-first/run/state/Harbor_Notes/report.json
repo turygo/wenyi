@@ -1,0 +1,31 @@
+{
+  "summary": {
+    "chapters_total": 2,
+    "chapters_done": 2,
+    "terms": 0,
+    "open_conflicts": 0,
+    "lint_issues": 0,
+    "deterministic_issues": 0,
+    "empty_targets": 0,
+    "failed_nodes": 0
+  },
+  "open_conflicts": [],
+  "low_confidence_terms": [],
+  "lint_issues": [],
+  "deterministic_issues": [],
+  "repair": {
+    "detected": 0,
+    "resolved": 0,
+    "accepted_after_exhaustion": 0,
+    "attempts": 0,
+    "deferred": false,
+    "audit": []
+  },
+  "requires_user_action": false,
+  "empty_targets": [],
+  "failed_nodes": [],
+  "chapter_processing": {
+    "preserved": [],
+    "review_required": []
+  }
+}

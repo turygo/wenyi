@@ -1,0 +1,2 @@
+class ObservationError(ValueError):
+    pass

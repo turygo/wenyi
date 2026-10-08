@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "source_bytes_sha256": "c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10",
+  "selection": {
+    "mono": true,
+    "bilingual": {
+      "enabled": true,
+      "order": "target_first"
+    },
+    "override_theme": null,
+    "bilingual_styles": "builtin:bilingual"
+  },
+  "origins": {}
+}

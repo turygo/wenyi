@@ -1,0 +1,160 @@
+{
+  "index": 1,
+  "title": "Chapter Two",
+  "segments": [
+    {
+      "index": 0,
+      "source": "Chapter Two",
+      "kind": "heading",
+      "target": "第二章",
+      "anchor": "tn2_0",
+      "resource_href": "OEBPS/text/chapter-2.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-2.xhtml",
+        "resource_sha256": "d8eff1593081c8185e692ea7682e817007359d9451c8638a74c2e3be564a4003",
+        "block_path": [
+          1,
+          0
+        ],
+        "block_fingerprint": "1bebe46bf125a48fda8336affeb16cd562fe2af9f03e60b679dc9278e9d146a3",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn2_0:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "Chapter Two",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "b5f2c720924e343c6c1818b9fd4582f785fbffba2bed43bb9bbb803933c27a45",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [],
+          "runs": [
+            {
+              "text": "Chapter Two",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn2_0:s1"
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "第二章",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": [],
+        "canonical_title_id": "OEBPS/nav.xhtml:1"
+      },
+      "preserve_source": false
+    },
+    {
+      "index": 1,
+      "source": "One careful footnote.",
+      "kind": "text",
+      "target": "一条简短脚注。",
+      "anchor": "tn2_1",
+      "resource_href": "OEBPS/text/chapter-2.xhtml",
+      "cont": false,
+      "epub_state": {
+        "resource_href": "OEBPS/text/chapter-2.xhtml",
+        "resource_sha256": "d8eff1593081c8185e692ea7682e817007359d9451c8638a74c2e3be564a4003",
+        "block_path": [
+          1,
+          1,
+          0
+        ],
+        "block_fingerprint": "864461493664c5790dc30e6f7fc2a55f2b175a4207eeeab1ee32392d5fc93cb8",
+        "parse_mode": "xml",
+        "slots": [
+          {
+            "id": "tn2_1:s1",
+            "element_path": [],
+            "field": "text",
+            "source_value": "One careful footnote.\n",
+            "target_value": null
+          }
+        ],
+        "slot_contract_sha256": "0ddd306caae0fae77fde43bf75e8a3f8b81c65e2523a7a5ae8701a2d32fe1eb7",
+        "rich_source": {
+          "version": 2,
+          "marks": [],
+          "atoms": [
+            {
+              "id": "a:0",
+              "path": [
+                0
+              ],
+              "kind": "note",
+              "label": "↩"
+            }
+          ],
+          "runs": [
+            {
+              "text": "One careful footnote.\n",
+              "marks": [],
+              "atom": null,
+              "slot_id": "tn2_1:s1"
+            },
+            {
+              "text": "",
+              "marks": [],
+              "atom": "a:0",
+              "slot_id": null
+            }
+          ]
+        }
+      },
+      "rich_target": {
+        "version": 2,
+        "runs": [
+          {
+            "text": "一条简短脚注。",
+            "marks": [],
+            "atom": null,
+            "slot_id": null
+          },
+          {
+            "text": "",
+            "marks": [],
+            "atom": "a:0",
+            "slot_id": null
+          }
+        ]
+      },
+      "meta": {
+        "semantic_hints": [
+          "xhtml:aside:type=footnote"
+        ]
+      },
+      "preserve_source": false
+    }
+  ],
+  "href": "OEBPS/text/chapter-2.xhtml",
+  "meta": {
+    "epub_split_strategy": "toc-depth-0",
+    "toc_entry_id": "OEBPS/nav.xhtml:1",
+    "semantic_hints": [
+      "xhtml:aside:type=footnote"
+    ]
+  },
+  "processing": {
+    "action": "translate",
+    "review_required": false,
+    "reason": "合成叙事章节包含面向读者的正文。",
+    "source_sha256": "14e128b6f6b3423eda054d29cfa472bfbbf98cca5611a796cf4a28899b619c32",
+    "strategy_version": "chapter_semantics_v2"
+  }
+}

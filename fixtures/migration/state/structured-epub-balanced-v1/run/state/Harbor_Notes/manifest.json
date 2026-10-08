@@ -1,0 +1,378 @@
+{
+  "run_state_schema": 4,
+  "identity": {
+    "source_bytes_sha256": "c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10",
+    "run_input_schema_version": 2,
+    "translation_policy_version": 5,
+    "source_lang": "en",
+    "target_lang": "zh"
+  },
+  "title": "Harbor Notes",
+  "title_translated": "港湾札记",
+  "fmt": "epub",
+  "source_path": "/private/var/folders/8_/c_dv87gs2tz1gwtrvx8fn1pr0000gn/T/wenyi-r0-reference-kq13qv6h/candidate/source/book.epub",
+  "source_lang": "en",
+  "target_lang": "zh",
+  "meta": {
+    "epub_schema": 4,
+    "epub_sha256": "c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10",
+    "opf_path": "OEBPS/content.opf",
+    "toc_paths": [
+      "OEBPS/nav.xhtml",
+      "OEBPS/toc.ncx"
+    ],
+    "toc_entries": [
+      {
+        "entry_id": "OEBPS/nav.xhtml:0",
+        "toc_path": "OEBPS/nav.xhtml",
+        "node_index": 0,
+        "node_id": "",
+        "parent_index": null,
+        "depth": 0,
+        "kind": "nav",
+        "title": "Chapter One",
+        "raw_href": "text/chapter-1.xhtml#chapter-one",
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "fragment": "chapter-one",
+        "target_key": "OEBPS/text/chapter-1.xhtml#chapter-one",
+        "external": false,
+        "segment_anchor": "tn1_0",
+        "boundary_position": 0,
+        "title_translated": "第一章"
+      },
+      {
+        "entry_id": "OEBPS/nav.xhtml:1",
+        "toc_path": "OEBPS/nav.xhtml",
+        "node_index": 1,
+        "node_id": "",
+        "parent_index": null,
+        "depth": 0,
+        "kind": "nav",
+        "title": "Chapter Two",
+        "raw_href": "text/chapter-2.xhtml#chapter-two",
+        "resource_href": "OEBPS/text/chapter-2.xhtml",
+        "fragment": "chapter-two",
+        "target_key": "OEBPS/text/chapter-2.xhtml#chapter-two",
+        "external": false,
+        "segment_anchor": "tn2_0",
+        "boundary_position": 15,
+        "title_translated": "第二章"
+      },
+      {
+        "entry_id": "OEBPS/toc.ncx:0",
+        "toc_path": "OEBPS/toc.ncx",
+        "node_index": 0,
+        "node_id": "one",
+        "parent_index": null,
+        "depth": 0,
+        "kind": "ncx",
+        "title": "Chapter One",
+        "raw_href": "text/chapter-1.xhtml#chapter-one",
+        "resource_href": "OEBPS/text/chapter-1.xhtml",
+        "fragment": "chapter-one",
+        "target_key": "OEBPS/text/chapter-1.xhtml#chapter-one",
+        "external": false,
+        "segment_anchor": "tn1_0",
+        "boundary_position": 0,
+        "title_translated": "第一章"
+      },
+      {
+        "entry_id": "OEBPS/toc.ncx:1",
+        "toc_path": "OEBPS/toc.ncx",
+        "node_index": 1,
+        "node_id": "two",
+        "parent_index": null,
+        "depth": 0,
+        "kind": "ncx",
+        "title": "Chapter Two",
+        "raw_href": "text/chapter-2.xhtml#chapter-two",
+        "resource_href": "OEBPS/text/chapter-2.xhtml",
+        "fragment": "chapter-two",
+        "target_key": "OEBPS/text/chapter-2.xhtml#chapter-two",
+        "external": false,
+        "segment_anchor": "tn2_0",
+        "boundary_position": 15,
+        "title_translated": "第二章"
+      }
+    ],
+    "guide_entries": [],
+    "nav_landmarks": [],
+    "epub_notes": {
+      "version": 1,
+      "markers": [
+        {
+          "resource_href": "OEBPS/text/chapter-1.xhtml",
+          "path": [
+            1,
+            7,
+            0
+          ],
+          "kind": "noteref",
+          "label": "1",
+          "target_resource": "OEBPS/text/chapter-2.xhtml",
+          "target_path": [
+            1,
+            1
+          ]
+        },
+        {
+          "resource_href": "OEBPS/text/chapter-2.xhtml",
+          "path": [
+            1,
+            1,
+            0,
+            0
+          ],
+          "kind": "backlink",
+          "label": "↩",
+          "target_resource": "OEBPS/text/chapter-1.xhtml",
+          "target_path": [
+            1,
+            7,
+            0
+          ]
+        }
+      ],
+      "targets": [
+        {
+          "resource_href": "OEBPS/text/chapter-2.xhtml",
+          "path": [
+            1,
+            1
+          ],
+          "kind": "footnote"
+        }
+      ]
+    },
+    "epub_note_slots_version": 1,
+    "epub_resources": [
+      {
+        "index": 0,
+        "href": "OEBPS/nav.xhtml",
+        "resource_sha256": "bcf8d7bf8bed2ccd6c36db197c83bd87a3a4f5affa8edd2991a89f963b5f5c93",
+        "parse_mode": "xml",
+        "parser_diagnostics": []
+      },
+      {
+        "index": 1,
+        "href": "OEBPS/text/chapter-1.xhtml",
+        "resource_sha256": "b2872e917763f5a18c99d2224b8ce58307ec36a06b47788f244639732e29b91f",
+        "parse_mode": "xml",
+        "parser_diagnostics": []
+      },
+      {
+        "index": 2,
+        "href": "OEBPS/text/chapter-2.xhtml",
+        "resource_sha256": "d8eff1593081c8185e692ea7682e817007359d9451c8638a74c2e3be564a4003",
+        "parse_mode": "xml",
+        "parser_diagnostics": []
+      }
+    ],
+    "epub_split_strategy": "toc-depth-0",
+    "epub_split_toc_path": "OEBPS/nav.xhtml"
+  },
+  "initialized": true,
+  "chapters": [
+    {
+      "index": 0,
+      "title": "Chapter One",
+      "href": "OEBPS/text/chapter-1.xhtml",
+      "toc_entry_id": "OEBPS/nav.xhtml:0",
+      "title_translated": "第一章",
+      "processing": {
+        "action": "translate",
+        "review_required": false,
+        "reason": "合成叙事章节包含面向读者的正文。",
+        "source_sha256": "a88a59f6fa127479c8d15873045d4c970456f893eae609b964af5b8efd6a5238",
+        "strategy_version": "chapter_semantics_v2"
+      }
+    },
+    {
+      "index": 1,
+      "title": "Chapter Two",
+      "href": "OEBPS/text/chapter-2.xhtml",
+      "toc_entry_id": "OEBPS/nav.xhtml:1",
+      "title_translated": "第二章",
+      "processing": {
+        "action": "translate",
+        "review_required": false,
+        "reason": "合成叙事章节包含面向读者的正文。",
+        "source_sha256": "14e128b6f6b3423eda054d29cfa472bfbbf98cca5611a796cf4a28899b619c32",
+        "strategy_version": "chapter_semantics_v2"
+      }
+    }
+  ],
+  "progress": {
+    "0": {
+      "status": "done",
+      "pending_polish": [],
+      "lint_issues": [],
+      "repair_ledger": {},
+      "back_matter_mode": null
+    },
+    "1": {
+      "status": "done",
+      "pending_polish": [],
+      "lint_issues": [],
+      "repair_ledger": {},
+      "back_matter_mode": null
+    }
+  },
+  "nodes": {
+    "analyze": {
+      "node_id": "analyze",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "2a1f1551e0d41e546b8ce68aa6fa85ddcc4e3c36cf4064944db15a1dc1650c08",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "prepare": {
+      "node_id": "prepare",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "9fbc96dc2482988cf7abd17c7bb8a032c1163be255b97f8999e739d63767f0e7",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "layout": {
+      "node_id": "layout",
+      "status": "skipped",
+      "attempts": 0,
+      "input_fingerprint": "",
+      "failure": null,
+      "started_at": null,
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "mine_terms": {
+      "node_id": "mine_terms",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "f1db763d2ba1d636ff618c4c284626467ef3a27e03db89ae843348b5c83f7d06",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "name_terms": {
+      "node_id": "name_terms",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "bfe260b4bb69072319b4470e6940f91919e6b279729170789ee021ab1df8e39f",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "translate:0": {
+      "node_id": "translate:0",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "23592dbf94857108dcb5439b9e1d2f1d31a0a977109fce62271501591cbfadbe",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "polish:0": {
+      "node_id": "polish:0",
+      "status": "skipped",
+      "attempts": 0,
+      "input_fingerprint": "",
+      "failure": null,
+      "started_at": null,
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "translate:1": {
+      "node_id": "translate:1",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "e10d8c58a0c9523dea90548fa5e2616fbbe78d141b910862e2afd58aa286a441",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "polish:1": {
+      "node_id": "polish:1",
+      "status": "skipped",
+      "attempts": 0,
+      "input_fingerprint": "",
+      "failure": null,
+      "started_at": null,
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "titles": {
+      "node_id": "titles",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "c1853fc67a038fe557f307f1bf189bac5644905b145191ab0e8b763f699379f7",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "deterministic_qa": {
+      "node_id": "deterministic_qa",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "53c41490bcb72433eae88d1edff88c570910aa7a8f6c108391fbfd4835ffb4ef",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {
+        "issues": []
+      }
+    },
+    "repair": {
+      "node_id": "repair",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "de16d7de5ea23129e02d8d2b7ce7116d3f6439782046f615c0d062c12985afbc",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {
+        "repair": {
+          "detected": 0,
+          "resolved": 0,
+          "accepted_after_exhaustion": 0,
+          "attempts": 0,
+          "audit": [],
+          "deferred": false
+        },
+        "issues": []
+      }
+    },
+    "report": {
+      "node_id": "report",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "ed89acad8d9ddd66bd7542d2e7928da93d26d4ffa41e753715e5a5fe4ba6f455",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    },
+    "assemble": {
+      "node_id": "assemble",
+      "status": "succeeded",
+      "attempts": 1,
+      "input_fingerprint": "f8f476e14b5978b3bcab5b93b94f267353a5b5ee08f81b9a0e76f8df636d21e0",
+      "failure": null,
+      "started_at": "2026-10-08T20:28:42+08:00",
+      "finished_at": "2026-10-08T20:28:42+08:00",
+      "output": {}
+    }
+  },
+  "analysis_flags": {
+    "term_mining_done": true
+  }
+}

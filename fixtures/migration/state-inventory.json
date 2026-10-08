@@ -1,0 +1,6154 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "61835587606b5cb81cdcd81eec8427fd4f638df4",
+  "historical_evidence_limit": "Bookkeeping source/tests do not authorize stale rich annotations or arbitrary historical EPUB source coordinates. The R0 completed snapshot is generated independently through run_all.",
+  "cases": [
+    {
+      "case_id": "state.run",
+      "wire_owner": "pipeline.state",
+      "source_locations": [
+        "trans_novel/pipeline/state/models.py:14-186",
+        "trans_novel/pipeline/state/store.py:180-226"
+      ],
+      "admitted_versions": [
+        4
+      ],
+      "defaults": {
+        "run_state_schema": 4,
+        "identity": "RunIdentity default factory",
+        "initialized": false,
+        "chapters": [],
+        "progress": {},
+        "nodes": {},
+        "meta": {}
+      },
+      "unknown_field_policy": "Typed bookkeeping extra=ignore; raw durable artifacts retained. Fields inside meta are data, not top-level defaults.",
+      "migration_paths": [
+        "v1 layout -> current4",
+        "v2 layout -> current4",
+        "v3 -> current4; v4 missing repair_ledger gains default"
+      ],
+      "rejections": "Invalid manifest/chapter JSON; invalid statuses; EPUB source_path present with meta.epub_schema !=4.",
+      "modules": [
+        "R1",
+        "R8"
+      ],
+      "input": {
+        "family": "state.run",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "state.input_identity",
+      "wire_owner": "pipeline.state",
+      "source_locations": [
+        "trans_novel/pipeline/state/models.py:100-106",
+        "trans_novel/pipeline/state/store.py:392-429"
+      ],
+      "admitted_versions": [
+        2
+      ],
+      "defaults": {
+        "source_bytes_sha256": "",
+        "run_input_schema_version": 2,
+        "translation_policy_version": 0,
+        "source_lang": "",
+        "target_lang": ""
+      },
+      "unknown_field_policy": "extra=ignore",
+      "migration_paths": [],
+      "rejections": "Missing/mismatched source bytes; input version !=2; normalized explicit language mismatch. Missing identity cannot silently trust paid content.",
+      "modules": [
+        "R1",
+        "R3",
+        "R8"
+      ],
+      "input": {
+        "family": "state.input_identity",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "state.translation_policy",
+      "wire_owner": "pipeline.state + pipeline.composition",
+      "source_locations": [
+        "trans_novel/pipeline/state/models.py:16",
+        "trans_novel/pipeline/composition/reannotation.py:16-25"
+      ],
+      "admitted_versions": [
+        5
+      ],
+      "defaults": {
+        "legacy_identity_policy": 0
+      },
+      "unknown_field_policy": "As identity extra=ignore",
+      "migration_paths": [
+        "Explicit source-bound reannotation of completed policy3/4/5 copy ->5 only after success"
+      ],
+      "rejections": "Normal reuse of stale policy; no automatic retranslation or acceptance of historical slots.",
+      "modules": [
+        "R4",
+        "R8",
+        "R9"
+      ],
+      "input": {
+        "family": "state.translation_policy",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "state.epub_source_slots",
+      "wire_owner": "epub.slots + ingest.epub",
+      "source_locations": [
+        "trans_novel/epub/slots.py:17-73",
+        "trans_novel/pipeline/state/store.py:180-188"
+      ],
+      "admitted_versions": [
+        4
+      ],
+      "defaults": {
+        "schema_location": "Manifest meta.epub_schema ==4; EpubSegmentState has no independent version field.",
+        "block_path": [],
+        "slot.target_value": null
+      },
+      "unknown_field_policy": "EpubSegmentState and EpubTextSlot extra=forbid",
+      "migration_paths": [],
+      "rejections": "Unsupported source schema, duplicate slots, invalid digest/location/slot ownership; historical run bookkeeping is not EPUB-source admission.",
+      "modules": [
+        "R1",
+        "R2",
+        "R8"
+      ],
+      "input": {
+        "family": "state.epub_source_slots",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source",
+      "coordinates": "Unicode scalar counts, not UTF-8 bytes; negative final locator identifies opaque children; exact original XML text/tail ownership."
+    },
+    {
+      "case_id": "state.rich_source",
+      "wire_owner": "epub.richtext",
+      "source_locations": [
+        "trans_novel/epub/richtext.py:41-163"
+      ],
+      "admitted_versions": [
+        2
+      ],
+      "defaults": {
+        "version": 2,
+        "marks": [],
+        "atoms": [],
+        "runs": [],
+        "note_references": "empty omitted by serializer"
+      },
+      "unknown_field_policy": "extra=forbid",
+      "migration_paths": [
+        "v1 readable only for explicit migration/source reconstruction"
+      ],
+      "rejections": "Unknown/duplicate identities, atom multiplicity, invented runs/marks, target-only omissions in source; changed source geometry cannot be normalized away.",
+      "modules": [
+        "R1",
+        "R2",
+        "R4",
+        "R9"
+      ],
+      "input": {
+        "family": "state.rich_source",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "state.rich_target",
+      "wire_owner": "epub.richtext",
+      "source_locations": [
+        "trans_novel/epub/richtext.py:78-121",
+        "trans_novel/epub/richtext.py:166-183",
+        "trans_novel/epub/richtext.py:300-408"
+      ],
+      "admitted_versions": [
+        2,
+        3
+      ],
+      "defaults": {
+        "version": 2,
+        "runs": [],
+        "text": "",
+        "marks": [],
+        "atom": null,
+        "slot_id": null,
+        "omission": "absent unless used",
+        "note": "absent unless used"
+      },
+      "unknown_field_policy": "extra=forbid",
+      "migration_paths": [
+        "v1 readable for explicit migration; sourcev2 requires targetv2/v3"
+      ],
+      "rejections": "Exact accepted text mismatch; source slot coords in target; unknown/missing required marks/identity/atom; duplicate/nested/reopened links; omission/note requiresv3; invalid zero-range explanation; fabricated source references.",
+      "modules": [
+        "R2",
+        "R4",
+        "R9"
+      ],
+      "input": {
+        "family": "state.rich_target",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source",
+      "unicode": "Accepted text and normalization form remain exact. Mark/atom coordinates measured in scalars; source lengths do not redistribute formatting."
+    },
+    {
+      "case_id": "state.annotation_provenance",
+      "wire_owner": "pipeline.nodes.reannotate",
+      "source_locations": [
+        "trans_novel/pipeline/nodes/reannotate.py:40-105",
+        "trans_novel/pipeline/composition/reannotation.py:28-76"
+      ],
+      "admitted_versions": [
+        1
+      ],
+      "defaults": {
+        "origin.version": 1,
+        "origin.run_dir": "actual realpath",
+        "origin.manifest_sha256": "canonical stable_digest of origin manifest"
+      },
+      "unknown_field_policy": "Strict provenance equality; rich typed fields forbid unknown; other metadata recorded raw",
+      "migration_paths": [
+        "Independent closed run copy -> source hydration -> annotation commits -> content fingerprint rebase -> policy advancement"
+      ],
+      "rejections": "In-place destination; changed origin/provenance/source/raw target digest; incomplete required lifecycle; stale existing annotations fail fresh source admission.",
+      "modules": [
+        "R9"
+      ],
+      "input": {
+        "family": "state.annotation_provenance",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "state.node_fingerprints",
+      "wire_owner": "pipeline.planning",
+      "source_locations": [
+        "trans_novel/pipeline/state/models.py:75-94",
+        "trans_novel/pipeline/planning/fingerprints.py:17-248",
+        "trans_novel/pipeline/state/models.py:188-243"
+      ],
+      "admitted_versions": [
+        4
+      ],
+      "defaults": {
+        "input_fingerprint": "",
+        "node.status": "pending",
+        "node.attempts": 0,
+        "node.failure": null
+      },
+      "unknown_field_policy": "NodeState extra=ignore",
+      "migration_paths": [
+        "v2 succeeded known nodes get empty fingerprint during bookkeeping migration; content rebase only explicit reannotation"
+      ],
+      "rejections": "Mismatched fingerprints invalidate transitive descendants; translate changes clear paid target for requested invalidation; output-only assembly does not touch upstream content.",
+      "modules": [
+        "R1",
+        "R4",
+        "R5",
+        "R8",
+        "R9"
+      ],
+      "input": {
+        "family": "state.node_fingerprints",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source",
+      "digest_profiles": [
+        "stable_digest: ensure_ascii false + sorted keys + compact separators + default str",
+        "input_fingerprint: sorted default JSON spacing + Pydantic model_dump + default str",
+        "frozen_input_fingerprint: dedicated frozen preparation contract"
+      ],
+      "node_ids": [
+        "prepare",
+        "analyze",
+        "layout",
+        "mine_terms",
+        "name_terms",
+        "translate",
+        "polish",
+        "titles",
+        "deterministic_qa",
+        "repair",
+        "report",
+        "assemble"
+      ]
+    },
+    {
+      "case_id": "state.lifecycle",
+      "wire_owner": "pipeline.state",
+      "source_locations": [
+        "trans_novel/pipeline/state/models.py:17-43",
+        "trans_novel/pipeline/state/models.py:109-163",
+        "trans_novel/pipeline/state/models.py:228-243"
+      ],
+      "admitted_versions": [
+        4
+      ],
+      "defaults": {
+        "chapter.status": "pending",
+        "pending_polish": [],
+        "lint_issues": [],
+        "repair_ledger": {},
+        "back_matter_mode": null
+      },
+      "unknown_field_policy": "extra=ignore",
+      "migration_paths": [
+        "running node -> pending with interrupted failure; repairing issue -> pending or exhausted if attempts>=10; budgets retained"
+      ],
+      "rejections": "Invalid status/failure literals; unfinished required content is not assembly readiness.",
+      "modules": [
+        "R4",
+        "R5",
+        "R8"
+      ],
+      "input": {
+        "family": "state.lifecycle",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source",
+      "chapter_statuses": [
+        "pending",
+        "done"
+      ],
+      "node_statuses": [
+        "pending",
+        "running",
+        "succeeded",
+        "skipped",
+        "failed_retryable",
+        "failed_permanent"
+      ],
+      "repair_statuses": [
+        "pending",
+        "repairing",
+        "resolved",
+        "accepted_after_exhaustion"
+      ],
+      "failure_kinds": [
+        "provider_retryable",
+        "provider_permanent",
+        "protocol",
+        "business",
+        "interrupted"
+      ],
+      "best_effort": [
+        "mine_terms",
+        "name_terms"
+      ]
+    },
+    {
+      "case_id": "state.chapter_processing",
+      "wire_owner": "ingest.models",
+      "source_locations": [
+        "trans_novel/ingest/models.py:58-192",
+        "trans_novel/ingest/models.py:210-267"
+      ],
+      "admitted_versions": [
+        "chapter_semantics_v2"
+      ],
+      "defaults": {
+        "segment.target": null,
+        "segment.kind": "text",
+        "preserve_source": false,
+        "meta": {}
+      },
+      "unknown_field_policy": "ChapterProcessing forbid/strict; Segment/Chapter default extra ignore",
+      "migration_paths": [
+        "Legacy back_matter_mode may indicate old preserved chapter; current semantic decisions source-hashed"
+      ],
+      "rejections": "Empty processing reason/hash; invalid strategy/action; rich_target missing source; accepted text mismatch; source preservation does not bypass canonical heading annotation.",
+      "modules": [
+        "R1",
+        "R4",
+        "R8",
+        "R9"
+      ],
+      "input": {
+        "family": "state.chapter_processing",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "state.usage",
+      "wire_owner": "llm.usage",
+      "source_locations": [
+        "trans_novel/llm/usage.py:25-56",
+        "trans_novel/llm/usage.py:170-207",
+        "trans_novel/llm/usage.py:264-317",
+        "trans_novel/benchmark/pricing.py:360-419"
+      ],
+      "admitted_versions": [
+        2
+      ],
+      "defaults": {
+        "empty_snapshot": {},
+        "missing_counters": 0
+      },
+      "unknown_field_policy": "Schema2 merge takes known accounting fields; unknown raw fields stay fixture evidence but not invented counters.",
+      "migration_paths": [
+        "Empty {} may initialize; no migration of nonempty historical usage"
+      ],
+      "rejections": "Nonempty absent/non2 schema; invalid durable usage.json; do not treat absent response usage as known zero billing.",
+      "modules": [
+        "R3",
+        "R8",
+        "R11",
+        "R12"
+      ],
+      "input": {
+        "family": "state.usage",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source",
+      "dimensions": [
+        "totals",
+        "by_agent",
+        "by_operation",
+        "by_provider",
+        "by_model",
+        "by_stage"
+      ],
+      "usage_counters": [
+        "calls",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cache_hit_tokens",
+        "cache_miss_tokens"
+      ],
+      "logical_counters": [
+        "logical_calls",
+        "attempts",
+        "failed_attempts",
+        "elapsed_ms",
+        "reasoning_tokens",
+        "accepted",
+        "rejected",
+        "fallbacks"
+      ],
+      "physical_dimensions": "Provider/model include attempts/failed_attempts; stage only usage counters; rates recomputed from hit/miss.",
+      "unknown_accounting": "Missing physical usage remains unknown for benchmark costs; synthetic reference explicitly known, not proof of actual spend."
+    },
+    {
+      "case_id": "state.usage_wal",
+      "wire_owner": "llm.usage_persistence",
+      "source_locations": [
+        "trans_novel/llm/usage_persistence.py:108-225",
+        "trans_novel/llm/usage_persistence.py:258-285"
+      ],
+      "admitted_versions": [
+        1
+      ],
+      "defaults": {
+        "before_sha256": null,
+        "absent_wal": "no recovery"
+      },
+      "unknown_field_policy": "Required WAL fields subset admitted; snapshot schema2 required",
+      "migration_paths": [
+        "Current hash=before -> replace after; current hash=after -> acknowledge; both clear WAL only after durability"
+      ],
+      "rejections": "Wrong WAL version/missing fields/hash/digest; current usage unrelated to before/after; local failures never provider retry. R0 fixture requires no pending WAL.",
+      "modules": [
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "input": {
+        "family": "state.usage_wal",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source",
+      "fields": [
+        "wal_schema_version",
+        "before_sha256",
+        "after_sha256",
+        "after",
+        "tracker_after"
+      ],
+      "protocol": "WAL atomic write+fsync -> usage atomic replace+fsync -> clear WAL+directory fsync; thread-safe serialized snapshots."
+    },
+    {
+      "case_id": "state.glossary_sql",
+      "wire_owner": "glossary.store",
+      "source_locations": [
+        "trans_novel/glossary/store.py:67-92",
+        "trans_novel/glossary/store.py:176-188"
+      ],
+      "admitted_versions": [
+        "SQLite existing tables"
+      ],
+      "defaults": {
+        "glossary.confidence": "medium",
+        "glossary.locked": 0,
+        "glossary.status": "ok",
+        "term_conflicts.resolved": 0
+      },
+      "unknown_field_policy": "Preserve raw nullable and legacy rows, not domain from_row fallback conversions. Unknown ancillary schema is bookkeeping data.",
+      "migration_paths": [
+        "No R0 migration; existing schema CREATE IF NOT EXISTS + WAL; sqlite_sequence AUTOINCREMENT tracked"
+      ],
+      "rejections": "SQLite integrity failure, dependent uncollected WAL, invented loss of NULL/locked/ancillary fields.",
+      "modules": [
+        "R1",
+        "R6",
+        "R8"
+      ],
+      "input": {
+        "family": "state.glossary_sql",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source",
+      "tables": {
+        "glossary": {
+          "source": "TEXT PRIMARY KEY (SQLite noninteger primary key nullable semantics preserved)",
+          "target": "TEXT NOT NULL",
+          "reading": "TEXT NULL",
+          "type": "TEXT NULL",
+          "gender": "TEXT NULL",
+          "aliases": "TEXT NULL",
+          "first_chapter": "INTEGER NULL",
+          "note": "TEXT NULL",
+          "confidence": "TEXT DEFAULT 'medium'",
+          "locked": "INTEGER DEFAULT 0",
+          "status": "TEXT DEFAULT 'ok'",
+          "updated_at": "REAL NULL"
+        },
+        "term_conflicts": {
+          "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+          "source": "TEXT NOT NULL",
+          "existing_target": "TEXT NULL",
+          "proposed_target": "TEXT NULL",
+          "chapter": "INTEGER NULL",
+          "note": "TEXT NULL",
+          "resolved": "INTEGER DEFAULT 0",
+          "created_at": "REAL NULL"
+        }
+      },
+      "ancillary": [
+        "sqlite_sequence",
+        "sqlite_autoindex_glossary_1",
+        "WAL/shm sidecars",
+        "PRAGMA journal_mode WAL",
+        "busy_timeout 5000"
+      ]
+    },
+    {
+      "case_id": "state.output_selection",
+      "wire_owner": "pipeline.state.output_selection",
+      "source_locations": [
+        "trans_novel/pipeline/state/output_selection.py:48-133"
+      ],
+      "admitted_versions": [
+        2
+      ],
+      "defaults": {
+        "schema_version": 2,
+        "missing_file": null
+      },
+      "unknown_field_policy": "strict types, extra=forbid; selection recursively finite JSON; origins string mapping",
+      "migration_paths": [
+        "Valid source-boundv1 admitted structurally then obsolete event and discard selection; do not migrate selection semantics."
+      ],
+      "rejections": "Wrong/missing/noninteger version; unknown schema; malformed JSON/nonfinite/invalid nested type; wrong lowercase64 source digest or source mismatch. Invalidv1 is not silently discarded.",
+      "modules": [
+        "R1",
+        "R2",
+        "R7",
+        "R8"
+      ],
+      "input": {
+        "family": "state.output_selection",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "state.historical_bookkeeping",
+      "wire_owner": "pipeline.state.migration",
+      "source_locations": [
+        "trans_novel/pipeline/state/migration.py:56-233",
+        "trans_novel/pipeline/state/store.py:190-226"
+      ],
+      "admitted_versions": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "defaults": {
+        "legacy_status": "done only if raw status ==done, else pending",
+        "missing_identity": "source-derived if available, otherwise empty -> cannot verify reuse"
+      },
+      "unknown_field_policy": "Known legacy node whitelist and pipeline meta stripping; current typed extras ignore",
+      "migration_paths": [
+        "V1 chapters/chN.json -> chapters_v2/chN.json, manifest last; V2 strips old review metadata and preserves polish; V3 adds issue repair ledger; current4 missing ledger gains empty."
+      ],
+      "rejections": "Missing/corrupt chapters/invalid indices; old EPUB source schema rejected before bookkeeping; stale policy/annotations not admitted by migration tests. Python legacy else branch must be documented, not copied as arbitrary-version Rust acceptance.",
+      "modules": [
+        "R8"
+      ],
+      "input": {
+        "family": "state.historical_bookkeeping",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source",
+      "source_test_cases": [
+        "tests.pipeline.state.test_migration.TestV3Migration.test_direct_v2_to_v3_preserves_targets_and_pipeline_progress",
+        "tests.pipeline.state.test_migration.TestV3Migration.test_v1_routes_through_v2_and_reaches_v3"
+      ],
+      "reference_test_exercised": true
+    },
+    {
+      "case_id": "state.checkpoint",
+      "wire_owner": "pipeline.state.checkpoint",
+      "source_locations": [
+        "trans_novel/pipeline/state/checkpoint.py:1-45",
+        "trans_novel/pipeline/state/checkpoint.py:45-140"
+      ],
+      "admitted_versions": [
+        "translate",
+        "polish"
+      ],
+      "defaults": {
+        "missing_journal": "none"
+      },
+      "unknown_field_policy": "Unknown journal kind or invalid/nonpositive chapter/start/count record is cleared by Python recovery; recognized translate/polish kinds use the exact source conditions. Rust historical admission must preserve approved supported recovery, not invent arbitrary schemas.",
+      "migration_paths": [
+        "Translation journal checks committed target before adding missing polish marker; polish journal checks exact recorded targets before clearing marker; idempotent clear."
+      ],
+      "rejections": "R0 candidate with any pending journal; inconsistent/uncommitted work cannot be stamped done.",
+      "modules": [
+        "R4",
+        "R5",
+        "R8"
+      ],
+      "input": {
+        "family": "state.checkpoint",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source",
+      "translate_fields": [
+        "kind",
+        "chapter",
+        "start",
+        "count"
+      ],
+      "polish_fields": [
+        "kind",
+        "chapter",
+        "start",
+        "count",
+        "targets"
+      ],
+      "commit_order": "journal -> chapter -> progress -> clear; recovery under run lock."
+    },
+    {
+      "case_id": "state.note_migration",
+      "wire_owner": "pipeline.state.note_migration",
+      "source_locations": [
+        "trans_novel/pipeline/state/note_migration.py:18-282",
+        "trans_novel/pipeline/state/note_eligibility.py:25-66"
+      ],
+      "admitted_versions": [
+        1
+      ],
+      "defaults": {
+        "missing_journal": "none"
+      },
+      "unknown_field_policy": "Source-bound wrapped before/after payload hashes; preserve exact backup and metadata.",
+      "migration_paths": [
+        "Validated record -> backups -> chapters -> manifest -> remove journal; current raw values must match before or after."
+      ],
+      "rejections": "Malformed/unknown journal version, changed source/hash/current chapter or manifest, incomplete legacy readiness; no automatic trust of rich stale targets. R0 requires no pending note migration.",
+      "modules": [
+        "R8",
+        "R9"
+      ],
+      "input": {
+        "family": "state.note_migration",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "state.publication",
+      "wire_owner": "assemble.epub.publication + pipeline.state",
+      "source_locations": [
+        "trans_novel/pipeline/state/store.py:81-101",
+        "trans_novel/pipeline/state/store.py:468-477",
+        "trans_novel/assemble/epub/publication.py"
+      ],
+      "admitted_versions": [
+        "existing verification report"
+      ],
+      "defaults": {
+        "published_outputs": "merge role receipts, retain prior roles"
+      },
+      "unknown_field_policy": "Preserve raw verification/report/receipt fields. Independent XML observer is separate from renderer.",
+      "migration_paths": [
+        "Each candidate independently verified then sequential physical replace and persisted receipt; later failure not atomic rollback."
+      ],
+      "rejections": "Missing/failed proof, absent receipt, hash/role mismatch, existing EPUB without publication proof; no readiness manufactured by existence.",
+      "modules": [
+        "R0",
+        "R2",
+        "R7"
+      ],
+      "input": {
+        "family": "state.publication",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    },
+    {
+      "case_id": "state.status_exception",
+      "wire_owner": "cli + pipeline.state",
+      "source_locations": [
+        "trans_novel/cli/app.py:272-294",
+        "trans_novel/pipeline/state/store.py:118-226",
+        "trans_novel/glossary/store.py:176-185"
+      ],
+      "admitted_versions": [
+        4
+      ],
+      "defaults": {
+        "rust_status": "read-only"
+      },
+      "unknown_field_policy": "Inventory Python side effects separately from approved Rust exception.",
+      "migration_paths": [],
+      "rejections": "Rust status writes/migrates/recovers/creates directories or SQLite, despite Python historical behavior.",
+      "modules": [
+        "R1",
+        "R8"
+      ],
+      "input": {
+        "family": "state.status_exception",
+        "presence": "omitted and explicit raw values retained separately"
+      },
+      "expected": {
+        "outcome": "Admit only under the listed source-bound conditions; no silent Rust repair.",
+        "exit_status": null,
+        "exit_observed": false
+      },
+      "evidence_class": "source"
+    }
+  ],
+  "wire_models": [
+    {
+      "name": "RunIdentity",
+      "source_file": "trans_novel/pipeline/state/models.py",
+      "source_line": 100,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "properties": {
+          "source_bytes_sha256": {
+            "default": "",
+            "title": "Source Bytes Sha256",
+            "type": "string"
+          },
+          "run_input_schema_version": {
+            "default": 2,
+            "title": "Run Input Schema Version",
+            "type": "integer"
+          },
+          "translation_policy_version": {
+            "default": 0,
+            "title": "Translation Policy Version",
+            "type": "integer"
+          },
+          "source_lang": {
+            "default": "",
+            "title": "Source Lang",
+            "type": "string"
+          },
+          "target_lang": {
+            "default": "",
+            "title": "Target Lang",
+            "type": "string"
+          }
+        },
+        "title": "RunIdentity",
+        "type": "object"
+      }
+    },
+    {
+      "name": "NodeFailure",
+      "source_file": "trans_novel/pipeline/state/models.py",
+      "source_line": 109,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "provider_retryable",
+              "provider_permanent",
+              "protocol",
+              "business",
+              "interrupted"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "at": {
+            "default": "",
+            "title": "At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "NodeFailure",
+        "type": "object"
+      }
+    },
+    {
+      "name": "NodeState",
+      "source_file": "trans_novel/pipeline/state/models.py",
+      "source_line": 116,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "NodeFailure": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "provider_retryable",
+                  "provider_permanent",
+                  "protocol",
+                  "business",
+                  "interrupted"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "message": {
+                "default": "",
+                "title": "Message",
+                "type": "string"
+              },
+              "at": {
+                "default": "",
+                "title": "At",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "title": "NodeFailure",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "running",
+              "succeeded",
+              "skipped",
+              "failed_retryable",
+              "failed_permanent"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "input_fingerprint": {
+            "default": "",
+            "title": "Input Fingerprint",
+            "type": "string"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/NodeFailure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Finished At"
+          },
+          "output": {
+            "additionalProperties": true,
+            "title": "Output",
+            "type": "object"
+          }
+        },
+        "required": [
+          "node_id"
+        ],
+        "title": "NodeState",
+        "type": "object"
+      }
+    },
+    {
+      "name": "PolishBatch",
+      "source_file": "trans_novel/pipeline/state/models.py",
+      "source_line": 128,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "properties": {
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "count"
+        ],
+        "title": "PolishBatch",
+        "type": "object"
+      }
+    },
+    {
+      "name": "RepairIssue",
+      "source_file": "trans_novel/pipeline/state/models.py",
+      "source_line": 134,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "chapter": {
+            "title": "Chapter",
+            "type": "integer"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "repairing",
+              "resolved",
+              "accepted_after_exhaustion"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "last_detail": {
+            "default": "",
+            "title": "Last Detail",
+            "type": "string"
+          },
+          "committed_target_fingerprint": {
+            "default": "",
+            "title": "Committed Target Fingerprint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "chapter",
+          "index",
+          "type"
+        ],
+        "title": "RepairIssue",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ChapterProgress",
+      "source_file": "trans_novel/pipeline/state/models.py",
+      "source_line": 147,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "PolishBatch": {
+            "properties": {
+              "start": {
+                "title": "Start",
+                "type": "integer"
+              },
+              "count": {
+                "title": "Count",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "start",
+              "count"
+            ],
+            "title": "PolishBatch",
+            "type": "object"
+          },
+          "RepairIssue": {
+            "properties": {
+              "key": {
+                "title": "Key",
+                "type": "string"
+              },
+              "chapter": {
+                "title": "Chapter",
+                "type": "integer"
+              },
+              "index": {
+                "title": "Index",
+                "type": "integer"
+              },
+              "type": {
+                "title": "Type",
+                "type": "string"
+              },
+              "detail": {
+                "default": "",
+                "title": "Detail",
+                "type": "string"
+              },
+              "attempts": {
+                "default": 0,
+                "title": "Attempts",
+                "type": "integer"
+              },
+              "status": {
+                "default": "pending",
+                "enum": [
+                  "pending",
+                  "repairing",
+                  "resolved",
+                  "accepted_after_exhaustion"
+                ],
+                "title": "Status",
+                "type": "string"
+              },
+              "last_detail": {
+                "default": "",
+                "title": "Last Detail",
+                "type": "string"
+              },
+              "committed_target_fingerprint": {
+                "default": "",
+                "title": "Committed Target Fingerprint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "chapter",
+              "index",
+              "type"
+            ],
+            "title": "RepairIssue",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "done"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "pending_polish": {
+            "items": {
+              "$ref": "#/$defs/PolishBatch"
+            },
+            "title": "Pending Polish",
+            "type": "array"
+          },
+          "lint_issues": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Lint Issues",
+            "type": "array"
+          },
+          "repair_ledger": {
+            "additionalProperties": {
+              "$ref": "#/$defs/RepairIssue"
+            },
+            "title": "Repair Ledger",
+            "type": "object"
+          },
+          "back_matter_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Back Matter Mode"
+          }
+        },
+        "title": "ChapterProgress",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ChapterIndex",
+      "source_file": "trans_novel/pipeline/state/models.py",
+      "source_line": 156,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "ChapterProcessing": {
+            "additionalProperties": false,
+            "description": "持久化的全章语义处理决策。",
+            "properties": {
+              "action": {
+                "enum": [
+                  "translate",
+                  "preserve"
+                ],
+                "title": "Action",
+                "type": "string"
+              },
+              "review_required": {
+                "title": "Review Required",
+                "type": "boolean"
+              },
+              "reason": {
+                "title": "Reason",
+                "type": "string"
+              },
+              "source_sha256": {
+                "title": "Source Sha256",
+                "type": "string"
+              },
+              "strategy_version": {
+                "const": "chapter_semantics_v2",
+                "title": "Strategy Version",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "review_required",
+              "reason",
+              "source_sha256",
+              "strategy_version"
+            ],
+            "title": "ChapterProcessing",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "href": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Href"
+          },
+          "toc_entry_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Toc Entry Id"
+          },
+          "title_translated": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Translated"
+          },
+          "processing": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ChapterProcessing"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "index"
+        ],
+        "title": "ChapterIndex",
+        "type": "object"
+      }
+    },
+    {
+      "name": "AnalysisFlags",
+      "source_file": "trans_novel/pipeline/state/models.py",
+      "source_line": 166,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "properties": {
+          "term_mining_done": {
+            "default": false,
+            "title": "Term Mining Done",
+            "type": "boolean"
+          }
+        },
+        "title": "AnalysisFlags",
+        "type": "object"
+      }
+    },
+    {
+      "name": "RunState",
+      "source_file": "trans_novel/pipeline/state/models.py",
+      "source_line": 171,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "AnalysisFlags": {
+            "properties": {
+              "term_mining_done": {
+                "default": false,
+                "title": "Term Mining Done",
+                "type": "boolean"
+              }
+            },
+            "title": "AnalysisFlags",
+            "type": "object"
+          },
+          "ChapterIndex": {
+            "properties": {
+              "index": {
+                "title": "Index",
+                "type": "integer"
+              },
+              "title": {
+                "default": "",
+                "title": "Title",
+                "type": "string"
+              },
+              "href": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Href"
+              },
+              "toc_entry_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Toc Entry Id"
+              },
+              "title_translated": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Title Translated"
+              },
+              "processing": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ChapterProcessing"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "index"
+            ],
+            "title": "ChapterIndex",
+            "type": "object"
+          },
+          "ChapterProcessing": {
+            "additionalProperties": false,
+            "description": "持久化的全章语义处理决策。",
+            "properties": {
+              "action": {
+                "enum": [
+                  "translate",
+                  "preserve"
+                ],
+                "title": "Action",
+                "type": "string"
+              },
+              "review_required": {
+                "title": "Review Required",
+                "type": "boolean"
+              },
+              "reason": {
+                "title": "Reason",
+                "type": "string"
+              },
+              "source_sha256": {
+                "title": "Source Sha256",
+                "type": "string"
+              },
+              "strategy_version": {
+                "const": "chapter_semantics_v2",
+                "title": "Strategy Version",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "review_required",
+              "reason",
+              "source_sha256",
+              "strategy_version"
+            ],
+            "title": "ChapterProcessing",
+            "type": "object"
+          },
+          "ChapterProgress": {
+            "properties": {
+              "status": {
+                "default": "pending",
+                "enum": [
+                  "pending",
+                  "done"
+                ],
+                "title": "Status",
+                "type": "string"
+              },
+              "pending_polish": {
+                "items": {
+                  "$ref": "#/$defs/PolishBatch"
+                },
+                "title": "Pending Polish",
+                "type": "array"
+              },
+              "lint_issues": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "title": "Lint Issues",
+                "type": "array"
+              },
+              "repair_ledger": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/RepairIssue"
+                },
+                "title": "Repair Ledger",
+                "type": "object"
+              },
+              "back_matter_mode": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Back Matter Mode"
+              }
+            },
+            "title": "ChapterProgress",
+            "type": "object"
+          },
+          "NodeFailure": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "provider_retryable",
+                  "provider_permanent",
+                  "protocol",
+                  "business",
+                  "interrupted"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "message": {
+                "default": "",
+                "title": "Message",
+                "type": "string"
+              },
+              "at": {
+                "default": "",
+                "title": "At",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "title": "NodeFailure",
+            "type": "object"
+          },
+          "NodeState": {
+            "properties": {
+              "node_id": {
+                "title": "Node Id",
+                "type": "string"
+              },
+              "status": {
+                "default": "pending",
+                "enum": [
+                  "pending",
+                  "running",
+                  "succeeded",
+                  "skipped",
+                  "failed_retryable",
+                  "failed_permanent"
+                ],
+                "title": "Status",
+                "type": "string"
+              },
+              "attempts": {
+                "default": 0,
+                "title": "Attempts",
+                "type": "integer"
+              },
+              "input_fingerprint": {
+                "default": "",
+                "title": "Input Fingerprint",
+                "type": "string"
+              },
+              "failure": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/NodeFailure"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "started_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Started At"
+              },
+              "finished_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Finished At"
+              },
+              "output": {
+                "additionalProperties": true,
+                "title": "Output",
+                "type": "object"
+              }
+            },
+            "required": [
+              "node_id"
+            ],
+            "title": "NodeState",
+            "type": "object"
+          },
+          "PolishBatch": {
+            "properties": {
+              "start": {
+                "title": "Start",
+                "type": "integer"
+              },
+              "count": {
+                "title": "Count",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "start",
+              "count"
+            ],
+            "title": "PolishBatch",
+            "type": "object"
+          },
+          "RepairIssue": {
+            "properties": {
+              "key": {
+                "title": "Key",
+                "type": "string"
+              },
+              "chapter": {
+                "title": "Chapter",
+                "type": "integer"
+              },
+              "index": {
+                "title": "Index",
+                "type": "integer"
+              },
+              "type": {
+                "title": "Type",
+                "type": "string"
+              },
+              "detail": {
+                "default": "",
+                "title": "Detail",
+                "type": "string"
+              },
+              "attempts": {
+                "default": 0,
+                "title": "Attempts",
+                "type": "integer"
+              },
+              "status": {
+                "default": "pending",
+                "enum": [
+                  "pending",
+                  "repairing",
+                  "resolved",
+                  "accepted_after_exhaustion"
+                ],
+                "title": "Status",
+                "type": "string"
+              },
+              "last_detail": {
+                "default": "",
+                "title": "Last Detail",
+                "type": "string"
+              },
+              "committed_target_fingerprint": {
+                "default": "",
+                "title": "Committed Target Fingerprint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "chapter",
+              "index",
+              "type"
+            ],
+            "title": "RepairIssue",
+            "type": "object"
+          },
+          "RunIdentity": {
+            "properties": {
+              "source_bytes_sha256": {
+                "default": "",
+                "title": "Source Bytes Sha256",
+                "type": "string"
+              },
+              "run_input_schema_version": {
+                "default": 2,
+                "title": "Run Input Schema Version",
+                "type": "integer"
+              },
+              "translation_policy_version": {
+                "default": 0,
+                "title": "Translation Policy Version",
+                "type": "integer"
+              },
+              "source_lang": {
+                "default": "",
+                "title": "Source Lang",
+                "type": "string"
+              },
+              "target_lang": {
+                "default": "",
+                "title": "Target Lang",
+                "type": "string"
+              }
+            },
+            "title": "RunIdentity",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "run_state_schema": {
+            "default": 4,
+            "title": "Run State Schema",
+            "type": "integer"
+          },
+          "identity": {
+            "$ref": "#/$defs/RunIdentity"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "title_translated": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Translated"
+          },
+          "fmt": {
+            "default": "",
+            "title": "Fmt",
+            "type": "string"
+          },
+          "source_path": {
+            "default": "",
+            "title": "Source Path",
+            "type": "string"
+          },
+          "source_lang": {
+            "default": "",
+            "title": "Source Lang",
+            "type": "string"
+          },
+          "target_lang": {
+            "default": "",
+            "title": "Target Lang",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "initialized": {
+            "default": false,
+            "title": "Initialized",
+            "type": "boolean"
+          },
+          "chapters": {
+            "items": {
+              "$ref": "#/$defs/ChapterIndex"
+            },
+            "title": "Chapters",
+            "type": "array"
+          },
+          "progress": {
+            "additionalProperties": {
+              "$ref": "#/$defs/ChapterProgress"
+            },
+            "title": "Progress",
+            "type": "object"
+          },
+          "nodes": {
+            "additionalProperties": {
+              "$ref": "#/$defs/NodeState"
+            },
+            "title": "Nodes",
+            "type": "object"
+          },
+          "analysis_flags": {
+            "$ref": "#/$defs/AnalysisFlags"
+          }
+        },
+        "title": "RunState",
+        "type": "object"
+      }
+    },
+    {
+      "name": "InlineMark",
+      "source_file": "trans_novel/epub/richtext.py",
+      "source_line": 41,
+      "unknown_fields": "forbid",
+      "strict": false,
+      "schema": {
+        "additionalProperties": false,
+        "description": "源内联节点的身份和语义证据，不约束译文顺序。",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "path": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Path",
+            "type": "array"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "attributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Attributes",
+            "type": "object"
+          },
+          "source_text": {
+            "title": "Source Text",
+            "type": "string"
+          },
+          "kind": {
+            "default": "style",
+            "enum": [
+              "bold",
+              "italic",
+              "link",
+              "style",
+              "decoration"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "style_evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Style Evidence",
+            "type": "array"
+          },
+          "semantics": {
+            "default": [],
+            "items": {
+              "enum": [
+                "bold",
+                "italic",
+                "link",
+                "superscript",
+                "subscript",
+                "literal"
+              ],
+              "type": "string"
+            },
+            "title": "Semantics",
+            "type": "array"
+          },
+          "required": {
+            "default": false,
+            "title": "Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "tag",
+          "source_text"
+        ],
+        "title": "InlineMark",
+        "type": "object"
+      }
+    },
+    {
+      "name": "InlineAtom",
+      "source_file": "trans_novel/epub/richtext.py",
+      "source_line": 56,
+      "unknown_fields": "forbid",
+      "strict": false,
+      "schema": {
+        "additionalProperties": false,
+        "description": "原书中不可翻译的对象，内容和链接身份由原书提供。",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "path": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Path",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "note",
+              "anchor",
+              "linebreak",
+              "media",
+              "opaque"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "kind"
+        ],
+        "title": "InlineAtom",
+        "type": "object"
+      }
+    },
+    {
+      "name": "NoteReference",
+      "source_file": "trans_novel/epub/richtext.py",
+      "source_line": 66,
+      "unknown_fields": "forbid",
+      "strict": false,
+      "schema": {
+        "additionalProperties": false,
+        "description": "在全书原始资源上已证明的双向注释关系，不改变源文字账本。",
+        "properties": {
+          "mark_id": {
+            "title": "Mark Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "noteref",
+              "backlink"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "target_resource": {
+            "title": "Target Resource",
+            "type": "string"
+          },
+          "target_path": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Target Path",
+            "type": "array"
+          },
+          "content_marks": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Content Marks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mark_id",
+          "label",
+          "kind",
+          "target_resource",
+          "target_path",
+          "content_marks"
+        ],
+        "title": "NoteReference",
+        "type": "object"
+      }
+    },
+    {
+      "name": "InlineRun",
+      "source_file": "trans_novel/epub/richtext.py",
+      "source_line": 78,
+      "unknown_fields": "forbid",
+      "strict": false,
+      "schema": {
+        "additionalProperties": false,
+        "description": "译文文字及其格式，或者一个不可拆分的源对象引用。",
+        "properties": {
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          },
+          "marks": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Marks",
+            "type": "array"
+          },
+          "atom": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Atom"
+          },
+          "slot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Slot Id"
+          },
+          "omission": {
+            "anyOf": [
+              {
+                "enum": [
+                  "implicit",
+                  "merged"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Omission"
+          },
+          "explanation": {
+            "default": "",
+            "title": "Explanation",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Note"
+          }
+        },
+        "title": "InlineRun",
+        "type": "object"
+      }
+    },
+    {
+      "name": "RichSource",
+      "source_file": "trans_novel/epub/richtext.py",
+      "source_line": 124,
+      "unknown_fields": "forbid",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "InlineAtom": {
+            "additionalProperties": false,
+            "description": "原书中不可翻译的对象，内容和链接身份由原书提供。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "note",
+                  "anchor",
+                  "linebreak",
+                  "media",
+                  "opaque"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "label": {
+                "default": "",
+                "title": "Label",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "kind"
+            ],
+            "title": "InlineAtom",
+            "type": "object"
+          },
+          "InlineMark": {
+            "additionalProperties": false,
+            "description": "源内联节点的身份和语义证据，不约束译文顺序。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "tag": {
+                "title": "Tag",
+                "type": "string"
+              },
+              "attributes": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "title": "Attributes",
+                "type": "object"
+              },
+              "source_text": {
+                "title": "Source Text",
+                "type": "string"
+              },
+              "kind": {
+                "default": "style",
+                "enum": [
+                  "bold",
+                  "italic",
+                  "link",
+                  "style",
+                  "decoration"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "style_evidence": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Style Evidence",
+                "type": "array"
+              },
+              "semantics": {
+                "default": [],
+                "items": {
+                  "enum": [
+                    "bold",
+                    "italic",
+                    "link",
+                    "superscript",
+                    "subscript",
+                    "literal"
+                  ],
+                  "type": "string"
+                },
+                "title": "Semantics",
+                "type": "array"
+              },
+              "required": {
+                "default": false,
+                "title": "Required",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "tag",
+              "source_text"
+            ],
+            "title": "InlineMark",
+            "type": "object"
+          },
+          "InlineRun": {
+            "additionalProperties": false,
+            "description": "译文文字及其格式，或者一个不可拆分的源对象引用。",
+            "properties": {
+              "text": {
+                "default": "",
+                "title": "Text",
+                "type": "string"
+              },
+              "marks": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atom": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Atom"
+              },
+              "slot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Slot Id"
+              },
+              "omission": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "implicit",
+                      "merged"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Omission"
+              },
+              "explanation": {
+                "default": "",
+                "title": "Explanation",
+                "type": "string"
+              },
+              "note": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Note"
+              }
+            },
+            "title": "InlineRun",
+            "type": "object"
+          },
+          "NoteReference": {
+            "additionalProperties": false,
+            "description": "在全书原始资源上已证明的双向注释关系，不改变源文字账本。",
+            "properties": {
+              "mark_id": {
+                "title": "Mark Id",
+                "type": "string"
+              },
+              "label": {
+                "title": "Label",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "noteref",
+                  "backlink"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "target_resource": {
+                "title": "Target Resource",
+                "type": "string"
+              },
+              "target_path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Target Path",
+                "type": "array"
+              },
+              "content_marks": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Content Marks",
+                "type": "array"
+              }
+            },
+            "required": [
+              "mark_id",
+              "label",
+              "kind",
+              "target_resource",
+              "target_path",
+              "content_marks"
+            ],
+            "title": "NoteReference",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "已绑定原书的内联来源清单。",
+        "properties": {
+          "version": {
+            "default": 2,
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Version",
+            "type": "integer"
+          },
+          "marks": {
+            "items": {
+              "$ref": "#/$defs/InlineMark"
+            },
+            "title": "Marks",
+            "type": "array"
+          },
+          "atoms": {
+            "items": {
+              "$ref": "#/$defs/InlineAtom"
+            },
+            "title": "Atoms",
+            "type": "array"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/$defs/InlineRun"
+            },
+            "title": "Runs",
+            "type": "array"
+          },
+          "note_references": {
+            "items": {
+              "$ref": "#/$defs/NoteReference"
+            },
+            "title": "Note References",
+            "type": "array"
+          }
+        },
+        "title": "RichSource",
+        "type": "object"
+      }
+    },
+    {
+      "name": "RichTarget",
+      "source_file": "trans_novel/epub/richtext.py",
+      "source_line": 166,
+      "unknown_fields": "forbid",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "InlineRun": {
+            "additionalProperties": false,
+            "description": "译文文字及其格式，或者一个不可拆分的源对象引用。",
+            "properties": {
+              "text": {
+                "default": "",
+                "title": "Text",
+                "type": "string"
+              },
+              "marks": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atom": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Atom"
+              },
+              "slot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Slot Id"
+              },
+              "omission": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "implicit",
+                      "merged"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Omission"
+              },
+              "explanation": {
+                "default": "",
+                "title": "Explanation",
+                "type": "string"
+              },
+              "note": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Note"
+              }
+            },
+            "title": "InlineRun",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "独立于源槽位数量及顺序的已接受译文结构。",
+        "properties": {
+          "version": {
+            "default": 2,
+            "enum": [
+              1,
+              2,
+              3
+            ],
+            "title": "Version",
+            "type": "integer"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/$defs/InlineRun"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "title": "RichTarget",
+        "type": "object"
+      }
+    },
+    {
+      "name": "EpubTextSlot",
+      "source_file": "trans_novel/epub/slots.py",
+      "source_line": 17,
+      "unknown_fields": "forbid",
+      "strict": false,
+      "schema": {
+        "additionalProperties": false,
+        "description": "One owned lxml ``text`` or ``tail`` location.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "element_path": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Element Path",
+            "type": "array"
+          },
+          "field": {
+            "enum": [
+              "text",
+              "tail"
+            ],
+            "title": "Field",
+            "type": "string"
+          },
+          "source_value": {
+            "title": "Source Value",
+            "type": "string"
+          },
+          "target_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Value"
+          }
+        },
+        "required": [
+          "id",
+          "field",
+          "source_value"
+        ],
+        "title": "EpubTextSlot",
+        "type": "object"
+      }
+    },
+    {
+      "name": "EpubSegmentState",
+      "source_file": "trans_novel/epub/slots.py",
+      "source_line": 29,
+      "unknown_fields": "forbid",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "EpubTextSlot": {
+            "additionalProperties": false,
+            "description": "One owned lxml ``text`` or ``tail`` location.",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "element_path": {
+                "default": [],
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Element Path",
+                "type": "array"
+              },
+              "field": {
+                "enum": [
+                  "text",
+                  "tail"
+                ],
+                "title": "Field",
+                "type": "string"
+              },
+              "source_value": {
+                "title": "Source Value",
+                "type": "string"
+              },
+              "target_value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Target Value"
+              }
+            },
+            "required": [
+              "id",
+              "field",
+              "source_value"
+            ],
+            "title": "EpubTextSlot",
+            "type": "object"
+          },
+          "InlineAtom": {
+            "additionalProperties": false,
+            "description": "原书中不可翻译的对象，内容和链接身份由原书提供。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "note",
+                  "anchor",
+                  "linebreak",
+                  "media",
+                  "opaque"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "label": {
+                "default": "",
+                "title": "Label",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "kind"
+            ],
+            "title": "InlineAtom",
+            "type": "object"
+          },
+          "InlineMark": {
+            "additionalProperties": false,
+            "description": "源内联节点的身份和语义证据，不约束译文顺序。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "tag": {
+                "title": "Tag",
+                "type": "string"
+              },
+              "attributes": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "title": "Attributes",
+                "type": "object"
+              },
+              "source_text": {
+                "title": "Source Text",
+                "type": "string"
+              },
+              "kind": {
+                "default": "style",
+                "enum": [
+                  "bold",
+                  "italic",
+                  "link",
+                  "style",
+                  "decoration"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "style_evidence": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Style Evidence",
+                "type": "array"
+              },
+              "semantics": {
+                "default": [],
+                "items": {
+                  "enum": [
+                    "bold",
+                    "italic",
+                    "link",
+                    "superscript",
+                    "subscript",
+                    "literal"
+                  ],
+                  "type": "string"
+                },
+                "title": "Semantics",
+                "type": "array"
+              },
+              "required": {
+                "default": false,
+                "title": "Required",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "tag",
+              "source_text"
+            ],
+            "title": "InlineMark",
+            "type": "object"
+          },
+          "InlineRun": {
+            "additionalProperties": false,
+            "description": "译文文字及其格式，或者一个不可拆分的源对象引用。",
+            "properties": {
+              "text": {
+                "default": "",
+                "title": "Text",
+                "type": "string"
+              },
+              "marks": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atom": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Atom"
+              },
+              "slot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Slot Id"
+              },
+              "omission": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "implicit",
+                      "merged"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Omission"
+              },
+              "explanation": {
+                "default": "",
+                "title": "Explanation",
+                "type": "string"
+              },
+              "note": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Note"
+              }
+            },
+            "title": "InlineRun",
+            "type": "object"
+          },
+          "NoteReference": {
+            "additionalProperties": false,
+            "description": "在全书原始资源上已证明的双向注释关系，不改变源文字账本。",
+            "properties": {
+              "mark_id": {
+                "title": "Mark Id",
+                "type": "string"
+              },
+              "label": {
+                "title": "Label",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "noteref",
+                  "backlink"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "target_resource": {
+                "title": "Target Resource",
+                "type": "string"
+              },
+              "target_path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Target Path",
+                "type": "array"
+              },
+              "content_marks": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Content Marks",
+                "type": "array"
+              }
+            },
+            "required": [
+              "mark_id",
+              "label",
+              "kind",
+              "target_resource",
+              "target_path",
+              "content_marks"
+            ],
+            "title": "NoteReference",
+            "type": "object"
+          },
+          "RichSource": {
+            "additionalProperties": false,
+            "description": "已绑定原书的内联来源清单。",
+            "properties": {
+              "version": {
+                "default": 2,
+                "enum": [
+                  1,
+                  2
+                ],
+                "title": "Version",
+                "type": "integer"
+              },
+              "marks": {
+                "items": {
+                  "$ref": "#/$defs/InlineMark"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atoms": {
+                "items": {
+                  "$ref": "#/$defs/InlineAtom"
+                },
+                "title": "Atoms",
+                "type": "array"
+              },
+              "runs": {
+                "items": {
+                  "$ref": "#/$defs/InlineRun"
+                },
+                "title": "Runs",
+                "type": "array"
+              },
+              "note_references": {
+                "items": {
+                  "$ref": "#/$defs/NoteReference"
+                },
+                "title": "Note References",
+                "type": "array"
+              }
+            },
+            "title": "RichSource",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Persisted source coordinates and ordered slot contract for a segment.",
+        "properties": {
+          "resource_href": {
+            "title": "Resource Href",
+            "type": "string"
+          },
+          "resource_sha256": {
+            "title": "Resource Sha256",
+            "type": "string"
+          },
+          "block_path": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Block Path",
+            "type": "array"
+          },
+          "block_fingerprint": {
+            "title": "Block Fingerprint",
+            "type": "string"
+          },
+          "parse_mode": {
+            "enum": [
+              "xml",
+              "recovered"
+            ],
+            "title": "Parse Mode",
+            "type": "string"
+          },
+          "slots": {
+            "items": {
+              "$ref": "#/$defs/EpubTextSlot"
+            },
+            "title": "Slots",
+            "type": "array"
+          },
+          "slot_contract_sha256": {
+            "title": "Slot Contract Sha256",
+            "type": "string"
+          },
+          "rich_source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RichSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "resource_href",
+          "resource_sha256",
+          "block_fingerprint",
+          "parse_mode",
+          "slot_contract_sha256"
+        ],
+        "title": "EpubSegmentState",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ChapterProcessing",
+      "source_file": "trans_novel/ingest/models.py",
+      "source_line": 58,
+      "unknown_fields": "forbid",
+      "strict": true,
+      "schema": {
+        "additionalProperties": false,
+        "description": "持久化的全章语义处理决策。",
+        "properties": {
+          "action": {
+            "enum": [
+              "translate",
+              "preserve"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "review_required": {
+            "title": "Review Required",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "source_sha256": {
+            "title": "Source Sha256",
+            "type": "string"
+          },
+          "strategy_version": {
+            "const": "chapter_semantics_v2",
+            "title": "Strategy Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "review_required",
+          "reason",
+          "source_sha256",
+          "strategy_version"
+        ],
+        "title": "ChapterProcessing",
+        "type": "object"
+      }
+    },
+    {
+      "name": "Segment",
+      "source_file": "trans_novel/ingest/models.py",
+      "source_line": 77,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "EpubSegmentState": {
+            "additionalProperties": false,
+            "description": "Persisted source coordinates and ordered slot contract for a segment.",
+            "properties": {
+              "resource_href": {
+                "title": "Resource Href",
+                "type": "string"
+              },
+              "resource_sha256": {
+                "title": "Resource Sha256",
+                "type": "string"
+              },
+              "block_path": {
+                "default": [],
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Block Path",
+                "type": "array"
+              },
+              "block_fingerprint": {
+                "title": "Block Fingerprint",
+                "type": "string"
+              },
+              "parse_mode": {
+                "enum": [
+                  "xml",
+                  "recovered"
+                ],
+                "title": "Parse Mode",
+                "type": "string"
+              },
+              "slots": {
+                "items": {
+                  "$ref": "#/$defs/EpubTextSlot"
+                },
+                "title": "Slots",
+                "type": "array"
+              },
+              "slot_contract_sha256": {
+                "title": "Slot Contract Sha256",
+                "type": "string"
+              },
+              "rich_source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RichSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "resource_href",
+              "resource_sha256",
+              "block_fingerprint",
+              "parse_mode",
+              "slot_contract_sha256"
+            ],
+            "title": "EpubSegmentState",
+            "type": "object"
+          },
+          "EpubTextSlot": {
+            "additionalProperties": false,
+            "description": "One owned lxml ``text`` or ``tail`` location.",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "element_path": {
+                "default": [],
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Element Path",
+                "type": "array"
+              },
+              "field": {
+                "enum": [
+                  "text",
+                  "tail"
+                ],
+                "title": "Field",
+                "type": "string"
+              },
+              "source_value": {
+                "title": "Source Value",
+                "type": "string"
+              },
+              "target_value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Target Value"
+              }
+            },
+            "required": [
+              "id",
+              "field",
+              "source_value"
+            ],
+            "title": "EpubTextSlot",
+            "type": "object"
+          },
+          "InlineAtom": {
+            "additionalProperties": false,
+            "description": "原书中不可翻译的对象，内容和链接身份由原书提供。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "note",
+                  "anchor",
+                  "linebreak",
+                  "media",
+                  "opaque"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "label": {
+                "default": "",
+                "title": "Label",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "kind"
+            ],
+            "title": "InlineAtom",
+            "type": "object"
+          },
+          "InlineMark": {
+            "additionalProperties": false,
+            "description": "源内联节点的身份和语义证据，不约束译文顺序。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "tag": {
+                "title": "Tag",
+                "type": "string"
+              },
+              "attributes": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "title": "Attributes",
+                "type": "object"
+              },
+              "source_text": {
+                "title": "Source Text",
+                "type": "string"
+              },
+              "kind": {
+                "default": "style",
+                "enum": [
+                  "bold",
+                  "italic",
+                  "link",
+                  "style",
+                  "decoration"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "style_evidence": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Style Evidence",
+                "type": "array"
+              },
+              "semantics": {
+                "default": [],
+                "items": {
+                  "enum": [
+                    "bold",
+                    "italic",
+                    "link",
+                    "superscript",
+                    "subscript",
+                    "literal"
+                  ],
+                  "type": "string"
+                },
+                "title": "Semantics",
+                "type": "array"
+              },
+              "required": {
+                "default": false,
+                "title": "Required",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "tag",
+              "source_text"
+            ],
+            "title": "InlineMark",
+            "type": "object"
+          },
+          "InlineRun": {
+            "additionalProperties": false,
+            "description": "译文文字及其格式，或者一个不可拆分的源对象引用。",
+            "properties": {
+              "text": {
+                "default": "",
+                "title": "Text",
+                "type": "string"
+              },
+              "marks": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atom": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Atom"
+              },
+              "slot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Slot Id"
+              },
+              "omission": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "implicit",
+                      "merged"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Omission"
+              },
+              "explanation": {
+                "default": "",
+                "title": "Explanation",
+                "type": "string"
+              },
+              "note": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Note"
+              }
+            },
+            "title": "InlineRun",
+            "type": "object"
+          },
+          "NoteReference": {
+            "additionalProperties": false,
+            "description": "在全书原始资源上已证明的双向注释关系，不改变源文字账本。",
+            "properties": {
+              "mark_id": {
+                "title": "Mark Id",
+                "type": "string"
+              },
+              "label": {
+                "title": "Label",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "noteref",
+                  "backlink"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "target_resource": {
+                "title": "Target Resource",
+                "type": "string"
+              },
+              "target_path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Target Path",
+                "type": "array"
+              },
+              "content_marks": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Content Marks",
+                "type": "array"
+              }
+            },
+            "required": [
+              "mark_id",
+              "label",
+              "kind",
+              "target_resource",
+              "target_path",
+              "content_marks"
+            ],
+            "title": "NoteReference",
+            "type": "object"
+          },
+          "RichSource": {
+            "additionalProperties": false,
+            "description": "已绑定原书的内联来源清单。",
+            "properties": {
+              "version": {
+                "default": 2,
+                "enum": [
+                  1,
+                  2
+                ],
+                "title": "Version",
+                "type": "integer"
+              },
+              "marks": {
+                "items": {
+                  "$ref": "#/$defs/InlineMark"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atoms": {
+                "items": {
+                  "$ref": "#/$defs/InlineAtom"
+                },
+                "title": "Atoms",
+                "type": "array"
+              },
+              "runs": {
+                "items": {
+                  "$ref": "#/$defs/InlineRun"
+                },
+                "title": "Runs",
+                "type": "array"
+              },
+              "note_references": {
+                "items": {
+                  "$ref": "#/$defs/NoteReference"
+                },
+                "title": "Note References",
+                "type": "array"
+              }
+            },
+            "title": "RichSource",
+            "type": "object"
+          },
+          "RichTarget": {
+            "additionalProperties": false,
+            "description": "独立于源槽位数量及顺序的已接受译文结构。",
+            "properties": {
+              "version": {
+                "default": 2,
+                "enum": [
+                  1,
+                  2,
+                  3
+                ],
+                "title": "Version",
+                "type": "integer"
+              },
+              "runs": {
+                "items": {
+                  "$ref": "#/$defs/InlineRun"
+                },
+                "title": "Runs",
+                "type": "array"
+              }
+            },
+            "title": "RichTarget",
+            "type": "object"
+          }
+        },
+        "description": "一个可翻译单元。",
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "kind": {
+            "default": "text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target"
+          },
+          "anchor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Anchor"
+          },
+          "resource_href": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resource Href"
+          },
+          "cont": {
+            "default": false,
+            "title": "Cont",
+            "type": "boolean"
+          },
+          "epub_state": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/EpubSegmentState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "rich_target": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RichTarget"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "preserve_source": {
+            "default": false,
+            "title": "Preserve Source",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "index",
+          "source"
+        ],
+        "title": "Segment",
+        "type": "object"
+      }
+    },
+    {
+      "name": "Chapter",
+      "source_file": "trans_novel/ingest/models.py",
+      "source_line": 210,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "ChapterProcessing": {
+            "additionalProperties": false,
+            "description": "持久化的全章语义处理决策。",
+            "properties": {
+              "action": {
+                "enum": [
+                  "translate",
+                  "preserve"
+                ],
+                "title": "Action",
+                "type": "string"
+              },
+              "review_required": {
+                "title": "Review Required",
+                "type": "boolean"
+              },
+              "reason": {
+                "title": "Reason",
+                "type": "string"
+              },
+              "source_sha256": {
+                "title": "Source Sha256",
+                "type": "string"
+              },
+              "strategy_version": {
+                "const": "chapter_semantics_v2",
+                "title": "Strategy Version",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "review_required",
+              "reason",
+              "source_sha256",
+              "strategy_version"
+            ],
+            "title": "ChapterProcessing",
+            "type": "object"
+          },
+          "EpubSegmentState": {
+            "additionalProperties": false,
+            "description": "Persisted source coordinates and ordered slot contract for a segment.",
+            "properties": {
+              "resource_href": {
+                "title": "Resource Href",
+                "type": "string"
+              },
+              "resource_sha256": {
+                "title": "Resource Sha256",
+                "type": "string"
+              },
+              "block_path": {
+                "default": [],
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Block Path",
+                "type": "array"
+              },
+              "block_fingerprint": {
+                "title": "Block Fingerprint",
+                "type": "string"
+              },
+              "parse_mode": {
+                "enum": [
+                  "xml",
+                  "recovered"
+                ],
+                "title": "Parse Mode",
+                "type": "string"
+              },
+              "slots": {
+                "items": {
+                  "$ref": "#/$defs/EpubTextSlot"
+                },
+                "title": "Slots",
+                "type": "array"
+              },
+              "slot_contract_sha256": {
+                "title": "Slot Contract Sha256",
+                "type": "string"
+              },
+              "rich_source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RichSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "resource_href",
+              "resource_sha256",
+              "block_fingerprint",
+              "parse_mode",
+              "slot_contract_sha256"
+            ],
+            "title": "EpubSegmentState",
+            "type": "object"
+          },
+          "EpubTextSlot": {
+            "additionalProperties": false,
+            "description": "One owned lxml ``text`` or ``tail`` location.",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "element_path": {
+                "default": [],
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Element Path",
+                "type": "array"
+              },
+              "field": {
+                "enum": [
+                  "text",
+                  "tail"
+                ],
+                "title": "Field",
+                "type": "string"
+              },
+              "source_value": {
+                "title": "Source Value",
+                "type": "string"
+              },
+              "target_value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Target Value"
+              }
+            },
+            "required": [
+              "id",
+              "field",
+              "source_value"
+            ],
+            "title": "EpubTextSlot",
+            "type": "object"
+          },
+          "InlineAtom": {
+            "additionalProperties": false,
+            "description": "原书中不可翻译的对象，内容和链接身份由原书提供。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "note",
+                  "anchor",
+                  "linebreak",
+                  "media",
+                  "opaque"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "label": {
+                "default": "",
+                "title": "Label",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "kind"
+            ],
+            "title": "InlineAtom",
+            "type": "object"
+          },
+          "InlineMark": {
+            "additionalProperties": false,
+            "description": "源内联节点的身份和语义证据，不约束译文顺序。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "tag": {
+                "title": "Tag",
+                "type": "string"
+              },
+              "attributes": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "title": "Attributes",
+                "type": "object"
+              },
+              "source_text": {
+                "title": "Source Text",
+                "type": "string"
+              },
+              "kind": {
+                "default": "style",
+                "enum": [
+                  "bold",
+                  "italic",
+                  "link",
+                  "style",
+                  "decoration"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "style_evidence": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Style Evidence",
+                "type": "array"
+              },
+              "semantics": {
+                "default": [],
+                "items": {
+                  "enum": [
+                    "bold",
+                    "italic",
+                    "link",
+                    "superscript",
+                    "subscript",
+                    "literal"
+                  ],
+                  "type": "string"
+                },
+                "title": "Semantics",
+                "type": "array"
+              },
+              "required": {
+                "default": false,
+                "title": "Required",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "tag",
+              "source_text"
+            ],
+            "title": "InlineMark",
+            "type": "object"
+          },
+          "InlineRun": {
+            "additionalProperties": false,
+            "description": "译文文字及其格式，或者一个不可拆分的源对象引用。",
+            "properties": {
+              "text": {
+                "default": "",
+                "title": "Text",
+                "type": "string"
+              },
+              "marks": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atom": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Atom"
+              },
+              "slot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Slot Id"
+              },
+              "omission": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "implicit",
+                      "merged"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Omission"
+              },
+              "explanation": {
+                "default": "",
+                "title": "Explanation",
+                "type": "string"
+              },
+              "note": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Note"
+              }
+            },
+            "title": "InlineRun",
+            "type": "object"
+          },
+          "NoteReference": {
+            "additionalProperties": false,
+            "description": "在全书原始资源上已证明的双向注释关系，不改变源文字账本。",
+            "properties": {
+              "mark_id": {
+                "title": "Mark Id",
+                "type": "string"
+              },
+              "label": {
+                "title": "Label",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "noteref",
+                  "backlink"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "target_resource": {
+                "title": "Target Resource",
+                "type": "string"
+              },
+              "target_path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Target Path",
+                "type": "array"
+              },
+              "content_marks": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Content Marks",
+                "type": "array"
+              }
+            },
+            "required": [
+              "mark_id",
+              "label",
+              "kind",
+              "target_resource",
+              "target_path",
+              "content_marks"
+            ],
+            "title": "NoteReference",
+            "type": "object"
+          },
+          "RichSource": {
+            "additionalProperties": false,
+            "description": "已绑定原书的内联来源清单。",
+            "properties": {
+              "version": {
+                "default": 2,
+                "enum": [
+                  1,
+                  2
+                ],
+                "title": "Version",
+                "type": "integer"
+              },
+              "marks": {
+                "items": {
+                  "$ref": "#/$defs/InlineMark"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atoms": {
+                "items": {
+                  "$ref": "#/$defs/InlineAtom"
+                },
+                "title": "Atoms",
+                "type": "array"
+              },
+              "runs": {
+                "items": {
+                  "$ref": "#/$defs/InlineRun"
+                },
+                "title": "Runs",
+                "type": "array"
+              },
+              "note_references": {
+                "items": {
+                  "$ref": "#/$defs/NoteReference"
+                },
+                "title": "Note References",
+                "type": "array"
+              }
+            },
+            "title": "RichSource",
+            "type": "object"
+          },
+          "RichTarget": {
+            "additionalProperties": false,
+            "description": "独立于源槽位数量及顺序的已接受译文结构。",
+            "properties": {
+              "version": {
+                "default": 2,
+                "enum": [
+                  1,
+                  2,
+                  3
+                ],
+                "title": "Version",
+                "type": "integer"
+              },
+              "runs": {
+                "items": {
+                  "$ref": "#/$defs/InlineRun"
+                },
+                "title": "Runs",
+                "type": "array"
+              }
+            },
+            "title": "RichTarget",
+            "type": "object"
+          },
+          "Segment": {
+            "description": "一个可翻译单元。",
+            "properties": {
+              "index": {
+                "title": "Index",
+                "type": "integer"
+              },
+              "source": {
+                "title": "Source",
+                "type": "string"
+              },
+              "kind": {
+                "default": "text",
+                "title": "Kind",
+                "type": "string"
+              },
+              "target": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Target"
+              },
+              "anchor": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Anchor"
+              },
+              "resource_href": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Resource Href"
+              },
+              "cont": {
+                "default": false,
+                "title": "Cont",
+                "type": "boolean"
+              },
+              "epub_state": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EpubSegmentState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "rich_target": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RichTarget"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "meta": {
+                "additionalProperties": true,
+                "title": "Meta",
+                "type": "object"
+              },
+              "preserve_source": {
+                "default": false,
+                "title": "Preserve Source",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "index",
+              "source"
+            ],
+            "title": "Segment",
+            "type": "object"
+          }
+        },
+        "description": "一章：有序的 Segment 列表 + 回填所需的结构信息。",
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/$defs/Segment"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "href": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Href"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          },
+          "processing": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ChapterProcessing"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "index"
+        ],
+        "title": "Chapter",
+        "type": "object"
+      }
+    },
+    {
+      "name": "Document",
+      "source_file": "trans_novel/ingest/models.py",
+      "source_line": 270,
+      "unknown_fields": "ignore",
+      "strict": false,
+      "schema": {
+        "$defs": {
+          "Chapter": {
+            "description": "一章：有序的 Segment 列表 + 回填所需的结构信息。",
+            "properties": {
+              "index": {
+                "title": "Index",
+                "type": "integer"
+              },
+              "title": {
+                "default": "",
+                "title": "Title",
+                "type": "string"
+              },
+              "segments": {
+                "items": {
+                  "$ref": "#/$defs/Segment"
+                },
+                "title": "Segments",
+                "type": "array"
+              },
+              "href": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Href"
+              },
+              "meta": {
+                "additionalProperties": true,
+                "title": "Meta",
+                "type": "object"
+              },
+              "processing": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ChapterProcessing"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "index"
+            ],
+            "title": "Chapter",
+            "type": "object"
+          },
+          "ChapterProcessing": {
+            "additionalProperties": false,
+            "description": "持久化的全章语义处理决策。",
+            "properties": {
+              "action": {
+                "enum": [
+                  "translate",
+                  "preserve"
+                ],
+                "title": "Action",
+                "type": "string"
+              },
+              "review_required": {
+                "title": "Review Required",
+                "type": "boolean"
+              },
+              "reason": {
+                "title": "Reason",
+                "type": "string"
+              },
+              "source_sha256": {
+                "title": "Source Sha256",
+                "type": "string"
+              },
+              "strategy_version": {
+                "const": "chapter_semantics_v2",
+                "title": "Strategy Version",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "review_required",
+              "reason",
+              "source_sha256",
+              "strategy_version"
+            ],
+            "title": "ChapterProcessing",
+            "type": "object"
+          },
+          "EpubSegmentState": {
+            "additionalProperties": false,
+            "description": "Persisted source coordinates and ordered slot contract for a segment.",
+            "properties": {
+              "resource_href": {
+                "title": "Resource Href",
+                "type": "string"
+              },
+              "resource_sha256": {
+                "title": "Resource Sha256",
+                "type": "string"
+              },
+              "block_path": {
+                "default": [],
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Block Path",
+                "type": "array"
+              },
+              "block_fingerprint": {
+                "title": "Block Fingerprint",
+                "type": "string"
+              },
+              "parse_mode": {
+                "enum": [
+                  "xml",
+                  "recovered"
+                ],
+                "title": "Parse Mode",
+                "type": "string"
+              },
+              "slots": {
+                "items": {
+                  "$ref": "#/$defs/EpubTextSlot"
+                },
+                "title": "Slots",
+                "type": "array"
+              },
+              "slot_contract_sha256": {
+                "title": "Slot Contract Sha256",
+                "type": "string"
+              },
+              "rich_source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RichSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "resource_href",
+              "resource_sha256",
+              "block_fingerprint",
+              "parse_mode",
+              "slot_contract_sha256"
+            ],
+            "title": "EpubSegmentState",
+            "type": "object"
+          },
+          "EpubTextSlot": {
+            "additionalProperties": false,
+            "description": "One owned lxml ``text`` or ``tail`` location.",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "element_path": {
+                "default": [],
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Element Path",
+                "type": "array"
+              },
+              "field": {
+                "enum": [
+                  "text",
+                  "tail"
+                ],
+                "title": "Field",
+                "type": "string"
+              },
+              "source_value": {
+                "title": "Source Value",
+                "type": "string"
+              },
+              "target_value": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Target Value"
+              }
+            },
+            "required": [
+              "id",
+              "field",
+              "source_value"
+            ],
+            "title": "EpubTextSlot",
+            "type": "object"
+          },
+          "InlineAtom": {
+            "additionalProperties": false,
+            "description": "原书中不可翻译的对象，内容和链接身份由原书提供。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "note",
+                  "anchor",
+                  "linebreak",
+                  "media",
+                  "opaque"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "label": {
+                "default": "",
+                "title": "Label",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "kind"
+            ],
+            "title": "InlineAtom",
+            "type": "object"
+          },
+          "InlineMark": {
+            "additionalProperties": false,
+            "description": "源内联节点的身份和语义证据，不约束译文顺序。",
+            "properties": {
+              "id": {
+                "title": "Id",
+                "type": "string"
+              },
+              "path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Path",
+                "type": "array"
+              },
+              "tag": {
+                "title": "Tag",
+                "type": "string"
+              },
+              "attributes": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "title": "Attributes",
+                "type": "object"
+              },
+              "source_text": {
+                "title": "Source Text",
+                "type": "string"
+              },
+              "kind": {
+                "default": "style",
+                "enum": [
+                  "bold",
+                  "italic",
+                  "link",
+                  "style",
+                  "decoration"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "style_evidence": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Style Evidence",
+                "type": "array"
+              },
+              "semantics": {
+                "default": [],
+                "items": {
+                  "enum": [
+                    "bold",
+                    "italic",
+                    "link",
+                    "superscript",
+                    "subscript",
+                    "literal"
+                  ],
+                  "type": "string"
+                },
+                "title": "Semantics",
+                "type": "array"
+              },
+              "required": {
+                "default": false,
+                "title": "Required",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "tag",
+              "source_text"
+            ],
+            "title": "InlineMark",
+            "type": "object"
+          },
+          "InlineRun": {
+            "additionalProperties": false,
+            "description": "译文文字及其格式，或者一个不可拆分的源对象引用。",
+            "properties": {
+              "text": {
+                "default": "",
+                "title": "Text",
+                "type": "string"
+              },
+              "marks": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atom": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Atom"
+              },
+              "slot_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Slot Id"
+              },
+              "omission": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "implicit",
+                      "merged"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Omission"
+              },
+              "explanation": {
+                "default": "",
+                "title": "Explanation",
+                "type": "string"
+              },
+              "note": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Note"
+              }
+            },
+            "title": "InlineRun",
+            "type": "object"
+          },
+          "NoteReference": {
+            "additionalProperties": false,
+            "description": "在全书原始资源上已证明的双向注释关系，不改变源文字账本。",
+            "properties": {
+              "mark_id": {
+                "title": "Mark Id",
+                "type": "string"
+              },
+              "label": {
+                "title": "Label",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "noteref",
+                  "backlink"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "target_resource": {
+                "title": "Target Resource",
+                "type": "string"
+              },
+              "target_path": {
+                "items": {
+                  "type": "integer"
+                },
+                "title": "Target Path",
+                "type": "array"
+              },
+              "content_marks": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Content Marks",
+                "type": "array"
+              }
+            },
+            "required": [
+              "mark_id",
+              "label",
+              "kind",
+              "target_resource",
+              "target_path",
+              "content_marks"
+            ],
+            "title": "NoteReference",
+            "type": "object"
+          },
+          "RichSource": {
+            "additionalProperties": false,
+            "description": "已绑定原书的内联来源清单。",
+            "properties": {
+              "version": {
+                "default": 2,
+                "enum": [
+                  1,
+                  2
+                ],
+                "title": "Version",
+                "type": "integer"
+              },
+              "marks": {
+                "items": {
+                  "$ref": "#/$defs/InlineMark"
+                },
+                "title": "Marks",
+                "type": "array"
+              },
+              "atoms": {
+                "items": {
+                  "$ref": "#/$defs/InlineAtom"
+                },
+                "title": "Atoms",
+                "type": "array"
+              },
+              "runs": {
+                "items": {
+                  "$ref": "#/$defs/InlineRun"
+                },
+                "title": "Runs",
+                "type": "array"
+              },
+              "note_references": {
+                "items": {
+                  "$ref": "#/$defs/NoteReference"
+                },
+                "title": "Note References",
+                "type": "array"
+              }
+            },
+            "title": "RichSource",
+            "type": "object"
+          },
+          "RichTarget": {
+            "additionalProperties": false,
+            "description": "独立于源槽位数量及顺序的已接受译文结构。",
+            "properties": {
+              "version": {
+                "default": 2,
+                "enum": [
+                  1,
+                  2,
+                  3
+                ],
+                "title": "Version",
+                "type": "integer"
+              },
+              "runs": {
+                "items": {
+                  "$ref": "#/$defs/InlineRun"
+                },
+                "title": "Runs",
+                "type": "array"
+              }
+            },
+            "title": "RichTarget",
+            "type": "object"
+          },
+          "Segment": {
+            "description": "一个可翻译单元。",
+            "properties": {
+              "index": {
+                "title": "Index",
+                "type": "integer"
+              },
+              "source": {
+                "title": "Source",
+                "type": "string"
+              },
+              "kind": {
+                "default": "text",
+                "title": "Kind",
+                "type": "string"
+              },
+              "target": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Target"
+              },
+              "anchor": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Anchor"
+              },
+              "resource_href": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Resource Href"
+              },
+              "cont": {
+                "default": false,
+                "title": "Cont",
+                "type": "boolean"
+              },
+              "epub_state": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EpubSegmentState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "rich_target": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RichTarget"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "meta": {
+                "additionalProperties": true,
+                "title": "Meta",
+                "type": "object"
+              },
+              "preserve_source": {
+                "default": false,
+                "title": "Preserve Source",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "index",
+              "source"
+            ],
+            "title": "Segment",
+            "type": "object"
+          }
+        },
+        "description": "整本书。",
+        "properties": {
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "source_lang": {
+            "title": "Source Lang",
+            "type": "string"
+          },
+          "target_lang": {
+            "title": "Target Lang",
+            "type": "string"
+          },
+          "fmt": {
+            "title": "Fmt",
+            "type": "string"
+          },
+          "source_path": {
+            "default": "",
+            "title": "Source Path",
+            "type": "string"
+          },
+          "chapters": {
+            "items": {
+              "$ref": "#/$defs/Chapter"
+            },
+            "title": "Chapters",
+            "type": "array"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "title": "Meta",
+            "type": "object"
+          }
+        },
+        "required": [
+          "source_lang",
+          "target_lang",
+          "fmt"
+        ],
+        "title": "Document",
+        "type": "object"
+      }
+    },
+    {
+      "name": "SavedOutputSelection",
+      "source_file": "trans_novel/pipeline/state/output_selection.py",
+      "source_line": 48,
+      "unknown_fields": "forbid",
+      "strict": true,
+      "schema": {
+        "additionalProperties": false,
+        "description": "严格、可持久化的输出选择记录。",
+        "properties": {
+          "schema_version": {
+            "const": 2,
+            "default": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source_bytes_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Bytes Sha256",
+            "type": "string"
+          },
+          "selection": {
+            "additionalProperties": true,
+            "title": "Selection",
+            "type": "object"
+          },
+          "origins": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Origins",
+            "type": "object"
+          }
+        },
+        "required": [
+          "source_bytes_sha256",
+          "selection",
+          "origins"
+        ],
+        "title": "SavedOutputSelection",
+        "type": "object"
+      }
+    }
+  ],
+  "exercised_regressions": [
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_agent_does_not_swallow_persistence_error_as_default",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_agent_does_not_swallow_persistence_error_as_default"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:241"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_concurrent_attempts_have_exact_schema_v2_totals",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_concurrent_attempts_have_exact_schema_v2_totals"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:272"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_crash_after_usage_replace_clears_wal_without_doubling",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_crash_after_usage_replace_clears_wal_without_doubling"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:153"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_crash_before_usage_replace_recovers_after_once",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_crash_before_usage_replace_recovers_after_once"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:132"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_existing_schema_v2_and_sequential_books_do_not_cross_attribute",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_existing_schema_v2_and_sequential_books_do_not_cross_attribute"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:291"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_glossary_audit_binds_usage_to_supplied_store",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_glossary_audit_binds_usage_to_supplied_store"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:333"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_request_failure_records_attempt_without_inventing_tokens",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_request_failure_records_attempt_without_inventing_tokens"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:217"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_response_is_on_disk_before_accounting_returns",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_response_is_on_disk_before_accounting_returns"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:87"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_runner_does_not_continue_after_best_effort_persistence_failure",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_runner_does_not_continue_after_best_effort_persistence_failure"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:314"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_scope_event_contains_only_increment",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_scope_event_contains_only_increment"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:354"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_wal_mismatch_fails_closed",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_wal_mismatch_fails_closed"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:175"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_wal_without_tracker_checkpoint_fails_closed",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_wal_without_tracker_checkpoint_fails_closed"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:194"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.llm.test_usage_persistence.TestUsagePersistence.test_windows_directory_handles_do_not_block_usage_commit",
+      "input": {
+        "test_id": "tests.llm.test_usage_persistence.TestUsagePersistence.test_windows_directory_handles_do_not_block_usage_commit"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/llm/test_usage_persistence.py:106"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_checkpoint.TestCheckpointIdempotence.test_no_journal_no_op",
+      "input": {
+        "test_id": "tests.pipeline.state.test_checkpoint.TestCheckpointIdempotence.test_no_journal_no_op"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_checkpoint.py:173"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_checkpoint.TestCheckpointIdempotence.test_recovery_is_idempotent",
+      "input": {
+        "test_id": "tests.pipeline.state.test_checkpoint.TestCheckpointIdempotence.test_recovery_is_idempotent"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_checkpoint.py:152"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_checkpoint.TestPolishCheckpoint.test_committed_polish_just_clears_journal",
+      "input": {
+        "test_id": "tests.pipeline.state.test_checkpoint.TestPolishCheckpoint.test_committed_polish_just_clears_journal"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_checkpoint.py:137"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_checkpoint.TestPolishCheckpoint.test_crash_after_polish_before_marker_clear_removes_marker",
+      "input": {
+        "test_id": "tests.pipeline.state.test_checkpoint.TestPolishCheckpoint.test_crash_after_polish_before_marker_clear_removes_marker"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_checkpoint.py:111"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_checkpoint.TestPolishCheckpoint.test_crash_before_polish_save_keeps_marker",
+      "input": {
+        "test_id": "tests.pipeline.state.test_checkpoint.TestPolishCheckpoint.test_crash_before_polish_save_keeps_marker"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_checkpoint.py:126"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_checkpoint.TestTranslateCheckpoint.test_committed_translate_just_clears_journal",
+      "input": {
+        "test_id": "tests.pipeline.state.test_checkpoint.TestTranslateCheckpoint.test_committed_translate_just_clears_journal"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_checkpoint.py:81"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_checkpoint.TestTranslateCheckpoint.test_crash_after_targets_before_marker_repairs_marker",
+      "input": {
+        "test_id": "tests.pipeline.state.test_checkpoint.TestTranslateCheckpoint.test_crash_after_targets_before_marker_repairs_marker"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_checkpoint.py:55"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_checkpoint.TestTranslateCheckpoint.test_crash_before_targets_rolls_back",
+      "input": {
+        "test_id": "tests.pipeline.state.test_checkpoint.TestTranslateCheckpoint.test_crash_before_targets_rolls_back"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_checkpoint.py:70"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_migration.TestV3Migration.test_direct_v2_to_v3_preserves_targets_and_pipeline_progress",
+      "input": {
+        "test_id": "tests.pipeline.state.test_migration.TestV3Migration.test_direct_v2_to_v3_preserves_targets_and_pipeline_progress"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_migration.py:132"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_migration.TestV3Migration.test_state_facade_exports_statuses_and_frozen_fingerprint",
+      "input": {
+        "test_id": "tests.pipeline.state.test_migration.TestV3Migration.test_state_facade_exports_statuses_and_frozen_fingerprint"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_migration.py:108"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_migration.TestV3Migration.test_v1_routes_through_v2_and_reaches_v3",
+      "input": {
+        "test_id": "tests.pipeline.state.test_migration.TestV3Migration.test_v1_routes_through_v2_and_reaches_v3"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_migration.py:160"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_output_selection.TestOutputSelection.test_failed_save_preserves_selection_and_translation_state",
+      "input": {
+        "test_id": "tests.pipeline.state.test_output_selection.TestOutputSelection.test_failed_save_preserves_selection_and_translation_state"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_output_selection.py:142"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_output_selection.TestOutputSelection.test_load_classifies_untrusted_records_without_leaking_payload",
+      "input": {
+        "test_id": "tests.pipeline.state.test_output_selection.TestOutputSelection.test_load_classifies_untrusted_records_without_leaking_payload"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_output_selection.py:60"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_output_selection.TestOutputSelection.test_missing_then_durable_round_trip_is_source_bound",
+      "input": {
+        "test_id": "tests.pipeline.state.test_output_selection.TestOutputSelection.test_missing_then_durable_round_trip_is_source_bound"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_output_selection.py:28"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_output_selection.TestOutputSelection.test_save_rejects_non_json_values_before_creating_a_record",
+      "input": {
+        "test_id": "tests.pipeline.state.test_output_selection.TestOutputSelection.test_save_rejects_non_json_values_before_creating_a_record"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_output_selection.py:121"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.pipeline.state.test_output_selection.TestOutputSelection.test_valid_v1_snapshot_is_discarded_only_after_source_validation",
+      "input": {
+        "test_id": "tests.pipeline.state.test_output_selection.TestOutputSelection.test_valid_v1_snapshot_is_discarded_only_after_source_validation"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/pipeline/state/test_output_selection.py:97"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubReadability.test_output_reopen_failures_are_not_discarded",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubReadability.test_output_reopen_failures_are_not_discarded"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:437"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_generic_source_pairing_includes_preserved_footnote_text",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_generic_source_pairing_includes_preserved_footnote_text"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:136"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_inherited_diagnostics_match_all_fields_and_counts",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_inherited_diagnostics_match_all_fields_and_counts"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:72"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_ncx_navigation_ignores_comments_and_processing_instructions",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_ncx_navigation_ignores_comments_and_processing_instructions"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:369"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_ncx_root_language_targets_and_comment_pi_contents_are_immutable",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_ncx_root_language_targets_and_comment_pi_contents_are_immutable"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:379"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_nested_nav_label_locator_matches_writer_clear_contract",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_nested_nav_label_locator_matches_writer_clear_contract"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:228"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_output_paths_ignore_inserted_source_siblings",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_output_paths_ignore_inserted_source_siblings"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:129"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_preflight_preserves_source_specific_references",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_preflight_preserves_source_specific_references"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:89"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_public_facade_signatures_preserve_annotations",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_public_facade_signatures_preserve_annotations"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:166"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_real_schema4_mono_report_counts_actual_authorized_changes",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_real_schema4_mono_report_counts_actual_authorized_changes"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:210"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_recovered_schema4_resource_reports_recovered_assurance",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_recovered_schema4_resource_reports_recovered_assurance"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:289"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_schema4_bilingual_proof_supersedes_legacy_source_heuristics",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_schema4_bilingual_proof_supersedes_legacy_source_heuristics"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:112"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_source_dom_slot_tag_attr_and_nav_mutations_fail_exactly",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_source_dom_slot_tag_attr_and_nav_mutations_fail_exactly"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:240"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_source_missing_backlinks_are_inherited_by_count",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_source_missing_backlinks_are_inherited_by_count"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:56"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.verification.test_api.TestEpubStage2.test_toc_label_outer_tail_is_preserved_and_inner_tail_corruption_fails",
+      "input": {
+        "test_id": "tests.assemble.epub.verification.test_api.TestEpubStage2.test_toc_label_outer_tail_is_preserved_and_inner_tail_corruption_fails"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/verification/test_api.py:409"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    },
+    {
+      "case_id": "regression.tests.assemble.epub.test_publication.TestEpubStage2.test_exhausted_polish_protocol_still_publishes_verified_epub",
+      "input": {
+        "test_id": "tests.assemble.epub.test_publication.TestEpubStage2.test_exhausted_polish_protocol_still_publishes_verified_epub"
+      },
+      "expected": {
+        "outcome": "Existing behavioral regression passed with original expectations.",
+        "exit_status": 0,
+        "exit_observed": true
+      },
+      "source_locations": [
+        "tests/assemble/epub/test_publication.py:61"
+      ],
+      "modules": [
+        "R0",
+        "R2",
+        "R3",
+        "R4",
+        "R8"
+      ],
+      "evidence_class": "reference_test",
+      "observation": {
+        "run_id": "selected-reference-2026-10-07",
+        "result": "passed"
+      }
+    }
+  ],
+  "regression_run": {
+    "run_id": "selected-reference-2026-10-07",
+    "command": [
+      "uv",
+      "run",
+      "--no-sync",
+      "python",
+      "-m",
+      "unittest",
+      "tests.llm.test_usage_persistence",
+      "tests.pipeline.state.test_checkpoint",
+      "tests.pipeline.state.test_migration",
+      "tests.pipeline.state.test_output_selection",
+      "tests.assemble.epub.verification.test_api",
+      "tests.assemble.epub.test_publication.TestEpubStage2.test_exhausted_polish_protocol_still_publishes_verified_epub"
+    ],
+    "test_count": 45,
+    "exit_status": 0,
+    "result": "OK",
+    "scope": "offline baseline injected reference; no live-provider or Rust claim"
+  }
+}
