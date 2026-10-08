@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Added a pinned Rust 1.96.0/edition-2024 workspace with the native `wenyi` help/version CLI and opaque config-path arguments. Private offline admission validates the qualified migration fixture before isolated materialization; actual binary integration tests bound output capture and kill/reap timed-out children. This does not add native configuration loading or translation.
+
 - Added fixed-baseline command, configuration and state migration inventories, with synthetic structured EPUB qualification through the real offline model-accounted pipeline. Independent artifact observation binds exact accepted targets, annotations, SQLite and usage to verified mono and both bilingual presentation orders without retranslation.
 
 - Corrected OpenCode Go credential lookup and setup instructions to `OPENCODE_GO_API_KEY`, keeping keys out of repository configuration.
