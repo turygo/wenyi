@@ -411,7 +411,7 @@ fn icu_build(
     let make = env::var_os("MAKE").unwrap_or_else(|| "make".into());
     let (script, prefix_arg) = if windows {
         let convert = |path: &Path| -> Result<String> {
-            let result = Command::new("cygpath").arg("-u").arg(path).output()?;
+            let result = Command::new("cygpath").arg("-m").arg(path).output()?;
             if !result.status.success() {
                 return Err("cygpath failed; configure Cygwin/MSVC tool environment".into());
             }
