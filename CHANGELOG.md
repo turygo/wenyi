@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Selected ICU's stock MSYS/MSVC make fragment with explicit native build/host arguments; ICU 78.3's automatic `*-msys` detection otherwise falls back to its unsupported-platform fragment. The compiler and Rust target remain MSVC.
+
 - Switched Windows ICU builds to the upstream `MSYS/MSVC` mode with standard MSYS2 tools, which convert POSIX arguments for native compilers. Removed the Cygwin/mixed-path attempt after real CI exposed incompatible compiler includes and Autoconf auxiliary-file lookup; pinned upstream sources and hashes remain unchanged.
 
 - Fixed Windows R1 linker selection by explicitly prioritizing the MSVC tool directory through `GITHUB_PATH`, ahead of POSIX build tools.

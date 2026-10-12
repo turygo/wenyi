@@ -450,6 +450,10 @@ fn icu_build(
         .env("CPPFLAGS", ICU_CPPFLAGS)
         .env("ac_cv_prog_PYTHON", "");
     if windows {
+        let icu_host = format!("{}-pc-mingw32", env::var("CARGO_CFG_TARGET_ARCH")?);
+        configure
+            .arg(format!("--build={icu_host}"))
+            .arg(format!("--host={icu_host}"));
         configure
             .env("CFLAGS", "-O2 -std:c11")
             .env("CXXFLAGS", "-O2 -std:c++17");
