@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Fixed clean-checkout Rust builds by committing the embedded init template as `config.example.yaml`, instead of relying on an ignored local `config.yaml`. Windows CI selects the MSVC environment after Cygwin installation so GNU `link.exe` cannot shadow the required linker.
+
 - Fixed Rust CI cache initialization after GitHub rejected `runner.temp` in job-level environment configuration; the cache path is now exported by a step after runner assignment.
 
 - Enabled the five-target Rust R1 gate on the explicitly authorized acceptance branch only, because GitHub cannot dispatch a workflow absent from the default branch. Remote main, release publishing and R2 remain unchanged; scheduled CI is not acceptance evidence.

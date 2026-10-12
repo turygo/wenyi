@@ -6,7 +6,7 @@ use std::{
 
 use crate::config::expand_home;
 
-pub const DEFAULT_CONFIG: &str = include_str!("../assets/config.yaml");
+pub const DEFAULT_CONFIG: &str = include_str!("../assets/config.example.yaml");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitResult {

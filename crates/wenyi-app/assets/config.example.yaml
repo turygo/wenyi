@@ -1,0 +1,14 @@
+llm:
+  models:
+    translator: [openrouter/google/gemini-3.8-flash:low]
+    analyst: [opencode-go/muse-spark-1.3-contributor:low]
+    editor: [opencode-go/muse-spark-1.3-contributor:low]
+    fast: [opencode-go/muse-spark-1.3-contributor:low]
+quality: balanced
+output:
+  mono: true
+  bilingual:
+    enabled: true
+    order: target_first
+  override_theme: null
+  bilingual_styles: builtin:bilingual
