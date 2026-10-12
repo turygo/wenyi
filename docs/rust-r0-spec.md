@@ -2,14 +2,14 @@
 
 ## Status and authority
 
-**Status: R0 implemented and exercised; user acceptance pending. R1 and later modules are not authorized.**
+**Status: R0 implemented, exercised and accepted by the user on 2026-10-08. Subsequent R1 authority and verification are recorded in [rust-r1-spec.md](rust-r1-spec.md); this R0 baseline remains unchanged.**
 
 This specification defines R0 under [Rust Migration Design](rust-migration-design.md). The user confirmed two decisions through Asktool:
 
 - R0 delivers native help/version and `--config`/`-c` argument handling only. Strict YAML loading, model-role validation and output-presence semantics remain in R1.
 - The first admitted snapshot uses one representative structured EPUB, not the simplest text-only sample. Its reference outputs cover mono, bilingual target-first and bilingual source-first.
 
-On 2026-10-07, the user reviewed this specification, approved it and authorized the next session to complete R0 development for user acceptance. This authorizes R0 only, not R1 or later modules. After implementation, R0 acceptance and the next-module approval remain separate checkpoints.
+On 2026-10-07, the user reviewed this specification, approved it and authorized the next session to complete R0 development for user acceptance. On 2026-10-08, the user accepted R0's recorded delivery through Asktool and authorized R1 scheme/specification drafting, not implementation at that checkpoint. Subsequent R1 implementation approval and resumed scope are recorded in [rust-r1-spec.md](rust-r1-spec.md).
 
 This document is the approved R0 implementation and acceptance contract. The migration design retains authority over cross-module ownership, compatibility, safety and cutover. A conflict must be resolved explicitly before affected implementation; neither document permits silently narrowing acceptance. Updating a fixture or expected result to accommodate a Rust mismatch requires review of the underlying Python evidence, not automatic re-recording.
 
@@ -263,7 +263,7 @@ Any incomplete lifecycle, source/content/accounting mismatch, invalid proof, une
 
 A snapshot blocker blocks R2 assembly, not independent R1 mechanism work. It does not turn a partial R0 snapshot into acceptance: before any R1 work, report the exact failed criterion and obtain explicit user approval for that limited transition, leaving snapshot admission outstanding. The normal route is complete R0 acceptance, scoped commits, then explicit R1 approval.
 
-Acceptance reporting names actually executed commands, admitted fixture ID/hash and commit, reopened artifacts, request/accounting observations, preserved regressions and unaccepted scope. R0 certifies only the environment actually exercised; it does not certify five-platform native or release portability. Do not start R1 or delete Python after delivering R0.
+Acceptance reporting names actually executed commands, admitted fixture ID/hash and commit, reopened artifacts, request/accounting observations, preserved regressions and unaccepted scope. R0 certifies only the environment actually exercised; it does not certify five-platform native or release portability. Do not start R1 implementation before its specification and development authorization are approved; do not delete Python.
 
 ## Exercised R0 implementation evidence
 
@@ -282,13 +282,13 @@ Independent old/new comparison passed the complete stable semantic projection, e
 | Native process/admission | 11 Rust tests passed against the actual `wenyi` binary and qualified static bundle; help/version/argument categories, no filesystem effects, owned timeout kill/reap, output bounds, unsafe/aliased/missing/corrupt metadata and materialization revalidation exercised |
 | Applicable gates | Full offline Python suite: 1,107 tests passed after replacement. Whole-repository Ruff check/format, repository-pinned pre-commit hooks, Python architecture gate, locked Rust focused/workspace tests, rustfmt, Clippy with `-D warnings`, Cargo metadata and the changelog filename gate passed |
 
-The admitted envelope binds 38 artifacts and retains three declared absolute-origin fields. Its SHA-256 is `1a7571fe2984a764c13f8b27e4efad074c3c5e3b320c673a346ca02a0895789d`; `expected.json` is `0cc5fc8d4d07dc911625114ea51fd22221a29e66da013dc31ac972fae495898c`; the frozen source EPUB is `c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10`. The envelope does not hash itself. The implementation commits bind these bytes; user acceptance remains separate.
+The admitted envelope binds 38 artifacts and retains three declared absolute-origin fields. Its SHA-256 is `1a7571fe2984a764c13f8b27e4efad074c3c5e3b320c673a346ca02a0895789d`; `expected.json` is `0cc5fc8d4d07dc911625114ea51fd22221a29e66da013dc31ac972fae495898c`; the frozen source EPUB is `c4b572020d268eb64fd02dd99eeed7408bd4904ffb8fd1e95b2c27a37fac2a10`. The envelope does not hash itself. The implementation commits bind these bytes; user acceptance was recorded separately on 2026-10-08.
 
 Ownership review found no production Python edits, new production Python dependency edges, baseline bypass, extra workspace members, owned `build.rs` or owned unsafe code. Native production dependencies are only `clap 4.6.7 -> clap_builder 4.6.7 -> anstyle 1.0.14 / clap_lex 1.1.1`; serialization/hashing/tempfile dependencies are dev-only. Largest new Python file/function/class: 483/99/314 lines; largest owned Rust file: 414 lines. Existing and sub-hard-limit architecture warnings remain warnings, not exemptions or failed gates.
 
 The two read-only risk reviews identified a missing copied-content fingerprint comparison and an incorrect stdout-only no-argument help assertion. The fingerprint defect was reproduced with a real copied manifest before correction and a passing regression afterward; native process E2E observes semantic help across both output streams.
 
-No Rust EPUB parsing, YAML/configuration loading, init/status, translation, assembly, general-theme acceptance, live-provider quality/cost, reader appearance or five-platform release portability is certified by R0. Do not start R1 or remove Python while awaiting user acceptance.
+No Rust EPUB parsing, YAML/configuration loading, init/status, translation, assembly, general-theme acceptance, live-provider quality/cost, reader appearance or five-platform release portability is certified by R0. R0 acceptance authorizes only the separately confirmed R1 drafting transition; do not implement R1 before its approval or remove Python.
 
 
 ## Evidence available during specification drafting

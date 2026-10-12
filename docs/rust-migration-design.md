@@ -1,14 +1,16 @@
 # Rust Migration Design
 
-**Status: R0 implemented and exercised; user acceptance pending.** R0 was approved on 2026-10-07 and is governed by [rust-r0-spec.md](rust-r0-spec.md). Its reference bundle and minimal native CLI exist; no R1 or later implementation is authorized. All later-module paths and commands below remain planned, and no user acceptance or five-platform release equivalence is claimed.
+**Status: R0 accepted; R1 resumed under the user's Rust-ecosystem design after compatibility cleanup on 2026-10-10.** Earlier library-parity requirements remain superseded. On 2026-10-12 the user authorized read-only status on the designated EPUB and classified local commits under the current R1 boundary. No R2, push or remote CI execution is authorized; full R1/five-platform acceptance is not claimed.
 
 ## Purpose and fixed decisions
 
 The reference Python baseline is fixed at `61835587606b5cb81cdcd81eec8427fd4f638df4`, which was `HEAD` during design. R0 implementation commits do not move that reference. Historical Rust transcripts and native remnants are not implementation or equivalence evidence. Preserve user books, state, results, and any local native remnants. Do not open or copy user state during migration design or fixture creation.
 
+Foundation libraries are not migration compatibility targets. Use maintained Rust libraries and standard behavior; do not reproduce Python ZIP/YAML/CSS/URI/Unicode/JSON internals, incidental spelling or malformed-input tolerance. An adapter requires a concrete current business requirement, demonstrated existing-artifact failure or specific safety defect. An old design paragraph or a new synthetic parity test is not that evidence. This rule applies to every module, including earlier work; remove unsupported compatibility rather than preserving it behind aliases.
+
 The migration is EPUB-first, but the priority order does not reduce final parity: FB2, TXT, Markdown, all aliases, generated outputs, benchmark, governance, release, and cutover remain required. The first usable capability is `tools assemble` over a completed, current-policy Python paid EPUB state. It must create independently verified mono and bilingual EPUB variants, in either bilingual order, preserve exact Chinese and usage, and make no new model calls. General theme is not certified in this module; its acceptance belongs to R7.
 
-Each module must be accepted and committed as independently complete capabilities, then stop for explicit user confirmation before implementation of the next module. Only one approved module may be active. This design itself grants no implementation approval. Rust becomes the sole production implementation only after R13 full acceptance and user approval of cutover; Python remains runnable through then. No runtime Python fallback or wrapper, no vendored upstream Git trees, and no secrets in repository configuration. Approved differences are the `wenyi` binary name, terminal styling, and the strictly read-only status behavior below; no other compatibility reduction is authorized.
+Each module requires independent complete acceptance and explicit approval before the next. Rust becomes sole production only after R13 and user cutover approval; Python remains runnable meanwhile. No runtime Python wrapper, vendored upstream Git tree or repository secrets. Preserve business workflows and existing paid artifacts, not a foundation library's behavior. Resumed R1 follows the new bounded producer/consumer and Harness contracts.
 
 Rust status is strictly read-only: it may inspect state and report that recovery or migration is needed, but MUST NOT perform status-triggered directory, migration, or SQLite side effects. This is an explicit exception to prior status behavior.
 
@@ -42,7 +44,7 @@ Required internal edges: `book.source` is neutral; CSS uses source, never the re
 | Content commit | Coordinator owns mutable book, terminology/context and non-Send/non-Sync session. At most four workers receive immutable snapshots. Content commits follow submission order with bounded pending work. Scoped revisions exclude unrelated accounting/lifecycle writes. |
 | Publication | Independently verify actual bytes of every variant, persist proof, then sequentially replace and record physical receipts. A later failure cannot claim rollback or multi-file atomicity. |
 
-All model calls run on workers, including preparation, annotation and maintenance; the coordinator cannot call an acknowledgement-dependent client inline. It must service accounting while workers run, not join a worker waiting for its acknowledgement. Keep typed identity/readiness, provider/protocol, persistence/accounting, verification/publication and interruption errors through app to terminal. Use explicit legacy/request/benchmark digest profiles and Unicode scalar coordinates. No async cutover, generic workflow framework, universal shared context or test-driven public APIs.
+All model calls run on workers, including preparation, annotation and maintenance; the coordinator must service accounting acknowledgements instead of joining a waiting worker. Keep typed identity/readiness, protocol/accounting, persistence, verification/publication and interruption errors. Persisted business hash projections and scalar coordinates remain; generic Python float/Unicode/digest-profile emulation does not. No async cutover, generic workflow framework, universal shared context or unused public API.
 
 Rust signatures are deliberately not invented in this rhythm document. Before each implementation assignment, main must fix concrete producer/consumer types, errors, transitions, file ownership and tests for that bounded slice. A missing shared contract blocks the affected slice; it is not delegated as “use your judgment.”
 
@@ -54,7 +56,7 @@ UT means owner-local tests, including private `#[cfg(test)]` contracts. Integrat
 
 ### R0 — Reference baseline and minimum Harness
 
-R0's approved implementation and acceptance contract is [rust-r0-spec.md](rust-r0-spec.md). The user authorized R0 implementation on 2026-10-07. R0 now has the qualified `structured-epub-balanced-v1` snapshot, reference inventories and real native help/version/process Harness; exercised evidence is recorded in the specification. User acceptance remains pending, and R1 or later work has not started.
+R0's approved implementation and acceptance contract is [rust-r0-spec.md](rust-r0-spec.md). The user accepted R0 on 2026-10-08. It has the qualified `structured-epub-balanced-v1` snapshot, reference inventories and real native help/version/process Harness. R1 specification/design review and development authorization were completed through Asktool on 2026-10-10.
 
 **Scope/exit:** Capture the command/options and supported-state inventory, then admit one synthetic completed structured EPUB snapshot. Run actual Python `Application.run_all` with supported production model-role references and injected client/transport; close/reopen JSON, SQLite, source and outputs; bind hashes, inputs/fingerprints and reference environment to the baseline commit. Freeze mono and both bilingual orders with explicit `override_theme: null`, preserving exact targets and usage without new model calls for the additional assembly. Do not stamp succeeded nodes or use user state. Snapshot admission failure blocks R2, not unrelated R1 work; any incomplete-R0 transition still requires explicit user approval.
 
@@ -64,13 +66,15 @@ R0's approved implementation and acceptance contract is [rust-r0-spec.md](rust-r
 
 ### R1 — Native EPUB admission, init and read-only status
 
+The R1 product decisions retain read-only recovery/migration diagnosis (exit1), NAV HTML admission and no-readable-spine rejection (exit2). After compatibility cleanup the user resumed R1 with Rust ecosystem libraries, approved Servo standard matching and independent style semantic projection for nested cancellation. R1 remains unaccepted until actual production-path verification and the five target executions; remote CI is user-triggered only.
+
 **Depends on:** Approved R0 checkpoint. **Scope/exit:** Bounded ZIP/path/resource admission, selected XML/HTML/encoding, source/CSS/Unicode identities, strict YAML/model/output presence and current manifest/SQLite inspection. Real `init/status` work; status performs no writes, model calls, migration or recovery.
 
 **UT:** Book parser/serialization/encoding/safety fixtures, core coordinates/digests and store state admission. Selected native family is libxml2 + ICU and Expat: fixed source/hash/patch/license declarations, verified external cache, no build-script downloading or system XML requirement. Remnants are not equivalence proof. Qualified Cargo-bundled mechanisms are preferred where they meet the contract.
 
 **Integration/E2E:** Real config/status facades and binary invocations against isolated files, including malformed input, absent/corrupt state and recovery-needed outcomes; compare paid files before/after.
 
-**Private support/exit:** Archive/state fixtures and read-only observation. The bounded XML ABI boundary gets independent lifetime/native-source review; raw pointers never leave it, all other owned Rust forbids unsafe. Coordinates, admitted recovery, encoding and serialization must pass repository tests before downstream assignment. Parser differences become adapters/regressions, not an unbounded alternative-library search.
+**Private support/exit:** Real archive/state fixtures and read-only observation; independently reviewed native lifetimes/source/build inputs, no raw handles outside the bounded FFI module. Parser/library differences alone never trigger adapters or parity regressions. Use repository workflows to prove actual product and safety behavior before downstream assignment.
 
 Expose native portability risk here, not for the first time at R13: each of the five supported targets must build/link the selected native boundary and exercise a bounded parser/encoding fixture through repository tests plus EPUB status. This is a mechanism gate, not full five-platform feature/release acceptance. Record actually exercised targets; a macOS-only result cannot certify this gate. R13 later reruns the complete packaged workflows.
 
@@ -206,7 +210,7 @@ Private support owns checked-in response selection, request validation, child pr
 
 Fixture admission records baseline commit, reference package/environment versions, source/state/protocol hashes and expected semantic projections. Compare output text, scope, identities, resources and references independently; whole ZIP-byte equality is not the EPUB oracle. Export initial snapshots through repository Python unittest/private support. After cutover use static provenance-bound snapshots and Rust tests/`xtask` generation only. Add fixtures with their owning module rather than porting the entire corpus upfront; no private books are committed or uploaded.
 
-Early safety matrix: ZIP aliases/traversal/encryption/types/expansion/CRC; external XML blocking, entity limits, encoding/DOCTYPE/comment/PI/tail exactness; CSS cascade/reset/inheritance/imports/ambiguous selectors; Unicode scalar versus UTF-8 offsets, exact Chinese without normalization, frozen source Unicode/digest profile; rich identity/atoms/link graph; state source/schema/policy admission; no exactly-once remote billing claim. Structural verification proves archive properties, not model semantic judgment or reader appearance.
+Early safety matrix: ZIP identity/traversal/encryption/types/allocation/expanded bounds/CRC; external XML denial/entity limits and real encoding/source representation; source CSS only as needed by actual rich consumers; scalar versus UTF-8 offsets and exact Chinese without normalization; real slot/rich/hash/source/schema/policy bindings. No frozen runtime-property database, serializer spelling oracle or claim of exactly-once remote billing. Structural checks do not prove model semantics or reader appearance.
 
 ## Complete command and option scope
 
