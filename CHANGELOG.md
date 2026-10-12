@@ -8,6 +8,12 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Added native EPUB admission and actual `init/status` commands through the Rust `Application` facade. Source-bound read-only status preserves paid targets, rich annotations, SQLite and usage, verifies fresh block/slot evidence, distinguishes pending work from recovery, and never creates locks, migrates or rewrites state.
+- Added standard Rust CSS admission for translation-relevant source semantics, with Servo selector matching and independent styled footprints for nested resets. Original source bytes, raw rich IDs and slots remain unchanged; derived semantic IDs do not replace paid source geometry. No browser layout, provider request or Python-library emulator is introduced.
+- Added parsed Rust architecture/size/unsafe and change-range changelog gates. Local tests exercise real CLI processes, source admission and file conservation.
+
+- Removed forced Python-library parity from the Rust migration: custom PyYAML scalar/alias/merge/coercion code, frozen Unicode classification/decimal tables, Python JSON float formatting, ZIP name/metadata overlays, urllib emulation, the unfinished CSS compatibility engine and their parity-only tests. YAML and URI parsing now use standard Rust libraries; real source/paid-state bindings, read-only observation and native safety remain. The parity-driven feature plan was withdrawn.
+
 - Added a pinned Rust 1.96.0/edition-2024 workspace with the native `wenyi` help/version CLI and opaque config-path arguments. Private offline admission validates the qualified migration fixture before isolated materialization; actual binary integration tests bound output capture and kill/reap timed-out children. This does not add native configuration loading or translation.
 
 - Added fixed-baseline command, configuration and state migration inventories, with synthetic structured EPUB qualification through the real offline model-accounted pipeline. Independent artifact observation binds exact accepted targets, annotations, SQLite and usage to verified mono and both bilingual presentation orders without retranslation.

@@ -1,15 +1,17 @@
+#![forbid(unsafe_code)]
+
+#[path = "cases/r1_status.rs"]
+mod r1_status;
 mod support;
 
-use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
 use support::fixtures::{FixtureWorkspace, admit_fixture};
 use support::process::{ProcessError, ProcessResult, run_wenyi};
+use support::snapshot::snapshot_tree;
 use tempfile::tempdir;
 
 fn fixture_root() -> PathBuf {
@@ -152,66 +154,4 @@ fn zero_deadline_kills_and_reaps_the_actual_binary() {
     }
     assert_eq!(snapshot_tree(&fixture_root()), fixture_before);
     assert_eq!(snapshot_tree(workspace.root()), workspace_before);
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct SnapshotEntry {
-    is_directory: bool,
-    size: u64,
-    sha256: String,
-}
-
-fn snapshot_tree(root: &Path) -> BTreeMap<PathBuf, SnapshotEntry> {
-    fn visit(root: &Path, directory: &Path, result: &mut BTreeMap<PathBuf, SnapshotEntry>) {
-        let mut entries: Vec<_> = fs::read_dir(directory)
-            .expect("read snapshot directory")
-            .map(|entry| entry.expect("read directory entry").path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            let metadata = fs::symlink_metadata(&path).expect("read snapshot metadata");
-            assert!(
-                !metadata.file_type().is_symlink(),
-                "snapshot must not follow symlinks"
-            );
-            let relative = path
-                .strip_prefix(root)
-                .expect("path is below snapshot root")
-                .to_path_buf();
-            if metadata.is_dir() {
-                result.insert(
-                    relative,
-                    SnapshotEntry {
-                        is_directory: true,
-                        size: 0,
-                        sha256: String::new(),
-                    },
-                );
-                visit(root, &path, result);
-            } else {
-                let mut file = File::open(&path).expect("open snapshot file");
-                let mut hasher = Sha256::new();
-                let mut buffer = [0_u8; 64 * 1024];
-                loop {
-                    let count = file.read(&mut buffer).expect("read snapshot file");
-                    if count == 0 {
-                        break;
-                    }
-                    hasher.update(&buffer[..count]);
-                }
-                result.insert(
-                    relative,
-                    SnapshotEntry {
-                        is_directory: false,
-                        size: metadata.len(),
-                        sha256: format!("{:x}", hasher.finalize()),
-                    },
-                );
-            }
-        }
-    }
-
-    let mut result = BTreeMap::new();
-    visit(root, root, &mut result);
-    result
 }

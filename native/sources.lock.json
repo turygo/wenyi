@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "components": [
+    {
+      "name": "expat", "version": "2.9.0",
+      "archive": {"filename": "expat-2.9.0.tar.gz", "url": "https://github.com/libexpat/libexpat/releases/download/R_2_9_0/expat-2.9.0.tar.gz", "sha256": "16afbb9cefead2aa278105cf27d9f597bde7fbf3dbb85015857ca7ca6a4e89ba"},
+      "license": "MIT; BSD build-system notices", "notices": ["COPYING"], "patches": [],
+      "features": ["static", "namespaces", "internal-entities", "bounded-expansion", "no-external-loader"]
+    },
+    {
+      "name": "icu", "version": "78.3",
+      "archive": {"filename": "icu4c-78.3-sources.tgz", "url": "https://github.com/unicode-org/icu/releases/download/release-78.3/icu4c-78.3-sources.tgz", "sha256": "3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0"},
+      "license": "Unicode-3.0 and included third-party notices", "notices": ["LICENSE"], "patches": [],
+      "features": ["static", "static-converter-data", "no-runtime-data-search", "no-tests", "no-samples"]
+    },
+    {
+      "name": "libxml2", "version": "2.15.4",
+      "archive": {"filename": "libxml2-2.15.4.tar.xz", "url": "https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.4.tar.xz", "sha256": "98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821"},
+      "license": "MIT-style Copyright and per-file notices", "notices": ["Copyright", "dict.c", "list.c"], "patches": [],
+      "features": ["static", "xml", "html", "serialization", "pinned-icu", "no-network", "no-catalog", "no-xinclude", "no-system-compression", "no-iconv"]
+    }
+  ]
+}

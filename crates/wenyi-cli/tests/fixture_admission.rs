@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
