@@ -63,6 +63,13 @@ jobs:
       - name: Select MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+      - name: Prefer MSVC tools over Cygwin
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msvcBin = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64'
+          if (-not (Test-Path (Join-Path $msvcBin 'link.exe'))) { throw 'MSVC linker is missing' }
+          $msvcBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Provision verified pinned native sources
         run: cargo run --locked -p xtask -- native provision --cache "${{ env.WENYI_NATIVE_CACHE }}"
       - name: Rust architecture and budgets
