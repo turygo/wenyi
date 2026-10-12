@@ -72,7 +72,7 @@ pub fn build() -> Result<()> {
         &icu_data,
         &mut records,
     )?;
-    let xml_name = if windows { "libxml2" } else { "xml2" };
+    let xml_name = if windows { "libxml2s" } else { "xml2" };
     let xml = static_library(&prefix, xml_name, windows)?;
     let expat = static_library(&prefix, if windows { "libexpat" } else { "expat" }, windows)?;
     compile_glue(&prefix, windows, &mut records)?;
