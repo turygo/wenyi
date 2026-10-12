@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Preserved native CMake configure failures with their upstream compiler-probe log in the build error output, so CI can diagnose missing probe executables without suppressing failures or guessing detection results.
+
 - Selected ICU's stock MSYS/MSVC make fragment with explicit native build/host arguments; ICU 78.3's automatic `*-msys` detection otherwise falls back to its unsupported-platform fragment. The compiler and Rust target remain MSVC.
 
 - Switched Windows ICU builds to the upstream `MSYS/MSVC` mode with standard MSYS2 tools, which convert POSIX arguments for native compilers. Removed the Cygwin/mixed-path attempt after real CI exposed incompatible compiler includes and Autoconf auxiliary-file lookup; pinned upstream sources and hashes remain unchanged.

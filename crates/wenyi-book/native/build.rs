@@ -364,7 +364,12 @@ fn cmake_build(
         ])
         .arg(format!("-DCMAKE_INSTALL_PREFIX={}", prefix.display()))
         .args(flags);
-    run(&mut configure, records)?;
+    if let Err(error) = run(&mut configure, records) {
+        if let Ok(log) = fs::read_to_string(build.join("CMakeFiles/CMakeConfigureLog.yaml")) {
+            eprintln!("{log}");
+        }
+        return Err(error);
+    }
     run(
         Command::new(cmake)
             .arg("--build")
