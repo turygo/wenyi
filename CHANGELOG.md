@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Preserved immutable migration fixture bytes with Git `-text` attributes, preventing Windows checkout line-ending conversion from invalidating the frozen artifact sizes and SHA256 admission. Fixture content, hashes and strict validation remain unchanged.
+
 - Linked the actual upstream Windows libxml2 static output, `libxml2s.lib`, instead of looking for the shared-library/import name. No library renaming or compatibility alias is introduced.
 
 - Isolated CMake configure/build/install from ICU's `MAKE` environment override. Real Windows probe logs showed NMake recursively invoking GNU make, returning success without producing compiler-probe executables; CMake now retains its own selected build tool.
