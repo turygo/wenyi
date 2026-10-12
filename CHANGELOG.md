@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Isolated CMake configure/build/install from ICU's `MAKE` environment override. Real Windows probe logs showed NMake recursively invoking GNU make, returning success without producing compiler-probe executables; CMake now retains its own selected build tool.
+
 - Preserved native CMake configure failures with their upstream compiler-probe log in the build error output, so CI can diagnose missing probe executables without suppressing failures or guessing detection results.
 
 - Selected ICU's stock MSYS/MSVC make fragment with explicit native build/host arguments; ICU 78.3's automatic `*-msys` detection otherwise falls back to its unsupported-platform fragment. The compiler and Rust target remain MSVC.

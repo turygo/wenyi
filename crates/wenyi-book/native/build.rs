@@ -350,6 +350,7 @@ fn cmake_build(
 ) -> Result<()> {
     let mut configure = Command::new(cmake);
     configure
+        .env_remove("MAKE")
         .arg("-S")
         .arg(source)
         .arg("-B")
@@ -372,6 +373,7 @@ fn cmake_build(
     }
     run(
         Command::new(cmake)
+            .env_remove("MAKE")
             .arg("--build")
             .arg(build)
             .args(["--config", "Release", "--parallel"])
@@ -380,6 +382,7 @@ fn cmake_build(
     )?;
     run(
         Command::new(cmake)
+            .env_remove("MAKE")
             .arg("--install")
             .arg(build)
             .args(["--config", "Release"]),
