@@ -48,22 +48,31 @@ jobs:
       - uses: jwlawson/actions-setup-cmake@v2
         with:
           cmake-version: 4.1.3
-      - name: Install Cygwin shell and make
+      - name: Install MSYS2 build tools
+        if: runner.os == 'Windows'
+        id: msys
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          install: make diffutils
+      - name: Select MSYS2 shell and make
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          MSYS_ROOT: ${{ steps.msys.outputs.msys2-location }}
         run: |
-          Invoke-WebRequest https://cygwin.com/setup-x86_64.exe -OutFile "$env:RUNNER_TEMP\cygwin-setup.exe"
-          $process = Start-Process -FilePath "$env:RUNNER_TEMP\cygwin-setup.exe" -ArgumentList @('--quiet-mode', '--no-desktop', '--no-shortcuts', '--root', 'C:\cygwin64', '--site', 'https://mirrors.kernel.org/sourceware/cygwin/', '--packages', 'bash,make,coreutils,diffutils,sed,gawk,grep') -Wait -PassThru
-          if ($process.ExitCode -ne 0) { exit $process.ExitCode }
-          'C:\cygwin64\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          'BASH=C:/cygwin64/bin/bash.exe' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          'MAKE=C:/cygwin64/bin/make.exe' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $msysBin = Join-Path $env:MSYS_ROOT 'usr\bin'
+          $msysBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "BASH=$((Join-Path $msysBin 'bash.exe').Replace('\', '/'))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MAKE=$((Join-Path $msysBin 'make.exe').Replace('\', '/'))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          'MSYSTEM=MSYS' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           'CC=cl' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           'CXX=cl' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Select MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Prefer MSVC tools over Cygwin
+      - name: Prefer native MSVC tools
         if: runner.os == 'Windows'
         shell: pwsh
         run: |

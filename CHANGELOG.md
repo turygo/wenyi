@@ -8,11 +8,11 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
-- Fixed the Windows ICU build driver's source and prefix paths to use standard mixed Windows paths. POSIX `/cygdrive/...` paths propagated into MSVC include arguments and prevented the verified native headers from being found.
+- Switched Windows ICU builds to the upstream `MSYS/MSVC` mode with standard MSYS2 tools, which convert POSIX arguments for native compilers. Removed the Cygwin/mixed-path attempt after real CI exposed incompatible compiler includes and Autoconf auxiliary-file lookup; pinned upstream sources and hashes remain unchanged.
 
-- Fixed Windows R1 linker selection by explicitly prioritizing the MSVC tool directory through `GITHUB_PATH`; reloading the MSVC environment alone did not override GitHub's Cygwin path injection.
+- Fixed Windows R1 linker selection by explicitly prioritizing the MSVC tool directory through `GITHUB_PATH`, ahead of POSIX build tools.
 
-- Fixed clean-checkout Rust builds by committing the embedded init template as `config.example.yaml`, instead of relying on an ignored local `config.yaml`. Windows CI selects the MSVC environment after Cygwin installation so GNU `link.exe` cannot shadow the required linker.
+- Fixed clean-checkout Rust builds by committing the embedded init template as `config.example.yaml`, instead of relying on an ignored local `config.yaml`.
 
 - Fixed Rust CI cache initialization after GitHub rejected `runner.temp` in job-level environment configuration; the cache path is now exported by a step after runner assignment.
 

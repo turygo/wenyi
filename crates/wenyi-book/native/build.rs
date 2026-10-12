@@ -401,7 +401,7 @@ fn icu_build(
         return Err("pinned ICU source must contain its bundled icudt78l.dat; Python data generation is not admitted".into());
     }
     let platform = if windows {
-        "Cygwin/MSVC"
+        "MSYS/MSVC"
     } else if env::var("TARGET")?.contains("apple") {
         "MacOSX"
     } else {
@@ -411,9 +411,9 @@ fn icu_build(
     let make = env::var_os("MAKE").unwrap_or_else(|| "make".into());
     let (script, prefix_arg) = if windows {
         let convert = |path: &Path| -> Result<String> {
-            let result = Command::new("cygpath").arg("-m").arg(path).output()?;
+            let result = Command::new("cygpath").arg("-u").arg(path).output()?;
             if !result.status.success() {
-                return Err("cygpath failed; configure Cygwin/MSVC tool environment".into());
+                return Err("cygpath failed; configure MSYS/MSVC tool environment".into());
             }
             Ok(String::from_utf8(result.stdout)?.trim().to_owned())
         };
