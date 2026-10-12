@@ -33,12 +33,14 @@ jobs:
             runner: macos-15-intel
             target: x86_64-apple-darwin
     env:
-      WENYI_NATIVE_CACHE: ${{ runner.temp }}/wenyi-native-r1
       CMAKE: cmake
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Select native source cache
+        shell: bash
+        run: printf '%s\n' 'WENYI_NATIVE_CACHE=${{ runner.temp }}/wenyi-native-r1' >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.96.0
