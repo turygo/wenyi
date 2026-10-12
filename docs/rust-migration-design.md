@@ -1,6 +1,6 @@
 # Rust Migration Design
 
-**Status: R0 accepted; R1 resumed under the user's Rust-ecosystem design after compatibility cleanup on 2026-10-10.** Earlier library-parity requirements remain superseded. On 2026-10-12 the user authorized read-only status on the designated EPUB and classified local commits under the current R1 boundary. No R2, push or remote CI execution is authorized; full R1/five-platform acceptance is not claimed.
+**Status: R0 accepted; R1 resumed under the user's Rust-ecosystem design after compatibility cleanup on 2026-10-10.** Earlier library-parity requirements remain superseded. On 2026-10-12 the user authorized read-only status on the designated EPUB, classified local commits and actual five-platform CI on a new remote acceptance branch, including fixes and reruns. Remote main changes, releases and R2 remain unauthorized; full R1/five-platform acceptance is not claimed.
 
 ## Purpose and fixed decisions
 

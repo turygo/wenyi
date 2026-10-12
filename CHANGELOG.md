@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Enabled the five-target Rust R1 gate on the explicitly authorized acceptance branch only, because GitHub cannot dispatch a workflow absent from the default branch. Remote main, release publishing and R2 remain unchanged; scheduled CI is not acceptance evidence.
+
 - Added native EPUB admission and actual `init/status` commands through the Rust `Application` facade. Source-bound read-only status preserves paid targets, rich annotations, SQLite and usage, verifies fresh block/slot evidence, distinguishes pending work from recovery, and never creates locks, migrates or rewrites state.
 - Added standard Rust CSS admission for translation-relevant source semantics, with Servo selector matching and independent styled footprints for nested resets. Original source bytes, raw rich IDs and slots remain unchanged; derived semantic IDs do not replace paid source geometry. No browser layout, provider request or Python-library emulator is introduced.
 - Added parsed Rust architecture/size/unsafe and change-range changelog gates plus a user-triggered five-target native workflow. Local tests exercise real CLI processes, source admission and file conservation; workflow configuration does not claim five-platform execution or authorize translation, commits or R2.

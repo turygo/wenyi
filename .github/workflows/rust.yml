@@ -2,6 +2,8 @@ name: Rust R1 native admission
 
 on:
   workflow_dispatch:
+  push:
+    branches: [r1-acceptance-20261012]
 
 permissions:
   contents: read
