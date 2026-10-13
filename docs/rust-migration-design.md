@@ -1,6 +1,6 @@
 # Rust Migration Design
 
-**Status: R0 accepted; R1 resumed under the user's Rust-ecosystem design after compatibility cleanup on 2026-10-10.** Earlier library-parity requirements remain superseded. On 2026-10-12 the user authorized read-only status on the designated EPUB, classified local commits and actual five-platform CI on a new remote acceptance branch, including fixes and reruns. Remote main changes, releases and R2 remain unauthorized; full R1/five-platform acceptance is not claimed.
+**Status: R0 accepted; R1 production-path and five-target verification completed on 2026-10-13, awaiting user module acceptance.** Earlier library-parity requirements remain superseded. On 2026-10-12 the user authorized read-only status on the designated EPUB, classified local commits and actual five-platform CI on a new remote acceptance branch, including fixes and reruns. [Recorded execution and artifact evidence](rust-r1-harness-design.md#recorded-execution-evidence) binds the verified code commit. Remote main changes, releases and R2 remain unauthorized.
 
 ## Purpose and fixed decisions
 
@@ -66,7 +66,7 @@ R0's approved implementation and acceptance contract is [rust-r0-spec.md](rust-r
 
 ### R1 — Native EPUB admission, init and read-only status
 
-The R1 product decisions retain read-only recovery/migration diagnosis (exit1), NAV HTML admission and no-readable-spine rejection (exit2). After compatibility cleanup the user resumed R1 with Rust ecosystem libraries, approved Servo standard matching and independent style semantic projection for nested cancellation. R1 remains unaccepted until actual production-path verification and the five target executions; remote CI is user-triggered only.
+The R1 product decisions retain read-only recovery/migration diagnosis (exit1), NAV HTML admission and no-readable-spine rejection (exit2). After compatibility cleanup the user resumed R1 with Rust ecosystem libraries, approved Servo standard matching and independent style semantic projection for nested cancellation. Actual production-path verification and five-target execution completed on 2026-10-13; user module acceptance remains a separate checkpoint. Remote CI runs only under explicit user authorization.
 
 **Depends on:** Approved R0 checkpoint. **Scope/exit:** Bounded ZIP/path/resource admission, selected XML/HTML/encoding, source/CSS/Unicode identities, strict YAML/model/output presence and current manifest/SQLite inspection. Real `init/status` work; status performs no writes, model calls, migration or recovery.
 

@@ -2,7 +2,7 @@
 
 ## Authority and current status
 
-The user resumed R1 implementation on 2026-10-10 after removing unnecessary compatibility from all prior migration work. The new design uses Rust ecosystem libraries and actual business consumers, not the withdrawn parity-driven plan. R1 remains unaccepted until production-path verification and the five actual target executions are reported; this does not authorize R2.
+The user resumed R1 implementation on 2026-10-10 after removing unnecessary compatibility from all prior migration work. The new design uses Rust ecosystem libraries and actual business consumers, not the withdrawn parity-driven plan. Production-path verification and the five actual target executions completed on 2026-10-13; the execution and artifact evidence is recorded in [the harness design](rust-r1-harness-design.md#recorded-execution-evidence). User module acceptance and R2 authorization remain separate.
 
 Use maintained Rust libraries and their supported standards. A difference from a Python library is not a bug. Add an adapter only for a concrete current business requirement, demonstrated failure of an existing artifact, or specific safety defect. Do not reproduce parser internals, incidental formatting, malformed-input tolerance or a runtime's Unicode database. Do not use newly authored parity tests or the old specification to justify those layers.
 
