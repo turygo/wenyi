@@ -205,19 +205,19 @@ fn active_writer_and_nonempty_wal_are_diagnosed_without_recovery() {
     let workspace = workspace();
     let lock_path = run_dir(&workspace).join(".run.lock");
     fs::write(&lock_path, b"writer").unwrap();
+    let before = snapshot_tree(workspace.root());
     let held = File::options()
         .read(true)
         .write(true)
         .open(&lock_path)
         .unwrap();
     held.lock().unwrap();
-    let before = snapshot_tree(workspace.root());
     let result = status(&workspace);
     assert_eq!(result.status.code(), Some(1));
     assert!(text(&result).contains("active_run_lock"));
     assert!(!text(&result).contains("stranded"));
-    assert_eq!(snapshot_tree(workspace.root()), before);
     drop(held);
+    assert_eq!(snapshot_tree(workspace.root()), before);
     fs::write(
         run_dir(&workspace).join("glossary.db-wal"),
         b"uncheckpointed",

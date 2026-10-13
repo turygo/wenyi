@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Fixed the active-writer CLI regression's snapshot timing: hash all files before acquiring the exclusive lock and after releasing it, while still running the real status command under the held lock. This preserves full file-conservation checks without reading a Windows-locked file.
+
 - Preserved immutable migration fixture bytes with Git `-text` attributes, preventing Windows checkout line-ending conversion from invalidating the frozen artifact sizes and SHA256 admission. Fixture content, hashes and strict validation remain unchanged.
 
 - Linked the actual upstream Windows libxml2 static output, `libxml2s.lib`, instead of looking for the shared-library/import name. No library renaming or compatibility alias is introduced.
