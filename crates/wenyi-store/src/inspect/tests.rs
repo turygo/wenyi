@@ -64,6 +64,7 @@ fn changing_artifacts_discard_unstable_semantics_and_diagnostics() {
             bytes[0] = b'[';
             fs::write(path, bytes).unwrap();
         },
+        #[cfg(unix)]
         |run| {
             let old = run.with_file_name("replaced-run");
             fs::rename(run, &old).unwrap();
@@ -106,6 +107,7 @@ fn unstable_database_bytes_cannot_produce_a_corruption_diagnosis() {
     assert_eq!(observation.diagnostics[0].code, "changing_files");
 }
 
+#[cfg(unix)]
 #[test]
 fn disappearance_of_run_is_observation_unavailable_not_missing_run() {
     let (temporary, source) = fixture();
@@ -120,6 +122,35 @@ fn disappearance_of_run_is_observation_unavailable_not_missing_run() {
         ObservationOutcome::ObservationUnavailable
     );
     assert_eq!(observation.diagnostics[0].code, "changing_files");
+}
+
+#[test]
+fn empty_run_replacement_and_disappearance_discard_invalid_snapshot() {
+    for replace in [false, true] {
+        let (temporary, source) = fixture();
+        let state = temporary.path().join("state");
+        let run = state.join(&source.run_slug);
+        fs::remove_dir_all(&run).unwrap();
+        fs::create_dir(&run).unwrap();
+        let observation = inspect_with_hook(&state, &source, || {
+            fs::rename(&run, state.join("departed-run")).unwrap();
+            if replace {
+                fs::create_dir(&run).unwrap();
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            observation.outcome,
+            ObservationOutcome::ObservationUnavailable
+        );
+        assert_eq!(observation.diagnostics.len(), 1);
+        assert_eq!(observation.diagnostics[0].code, "changing_files");
+        assert!(observation.title.is_none());
+        assert!(observation.chapters.is_empty());
+        assert!(observation.nodes.is_empty());
+        assert!(observation.glossary.is_none());
+        assert!(observation.output_selection.is_none());
+    }
 }
 
 #[test]

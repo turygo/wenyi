@@ -51,6 +51,8 @@ Retain tests of real observable behavior:
 - Rebind stored block paths/fingerprints, exact slot text/coordinates and rich object/link geometry to the actual command source, not just saved hashes or historical `source_path`.
 - Exercise styled semantics through real admission, including inherited/explicit resets, tail ownership, split emphasis footprints and sibling restoration while raw source evidence is unchanged.
 
+The user confirmed native Windows filesystem semantics for observation on 2026-10-13. Keep production identity handles: Windows rejected whole-run directory renames while child artifact handles were open in actual CI. Retain populated-run rename/disappearance scenarios on Unix, and exercise empty-run directory replacement and disappearance on every target to verify that changed directory identity or membership discards even an invalid snapshot as `ObservationUnavailable`. File mutation, lock contention and full file-conservation checks remain required on Windows. Do not emulate Unix rename behavior or remove production identity evidence to make a test operation possible.
+
 Delete tests whose only acceptance criterion is the spelling, tolerance, table version or internal behavior of a Python foundation library. Do not re-pin those tests to a different library's incidental behavior.
 
 ### Local execution and portability
