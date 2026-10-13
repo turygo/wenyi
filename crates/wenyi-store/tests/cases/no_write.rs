@@ -101,16 +101,16 @@ fn real_exclusive_lock_prevents_stranded_running_diagnosis() {
     });
     let path = fixture.run.join(".run.lock");
     fs::write(&path, b"\0").unwrap();
+    let before = fixture.snapshot();
     let held = File::options().read(true).write(true).open(&path).unwrap();
     held.lock().unwrap();
-    let before = fixture.snapshot();
     let active = fixture.inspect();
     assert_eq!(active.outcome, Outcome::ObservationUnavailable);
     assert_eq!(active.diagnostics.len(), 1);
     assert_eq!(active.diagnostics[0].code, "active_run_lock");
     assert!(active.nodes.is_empty());
-    assert_eq!(before, fixture.snapshot());
     drop(held);
+    assert_eq!(before, fixture.snapshot());
     assert_eq!(fixture.inspect().outcome, Outcome::RecoveryNeeded);
 }
 

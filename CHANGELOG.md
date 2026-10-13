@@ -8,6 +8,8 @@ All notable changes to this project are documented here following [Keep a Change
 
 ## [Unreleased]
 
+- Applied the same lock-safe full-snapshot timing to the store active-writer regression after Windows reached that test. The observation still runs under the exclusive lock, diagnoses unavailable work rather than recovery, and checks the recovery transition after release.
+
 - Bound observation race tests to native filesystem operations after the user confirmed the Windows boundary. Populated-run renames remain covered on Unix; empty-run replacement/disappearance exercise identity and membership invalidation on all targets. Windows file mutations, real locks and full file conservation remain required; production observation is unchanged.
 
 - Fixed the active-writer CLI regression's snapshot timing: hash all files before acquiring the exclusive lock and after releasing it, while still running the real status command under the held lock. This preserves full file-conservation checks without reading a Windows-locked file.
